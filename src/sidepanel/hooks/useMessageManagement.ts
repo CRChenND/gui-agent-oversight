@@ -7,14 +7,36 @@ export const useMessageManagement = () => {
   const [currentSegmentId, setCurrentSegmentId] = useState<number>(0);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const outputRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom when messages or streaming segments change
+  const isNearBottom = (el: HTMLDivElement) => {
+    const threshold = 24;
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+  };
+
+  // Track user scrolling intent: scrolling up disables auto-scroll;
+  // returning to bottom re-enables it.
   useEffect(() => {
-    if (outputRef.current) {
+    const container = outputRef.current;
+    if (!container) return;
+
+    const onScroll = () => {
+      setAutoScrollEnabled(isNearBottom(container));
+    };
+
+    container.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+
+    return () => container.removeEventListener('scroll', onScroll);
+  }, []);
+
+  // Auto-scroll when new content arrives only if auto-scroll is enabled.
+  useEffect(() => {
+    if (autoScrollEnabled && outputRef.current) {
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
     }
-  }, [messages, streamingSegments]);
+  }, [messages, streamingSegments, autoScrollEnabled]);
 
   const addMessage = (message: Message) => {
     setMessages(prev => [...prev, { ...message, isComplete: true }]);
@@ -60,6 +82,7 @@ export const useMessageManagement = () => {
   const clearMessages = () => {
     setMessages([]);
     setStreamingSegments({});
+    setAutoScrollEnabled(true);
   };
 
   return {

@@ -25,6 +25,7 @@ interface UseChromeMessagingProps {
   onPageConsole?: (tabId: number, consoleInfo: any) => void;
   onPageError?: (tabId: number, error: string) => void;
   onAgentStatusUpdate?: (status: string, lastHeartbeat: number) => void;
+  onAttentionUpdate?: (content: any) => void;
 }
 
 export const useChromeMessaging = ({
@@ -50,7 +51,8 @@ export const useChromeMessaging = ({
   onPageDialog,
   onPageConsole,
   onPageError,
-  onAgentStatusUpdate
+  onAgentStatusUpdate,
+  onAttentionUpdate
 }: UseChromeMessagingProps) => {
 
   // Listen for updates from the background script
@@ -107,6 +109,8 @@ export const useChromeMessaging = ({
         onUpdateScreenshot(message.content);
       } else if (message.action === 'processingComplete') {
         onProcessingComplete();
+      } else if (message.action === 'attentionUpdate' && onAttentionUpdate) {
+        onAttentionUpdate(message.content);
       } else if (message.action === 'requestApproval') {
         // Handle approval requests
         // Check if the fields exist rather than if they're truthy
@@ -223,7 +227,8 @@ export const useChromeMessaging = ({
     onPageDialog,
     onPageConsole,
     onPageError,
-    onAgentStatusUpdate
+    onAgentStatusUpdate,
+    onAttentionUpdate
   ]);
 
   const executePrompt = (prompt: string) => {

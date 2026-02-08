@@ -64,6 +64,9 @@ export function Options() {
   const [newModel, setNewModel] = useState({ id: '', name: '', isReasoningModel: false });
   // Global always-on knowledge
   const [globalKnowledgeText, setGlobalKnowledgeText] = useState('');
+  // Feature toggles
+  const [enableAgentFocus, setEnableAgentFocus] = useState(true);
+  const [enableTaskGraph, setEnableTaskGraph] = useState(true);
 
   // Load saved settings when component mounts
   useEffect(() => {
@@ -92,6 +95,8 @@ export function Options() {
       openrouterBaseUrl: 'https://openrouter.ai/api/v1',
       openrouterModelId: '',
       globalKnowledgeText: '',
+      enableAgentFocus: true,
+      enableTaskGraph: true,
     }, (result) => {
       
       setProvider(result.provider);
@@ -118,6 +123,8 @@ export function Options() {
       setOpenrouterBaseUrl(result.openrouterBaseUrl || 'https://openrouter.ai/api/v1');
       setOpenrouterModelId(result.openrouterModelId || '');
       setGlobalKnowledgeText(result.globalKnowledgeText || '');
+      setEnableAgentFocus(result.enableAgentFocus ?? true);
+      setEnableTaskGraph(result.enableTaskGraph ?? true);
     });
   }, []);
 
@@ -151,6 +158,8 @@ export function Options() {
       openrouterBaseUrl,
       openrouterModelId,
       globalKnowledgeText,
+      enableAgentFocus,
+      enableTaskGraph,
     }, () => {
       
       setIsSaving(false);
@@ -282,6 +291,10 @@ export function Options() {
       handleEditModel={handleEditModel}
       globalKnowledgeText={globalKnowledgeText}
       setGlobalKnowledgeText={setGlobalKnowledgeText}
+      enableAgentFocus={enableAgentFocus}
+      setEnableAgentFocus={setEnableAgentFocus}
+      enableTaskGraph={enableTaskGraph}
+      setEnableTaskGraph={setEnableTaskGraph}
     />
   );
 }

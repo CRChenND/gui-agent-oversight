@@ -1,4 +1,5 @@
 import React from 'react';
+import { FeatureToggleSettings } from '../FeatureToggleSettings';
 import { GlobalKnowledgeSettings } from '../GlobalKnowledgeSettings';
 import { Model } from '../ModelList';
 import { OllamaModel } from '../OllamaModelList';
@@ -79,6 +80,11 @@ interface ProvidersTabProps {
   // Global knowledge
   globalKnowledgeText?: string;
   setGlobalKnowledgeText?: (val: string) => void;
+  // Feature toggles
+  enableAgentFocus: boolean;
+  setEnableAgentFocus: (val: boolean) => void;
+  enableTaskGraph: boolean;
+  setEnableTaskGraph: (val: boolean) => void;
   
 }
 
@@ -153,6 +159,10 @@ export function ProvidersTab({
   setOpenrouterModelId,
   globalKnowledgeText,
   setGlobalKnowledgeText,
+  enableAgentFocus,
+  setEnableAgentFocus,
+  enableTaskGraph,
+  setEnableTaskGraph,
   
 }: ProvidersTabProps) {
   return (
@@ -232,6 +242,13 @@ export function ProvidersTab({
               setGlobalKnowledgeText={setGlobalKnowledgeText}
             />
           )}
+
+          <FeatureToggleSettings
+            enableAgentFocus={enableAgentFocus}
+            setEnableAgentFocus={setEnableAgentFocus}
+            enableTaskGraph={enableTaskGraph}
+            setEnableTaskGraph={setEnableTaskGraph}
+          />
           
           <SaveButton 
             isSaving={isSaving}

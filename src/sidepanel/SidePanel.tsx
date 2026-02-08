@@ -5,12 +5,17 @@ import { MessageDisplay } from './components/MessageDisplay';
 import { OutputHeader } from './components/OutputHeader';
 import { PromptForm } from './components/PromptForm';
 import { ProviderSelector } from './components/ProviderSelector';
+import { TaskExecutionGraph, TaskNode } from './components/TaskExecutionGraph';
 import { TabStatusBar } from './components/TabStatusBar';
 import { useChromeMessaging } from './hooks/useChromeMessaging';
 import { useMessageManagement } from './hooks/useMessageManagement';
 import { useTabManagement } from './hooks/useTabManagement';
 
 export function SidePanel() {
+  const [taskNodes, setTaskNodes] = useState<TaskNode[]>([]);
+  const [isTaskGraphExpanded, setIsTaskGraphExpanded] = useState(false);
+  const [enableTaskGraph, setEnableTaskGraph] = useState(true);
+
   // State for tab status
   const [tabStatus, setTabStatus] = useState<'attached' | 'detached' | 'unknown' | 'running' | 'idle' | 'error'>('unknown');
 
@@ -32,13 +37,26 @@ export function SidePanel() {
       const providers = await configManager.getConfiguredProviders();
       setHasConfiguredProviders(providers.length > 0);
     };
+    const loadFeatureFlags = async () => {
+      const { enableTaskGraph: taskGraphEnabled } = await chrome.storage.sync.get({
+        enableTaskGraph: true,
+      });
+      const enabled = taskGraphEnabled !== false;
+      setEnableTaskGraph(enabled);
+      if (!enabled) {
+        setTaskNodes([]);
+        setIsTaskGraphExpanded(false);
+      }
+    };
 
     checkProviders();
+    loadFeatureFlags();
 
     // Listen for provider configuration changes
     const handleMessage = (message: any) => {
       if (message.action === 'providerConfigChanged') {
         checkProviders();
+        loadFeatureFlags();
       }
     };
 
@@ -73,6 +91,29 @@ export function SidePanel() {
     clearMessages,
     currentSegmentId
   } = useMessageManagement();
+
+  const stripToolCallMarkup = (text: string): string => {
+    if (!text) return '';
+    const stripped = text
+      .replace(/(```(?:xml|bash)\s*)?<tool>[\s\S]*?<\/requires_approval>(\s*```)?/g, '')
+      .trim();
+    return stripped;
+  };
+
+  const getLatestThinking = (): string => {
+    const currentStreaming = stripToolCallMarkup(streamingSegments[currentSegmentId] || '');
+    if (currentStreaming) {
+      return currentStreaming.slice(-400);
+    }
+
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type !== 'llm') continue;
+      const cleaned = stripToolCallMarkup(messages[i].content || '');
+      if (cleaned) return cleaned.slice(-400);
+    }
+
+    return '';
+  };
 
   // Heartbeat interval for checking agent status
   useEffect(() => {
@@ -120,6 +161,11 @@ export function SidePanel() {
     tabId,
     windowId,
     onUpdateOutput: (content) => {
+      if (content?.type === 'system' &&
+          typeof content.content === 'string' &&
+          content.content.startsWith('🕹️ tool:')) {
+        return;
+      }
       addMessage({ ...content, isComplete: true });
     },
     onUpdateStreamingChunk: (content) => {
@@ -159,6 +205,12 @@ export function SidePanel() {
       completeStreaming();
       // Also update the tab status to idle to ensure the UI indicator changes
       setTabStatus('idle');
+      if (enableTaskGraph) {
+        setIsTaskGraphExpanded(false);
+        setTaskNodes(prev => prev.map(node => (
+          node.status === 'active' ? { ...node, status: 'completed' } : node
+        )));
+      }
     },
     onRequestApproval: (request) => {
       // Add the request to the list
@@ -207,6 +259,42 @@ export function SidePanel() {
       if (status === 'idle') {
         setIsProcessing(false);
       }
+
+      if (status === 'error') {
+        if (enableTaskGraph) {
+          setIsTaskGraphExpanded(false);
+          setTaskNodes(prev => {
+            const next = [...prev];
+            for (let i = next.length - 1; i >= 0; i--) {
+              if (next[i].status === 'active') {
+                next[i] = { ...next[i], status: 'error' };
+                break;
+              }
+            }
+            return next;
+          });
+        }
+      }
+    },
+    onAttentionUpdate: (content) => {
+      if (!content || !enableTaskGraph) return;
+      if (content.state === 'active' && typeof content.toolName === 'string') {
+        const thinking = getLatestThinking();
+        setTaskNodes(prev => {
+          const next: TaskNode[] = prev.map(node => (
+            node.status === 'active' ? { ...node, status: 'completed' as const } : node
+          ));
+          next.push({
+            id: `${Date.now()}-${content.toolName}`,
+            toolName: content.toolName,
+            focusLabel: typeof content.focusLabel === 'string' ? content.focusLabel : 'Focus updated',
+            thinking,
+            status: 'active' as const,
+            timestamp: typeof content.timestamp === 'number' ? content.timestamp : Date.now()
+          });
+          return next;
+        });
+      }
     }
   });
 
@@ -215,6 +303,10 @@ export function SidePanel() {
     setIsProcessing(true);
     // Update the tab status to running
     setTabStatus('running');
+    if (enableTaskGraph) {
+      setTaskNodes([]);
+      setIsTaskGraphExpanded(true);
+    }
 
     // Add a system message to indicate a new prompt
     addSystemMessage(`New prompt: "${prompt}"`);
@@ -227,6 +319,19 @@ export function SidePanel() {
       setIsProcessing(false);
       // Update the tab status to error
       setTabStatus('error');
+      if (enableTaskGraph) {
+        setIsTaskGraphExpanded(false);
+        setTaskNodes(prev => {
+          const next = [...prev];
+          for (let i = next.length - 1; i >= 0; i--) {
+            if (next[i].status === 'active') {
+              next[i] = { ...next[i], status: 'error' };
+              break;
+            }
+          }
+          return next;
+        });
+      }
     }
   };
 
@@ -251,12 +356,20 @@ export function SidePanel() {
 
     // Update the tab status to idle
     setTabStatus('idle');
+    if (enableTaskGraph) {
+      setIsTaskGraphExpanded(false);
+      setTaskNodes(prev => prev.map(node => (
+        node.status === 'active' ? { ...node, status: 'cancelled' } : node
+      )));
+    }
   };
 
   // Handle clearing history
   const handleClearHistory = () => {
     clearMessages();
     clearHistory();
+    setTaskNodes([]);
+    setIsTaskGraphExpanded(false);
   };
 
 
@@ -285,6 +398,13 @@ export function SidePanel() {
                 onClearHistory={handleClearHistory}
                 isProcessing={isProcessing}
               />
+              {enableTaskGraph && (
+                <TaskExecutionGraph
+                  nodes={taskNodes}
+                  expanded={isTaskGraphExpanded}
+                  onToggle={() => setIsTaskGraphExpanded(prev => !prev)}
+                />
+              )}
               <div
                 ref={outputRef}
                 className="card-body p-3 overflow-auto bg-base-100 flex-1"

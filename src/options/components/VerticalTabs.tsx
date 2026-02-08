@@ -75,6 +75,11 @@ interface VerticalTabsProps {
   // Global knowledge
   globalKnowledgeText?: string;
   setGlobalKnowledgeText?: (val: string) => void;
+  // Feature toggles
+  enableAgentFocus: boolean;
+  setEnableAgentFocus: (val: boolean) => void;
+  enableTaskGraph: boolean;
+  setEnableTaskGraph: (val: boolean) => void;
 }
 
 export function VerticalTabs(props: VerticalTabsProps) {
@@ -143,6 +148,10 @@ export function VerticalTabs(props: VerticalTabsProps) {
           handleEditModel={props.handleEditModel}
           globalKnowledgeText={props.globalKnowledgeText}
           setGlobalKnowledgeText={props.setGlobalKnowledgeText}
+          enableAgentFocus={props.enableAgentFocus}
+          setEnableAgentFocus={props.setEnableAgentFocus}
+          enableTaskGraph={props.enableTaskGraph}
+          setEnableTaskGraph={props.setEnableTaskGraph}
         />
       );
     default:
@@ -202,6 +211,10 @@ export function VerticalTabs(props: VerticalTabsProps) {
           handleEditModel={props.handleEditModel}
           globalKnowledgeText={props.globalKnowledgeText}
           setGlobalKnowledgeText={props.setGlobalKnowledgeText}
+          enableAgentFocus={props.enableAgentFocus}
+          setEnableAgentFocus={props.setEnableAgentFocus}
+          enableTaskGraph={props.enableTaskGraph}
+          setEnableTaskGraph={props.setEnableTaskGraph}
         />
         );
     }

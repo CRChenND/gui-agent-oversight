@@ -5,6 +5,7 @@ import { ExecutionCallbacks } from "../agent/ExecutionEngine";
 import { contextTokenCount } from "../agent/TokenManager";
 import { ScreenshotManager } from "../tracking/screenshotManager";
 import { ConfigManager } from "./configManager";
+import { clearAttentionOverlay, inferAttentionTarget, renderAttentionOverlay } from "./attentionTracker";
 import { 
   resetStreamingState, 
   addToStreamingBuffer, 
@@ -440,6 +441,21 @@ export function cancelExecution(tabId?: number): void {
     type: 'system',
     content: 'Cancelling execution...'
   }, tabId);
+
+  sendUIMessage('attentionUpdate', {
+    state: 'idle',
+    toolName: null,
+    focusType: 'none',
+    focusLabel: 'Execution cancelled',
+    timestamp: Date.now()
+  }, tabId);
+
+  const tabState = getTabState(tabId);
+  if (tabState?.page) {
+    void clearAttentionOverlay(tabState.page).catch((error) => {
+      logWithTimestamp(`Failed to clear attention overlay on cancel: ${error instanceof Error ? error.message : String(error)}`, 'warn');
+    });
+  }
   
   // Immediately notify UI that processing is complete
   sendUIMessage('processingComplete', null, tabId);
@@ -623,6 +639,9 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
     
     // Always enable streaming
     const useStreaming = true;
+    const { enableAgentFocus } = await chrome.storage.sync.get({
+      enableAgentFocus: true
+    });
     
     // Reset streaming buffer and segment ID
     resetStreamingState();
@@ -794,6 +813,22 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
         }
       },
       onToolStart: (toolName, toolInput) => {
+        const attentionTarget = inferAttentionTarget(toolName, toolInput);
+        sendUIMessage('attentionUpdate', {
+          state: 'active',
+          toolName,
+          toolInput,
+          focusType: attentionTarget.type,
+          focusLabel: attentionTarget.label,
+          timestamp: Date.now()
+        }, targetTabId);
+
+        if (enableAgentFocus && updatedTabState.page) {
+          void renderAttentionOverlay(updatedTabState.page, attentionTarget).catch((error) => {
+            logWithTimestamp(`Failed to render attention overlay: ${error instanceof Error ? error.message : String(error)}`, 'warn');
+          });
+        }
+
         if (useStreaming) {
           // Get the window ID for this tab
           const windowId = getWindowForTab(targetTabId);
@@ -803,6 +838,20 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
         }
       },
       onComplete: () => {
+        sendUIMessage('attentionUpdate', {
+          state: 'idle',
+          toolName: null,
+          focusType: 'none',
+          focusLabel: 'Task completed',
+          timestamp: Date.now()
+        }, targetTabId);
+
+        if (updatedTabState.page) {
+          void clearAttentionOverlay(updatedTabState.page).catch((error) => {
+            logWithTimestamp(`Failed to clear attention overlay: ${error instanceof Error ? error.message : String(error)}`, 'warn');
+          });
+        }
+
         // Get the window ID for this tab
         const windowId = getWindowForTab(targetTabId);
         

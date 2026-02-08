@@ -32,6 +32,9 @@ export interface ChromeMessage {
   dialogInfo?: any;
   consoleInfo?: any;
   error?: string;
+  attentionState?: 'active' | 'idle';
+  focusType?: 'selector' | 'coordinates' | 'url' | 'text' | 'none';
+  focusLabel?: string;
   
   // Tab replacement properties
   oldTabId?: number;
