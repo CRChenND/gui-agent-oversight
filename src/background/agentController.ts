@@ -5,7 +5,15 @@ import { ExecutionCallbacks } from "../agent/ExecutionEngine";
 import { contextTokenCount } from "../agent/TokenManager";
 import { ScreenshotManager } from "../tracking/screenshotManager";
 import { ConfigManager } from "./configManager";
-import { handleRunCancelled, handleRunCompleted, handleRunFailed, handleToolStarted } from "./oversightManager";
+import {
+  handleRiskSignal,
+  handleRunCancelled,
+  handleRunCompleted,
+  handleRunFailed,
+  handleToolCompleted,
+  handleToolFailed,
+  handleToolStarted
+} from "./oversightManager";
 import {
   AGENT_FOCUS_MECHANISM_ID,
   getOversightStorageQueryDefaults,
@@ -35,6 +43,7 @@ import {
 } from "./tabManager";
 import { ProviderType, AgentStatus, AgentStatusInfo } from "./types";
 import { sendUIMessage, logWithTimestamp, handleError } from "./utils";
+import { getOversightSessionManager } from "../oversight/session/sessionManager";
 
 // Generic message format that works with all providers
 interface GenericMessage {
@@ -625,6 +634,7 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
     }
     
     // Execute the prompt
+    await getOversightSessionManager().startSession();
     sendUIMessage('updateOutput', {
       type: 'system',
       content: `Executing prompt: "${prompt}"`
@@ -671,6 +681,8 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
     }
     
     // Create callbacks for the agent
+    let currentToolCall: { toolName: string; toolInput: string } | null = null;
+
     const callbacks: ExecutionCallbacks = {
       onLlmChunk: (chunk) => {
         if (useStreaming) {
@@ -736,6 +748,19 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
         }, targetTabId);
       },
       onToolEnd: (result) => {
+        const windowId = getWindowForTab(targetTabId);
+        const toolName = currentToolCall?.toolName ?? 'unknown_tool';
+        const toolInput = currentToolCall?.toolInput ?? '';
+        currentToolCall = null;
+
+        void handleToolCompleted({
+          tabId: targetTabId,
+          windowId,
+          toolName,
+          toolInput,
+          result,
+        });
+
         // Check if this is a screenshot result by trying to parse it as JSON
         try {
           const data = JSON.parse(result);
@@ -768,6 +793,26 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
         } catch (error) {
           // Not JSON or not a screenshot, ignore
         }
+      },
+      onToolError: (toolName, toolInput, error) => {
+        const windowId = getWindowForTab(targetTabId);
+        currentToolCall = null;
+        void handleToolFailed({
+          tabId: targetTabId,
+          windowId,
+          toolName,
+          toolInput,
+          error,
+        });
+      },
+      onRiskSignal: (toolName, signal) => {
+        const windowId = getWindowForTab(targetTabId);
+        void handleRiskSignal({
+          tabId: targetTabId,
+          windowId,
+          toolName,
+          signal,
+        });
       },
       onError: (error) => {
         // For retryable errors (rate limit or overloaded), show a message but don't complete processing
@@ -811,6 +856,7 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
         }
       },
       onToolStart: (toolName, toolInput) => {
+        currentToolCall = { toolName, toolInput };
         void handleToolStarted({
           tabId: targetTabId,
           windowId: updatedTabState.windowId,

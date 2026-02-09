@@ -2,6 +2,8 @@
 
 `gui-agent-oversight` is a Chrome Extension (Manifest V3) for testing and comparing **oversight mechanisms** for GUI agents.
 
+It now also serves as a **Programmable Oversight Interaction Research Platform** with a telemetry-first interaction layer.
+
 It provides a shared runtime for browser automation plus a pluggable oversight layer, so you can:
 - run the same agent tasks under different oversight policies
 - turn mechanisms on/off from a registry-driven settings UI
@@ -16,7 +18,81 @@ The current extension name in `public/manifest.json` is `IntentGuard`.
 - Oversight event pipeline between runtime and UI
 - Registry-based oversight mechanism settings
 - Optional approval flow for risky actions
+- Interaction telemetry with session lifecycle and JSON export
+- Parameterized oversight policies (per-mechanism configurable parameters)
+- Design-space metadata for mechanisms and design matrix export
+- Session replay timeline with step/jump controls
+- Experiment configuration DSL and runner for batch studies
 - Multi-provider model support (Anthropic, OpenAI, Gemini, Ollama, OpenAI-compatible, OpenRouter)
+
+## Research Platform Features
+
+### Phase 1: Interaction Telemetry Layer
+
+- Telemetry event model: `src/oversight/telemetry/types.ts`
+- Telemetry logger: `src/oversight/telemetry/logger.ts`
+- Session lifecycle manager: `src/oversight/session/sessionManager.ts`
+- Background + side-panel interaction points now emit telemetry:
+  - tool lifecycle (`tool_started`, `tool_completed`, `tool_failed`)
+  - risk/approval signals
+  - human intervention and monitoring actions
+- Session logs can be exported as JSON via the telemetry logger.
+
+### Phase 2: Parameterized Oversight Policies
+
+- Registry supports parameter descriptors (`number` / `boolean` / `enum`) in `src/oversight/registry.ts`.
+- Storage supports parameter keys with format:
+  - `oversight.<mechanismId>.<paramKey>`
+- Options UI renders and saves mechanism parameters automatically.
+- Reducer context now supports parameter lookup:
+  - `ctx.getParameter(mechanismId, paramKey)`
+- Mechanism logic is parameter-driven (e.g. task graph node cap and auto-expand behavior).
+
+### Phase 3: Oversight Design Metadata
+
+- Registry descriptors include `interactionProperties`:
+  - `interruptionLevel`
+  - `oversightGranularity`
+  - `feedbackLatency`
+  - `agencyModel`
+- Design taxonomy export utilities:
+  - `src/oversight/design/exportDesignMatrix.ts`
+  - supports JSON and CSV export formats
+- Options page includes an `Export Design Matrix` button.
+
+### Phase 4: Session Replay Engine
+
+- Replay controller: `src/replay/replayController.ts`
+  - `loadSession(sessionId)`
+  - `stepForward()`
+  - `stepBackward()`
+  - `jumpTo(timestamp)`
+- Replay state is injected into the same side-panel reducer pipeline used by live events.
+- Replay timeline UI:
+  - `src/sidepanel/replay/ReplayTimeline.tsx`
+  - supports session selection, prev/next stepping, and slider jump.
+
+### Phase 5: Experiment Configuration DSL
+
+- Experiment schema and validation:
+  - `src/experiments/schema.ts`
+- Experiment runner:
+  - `src/experiments/runner.ts`
+  - responsibilities:
+    - load/parse config
+    - apply mechanism + parameter setup
+    - start session per task
+    - execute task and collect telemetry
+
+Minimal DSL example:
+
+```ts
+interface OversightExperimentConfig {
+  mechanisms: string[];
+  parameterOverrides: Record<string, any>;
+  tasks: string[];
+}
+```
 
 ## Core Oversight Architecture
 
@@ -71,6 +147,8 @@ src/background/                 Service worker, tab management, oversight event 
 src/models/                     Model/provider adapters
 src/options/                    Options UI (registry-driven mechanism toggles)
 src/oversight/                  Shared oversight contracts and registry
+src/replay/                     Session replay controller
+src/experiments/                Experiment DSL schema and batch runner
 src/sidepanel/                  Side panel UI + oversight mechanism reducers
 src/tracking/                   Screenshot tracking utilities
 ```

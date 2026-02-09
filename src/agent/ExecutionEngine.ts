@@ -20,6 +20,8 @@ export interface ExecutionCallbacks {
   onError?: (error: any) => void;
   onToolStart?: (toolName: string, toolInput: string) => void;
   onToolEnd?: (result: string) => void;
+  onToolError?: (toolName: string, toolInput: string, error: string) => void;
+  onRiskSignal?: (toolName: string, payload: Record<string, unknown>) => void;
   onSegmentComplete?: (segment: string) => void;
   onFallbackStarted?: () => void;
 }
@@ -46,6 +48,8 @@ class CallbackAdapter {
       onError: this.originalCallbacks.onError,
       onToolStart: this.originalCallbacks.onToolStart,
       onToolEnd: this.originalCallbacks.onToolEnd,
+      onToolError: this.originalCallbacks.onToolError,
+      onRiskSignal: this.originalCallbacks.onRiskSignal,
       onSegmentComplete: this.originalCallbacks.onSegmentComplete,
       onFallbackStarted: this.originalCallbacks.onFallbackStarted
     };
@@ -455,6 +459,14 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
           let result: string;
 
           if (requiresApproval) {
+            if (adaptedCallbacks.onRiskSignal) {
+              adaptedCallbacks.onRiskSignal(toolName, {
+                signal: 'approval_required',
+                reason,
+                requiresApproval: true,
+              });
+            }
+
             // Notify the user that approval is required
             adaptedCallbacks.onToolOutput(`⚠️ This action requires approval: ${reason}`);
 
@@ -477,7 +489,18 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
                 };
 
                 // Execute the tool with the context
-                result = await tool.func(toolInput, context);
+                try {
+                  result = await tool.func(toolInput, context);
+                } catch (toolError) {
+                  if (adaptedCallbacks.onToolError) {
+                    adaptedCallbacks.onToolError(
+                      toolName,
+                      toolInput,
+                      toolError instanceof Error ? toolError.message : String(toolError)
+                    );
+                  }
+                  throw toolError;
+                }
               } else {
                 // User rejected, skip execution
                 result = "Action cancelled by user.";
@@ -485,12 +508,30 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               }
             } catch (approvalError) {
               console.error(`Error in approval process:`, approvalError);
+              if (adaptedCallbacks.onToolError) {
+                adaptedCallbacks.onToolError(
+                  toolName,
+                  toolInput,
+                  approvalError instanceof Error ? approvalError.message : String(approvalError)
+                );
+              }
               result = "Error in approval process. Action cancelled.";
               adaptedCallbacks.onToolOutput(`❌ Error in approval process: ${approvalError}`);
             }
           } else {
             // No approval required, execute the tool normally
-            result = await tool.func(toolInput);
+            try {
+              result = await tool.func(toolInput);
+            } catch (toolError) {
+              if (adaptedCallbacks.onToolError) {
+                adaptedCallbacks.onToolError(
+                  toolName,
+                  toolInput,
+                  toolError instanceof Error ? toolError.message : String(toolError)
+                );
+              }
+              throw toolError;
+            }
           }
 
           // Signal that tool execution is complete

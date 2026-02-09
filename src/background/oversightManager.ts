@@ -2,9 +2,36 @@ import type { Page } from 'playwright-crx';
 import { clearAttentionOverlay, inferAttentionTarget, renderAttentionOverlay } from './attentionTracker';
 import { sendUIMessage, logWithTimestamp } from './utils';
 import type { OversightEvent } from '../oversight/types';
+import { getOversightSessionManager } from '../oversight/session/sessionManager';
+import { getOversightTelemetryLogger } from '../oversight/telemetry/logger';
+import type { OversightTelemetryEvent } from '../oversight/telemetry/types';
 
 function emitOversightEvent(event: OversightEvent, tabId: number, windowId?: number): void {
   sendUIMessage('oversightEvent', { event }, tabId, windowId);
+}
+
+async function resolveSessionId(): Promise<string> {
+  const sessionManager = getOversightSessionManager();
+  const activeSessionId = await sessionManager.getActiveSessionId();
+  if (activeSessionId) {
+    return activeSessionId;
+  }
+  return sessionManager.startSession();
+}
+
+async function logTelemetry(
+  event: Omit<OversightTelemetryEvent, 'sessionId' | 'timestamp'> & { timestamp?: number }
+): Promise<void> {
+  const logger = getOversightTelemetryLogger();
+  const sessionId = await resolveSessionId();
+
+  logger.log({
+    sessionId,
+    timestamp: event.timestamp ?? Date.now(),
+    source: event.source,
+    eventType: event.eventType,
+    payload: event.payload,
+  });
 }
 
 export async function handleToolStarted(args: {
@@ -31,6 +58,20 @@ export async function handleToolStarted(args: {
     windowId
   );
 
+  void logTelemetry({
+    source: 'agent',
+    eventType: 'agent_action',
+    payload: {
+      phase: 'tool_started',
+      toolName,
+      toolInput,
+      focusType: attentionTarget.type,
+      focusLabel: attentionTarget.label,
+      tabId,
+      windowId,
+    },
+  });
+
   if (enableAgentFocus && page) {
     try {
       await renderAttentionOverlay(page, attentionTarget);
@@ -41,6 +82,94 @@ export async function handleToolStarted(args: {
       );
     }
   }
+}
+
+export async function handleToolCompleted(args: {
+  tabId: number;
+  windowId?: number;
+  toolName: string;
+  toolInput: string;
+  result: string;
+}): Promise<void> {
+  const { tabId, windowId, toolName, toolInput, result } = args;
+  void logTelemetry({
+    source: 'agent',
+    eventType: 'agent_action',
+    payload: {
+      phase: 'tool_completed',
+      toolName,
+      toolInput,
+      result,
+      tabId,
+      windowId,
+    },
+  });
+}
+
+export async function handleToolFailed(args: {
+  tabId: number;
+  windowId?: number;
+  toolName: string;
+  toolInput: string;
+  error: string;
+}): Promise<void> {
+  const { tabId, windowId, toolName, toolInput, error } = args;
+  void logTelemetry({
+    source: 'agent',
+    eventType: 'agent_action',
+    payload: {
+      phase: 'tool_failed',
+      toolName,
+      toolInput,
+      error,
+      tabId,
+      windowId,
+    },
+  });
+}
+
+export async function handleRiskSignal(args: {
+  tabId: number;
+  windowId?: number;
+  toolName: string;
+  signal: Record<string, unknown>;
+}): Promise<void> {
+  const { tabId, windowId, toolName, signal } = args;
+  void logTelemetry({
+    source: 'system',
+    eventType: 'oversight_signal',
+    payload: {
+      phase: 'risk_signal_emitted',
+      toolName,
+      signal,
+      tabId,
+      windowId,
+    },
+  });
+}
+
+export async function handleApprovalRequested(args: {
+  tabId: number;
+  windowId?: number;
+  requestId: string;
+  toolName: string;
+  toolInput: string;
+  reason: string;
+}): Promise<void> {
+  const { tabId, windowId, requestId, toolName, toolInput, reason } = args;
+  void logTelemetry({
+    source: 'system',
+    eventType: 'oversight_signal',
+    payload: {
+      phase: 'approval_requested',
+      requestId,
+      toolName,
+      toolInput,
+      reason,
+      tabId,
+      windowId,
+    },
+  });
 }
 
 export async function handleRunCompleted(args: {
@@ -61,6 +190,17 @@ export async function handleRunCompleted(args: {
     windowId
   );
 
+  await logTelemetry({
+    source: 'system',
+    eventType: 'state_transition',
+    payload: {
+      phase: 'run_completed',
+      focusLabel,
+      tabId,
+      windowId,
+    },
+  });
+
   if (page) {
     try {
       await clearAttentionOverlay(page);
@@ -71,6 +211,8 @@ export async function handleRunCompleted(args: {
       );
     }
   }
+
+  await getOversightSessionManager().endSession();
 }
 
 export async function handleRunCancelled(args: {
@@ -91,6 +233,17 @@ export async function handleRunCancelled(args: {
     windowId
   );
 
+  await logTelemetry({
+    source: 'system',
+    eventType: 'state_transition',
+    payload: {
+      phase: 'run_cancelled',
+      focusLabel,
+      tabId,
+      windowId,
+    },
+  });
+
   if (page) {
     try {
       await clearAttentionOverlay(page);
@@ -101,6 +254,8 @@ export async function handleRunCancelled(args: {
       );
     }
   }
+
+  await getOversightSessionManager().endSession();
 }
 
 export async function handleRunFailed(args: {
@@ -123,6 +278,18 @@ export async function handleRunFailed(args: {
     windowId
   );
 
+  await logTelemetry({
+    source: 'system',
+    eventType: 'state_transition',
+    payload: {
+      phase: 'run_failed',
+      focusLabel,
+      error,
+      tabId,
+      windowId,
+    },
+  });
+
   if (page) {
     try {
       await clearAttentionOverlay(page);
@@ -133,4 +300,6 @@ export async function handleRunFailed(args: {
       );
     }
   }
+
+  await getOversightSessionManager().endSession();
 }

@@ -2,13 +2,17 @@ import type { OversightEvent } from '../../oversight/types';
 import {
   AGENT_FOCUS_MECHANISM_ID,
   TASK_GRAPH_MECHANISM_ID,
+  getOversightParameterDefaultValue,
   type OversightMechanismId,
+  type OversightMechanismParameterSettings,
+  type OversightParameterValue,
   type OversightMechanismSettings,
 } from '../../oversight/registry';
 import type { TaskNode, TaskNodeStatus } from '../components/TaskExecutionGraph';
 
 export interface OversightConfig {
   enabledMechanisms: OversightMechanismSettings;
+  parameterSettings: OversightMechanismParameterSettings;
 }
 
 export interface AgentFocusState {
@@ -26,8 +30,12 @@ export interface OversightUiState {
   agentFocus: AgentFocusState;
 }
 
-interface OversightContext {
+interface OversightContextInput {
   getLatestThinking: () => string;
+}
+
+interface OversightContext extends OversightContextInput {
+  getParameter: (mechanismId: OversightMechanismId, parameterKey: string) => OversightParameterValue | undefined;
 }
 
 interface OversightMechanism {
@@ -43,6 +51,12 @@ const taskGraphMechanism: OversightMechanism = {
   id: TASK_GRAPH_MECHANISM_ID,
   reduce: (state, event, ctx) => {
     if (event.kind === 'tool_started') {
+      const maxNodes = Math.max(
+        1,
+        Number(ctx.getParameter(TASK_GRAPH_MECHANISM_ID, 'maxNodes') ?? 20)
+      );
+      const autoExpand = Boolean(ctx.getParameter(TASK_GRAPH_MECHANISM_ID, 'autoExpand') ?? true);
+
       const nextNodes = markActiveNodes(state.taskGraph.nodes, 'completed');
       nextNodes.push({
         id: `${event.timestamp}-${event.toolName}`,
@@ -53,11 +67,13 @@ const taskGraphMechanism: OversightMechanism = {
         timestamp: event.timestamp,
       });
 
+      const cappedNodes = nextNodes.length > maxNodes ? nextNodes.slice(nextNodes.length - maxNodes) : nextNodes;
+
       return {
         ...state,
         taskGraph: {
-          nodes: nextNodes,
-          expanded: true,
+          nodes: cappedNodes,
+          expanded: autoExpand ? true : state.taskGraph.expanded,
         },
       };
     }
@@ -98,13 +114,14 @@ const taskGraphMechanism: OversightMechanism = {
 
 const agentFocusMechanism: OversightMechanism = {
   id: AGENT_FOCUS_MECHANISM_ID,
-  reduce: (state, event) => {
+  reduce: (state, event, ctx) => {
     if (event.kind === 'tool_started') {
+      const showToolName = Boolean(ctx.getParameter(AGENT_FOCUS_MECHANISM_ID, 'showToolName') ?? true);
       return {
         ...state,
         agentFocus: {
           state: 'active',
-          toolName: event.toolName,
+          toolName: showToolName ? event.toolName : null,
           focusLabel: event.focusLabel,
           updatedAt: event.timestamp,
         },
@@ -155,12 +172,27 @@ export class OversightMechanismManager {
     this.config = config;
   }
 
-  reduce(state: OversightUiState, event: OversightEvent, ctx: OversightContext): OversightUiState {
+  private getParameter(
+    mechanismId: OversightMechanismId,
+    parameterKey: string
+  ): OversightParameterValue | undefined {
+    const configured = this.config.parameterSettings[mechanismId]?.[parameterKey];
+    if (configured !== undefined) {
+      return configured;
+    }
+    return getOversightParameterDefaultValue(mechanismId, parameterKey);
+  }
+
+  reduce(state: OversightUiState, event: OversightEvent, ctx: OversightContextInput): OversightUiState {
     let nextState = state;
+    const context: OversightContext = {
+      ...ctx,
+      getParameter: (mechanismId, parameterKey) => this.getParameter(mechanismId, parameterKey),
+    };
 
     for (const mechanism of mechanisms) {
       if (!this.config.enabledMechanisms[mechanism.id]) continue;
-      nextState = mechanism.reduce(nextState, event, ctx);
+      nextState = mechanism.reduce(nextState, event, context);
     }
 
     return nextState;

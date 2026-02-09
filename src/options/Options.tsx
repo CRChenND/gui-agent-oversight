@@ -10,13 +10,19 @@ import {
   ollamaDefaultModelId
 } from '../models/models';
 import {
+  type OversightParameterValue,
   OVERSIGHT_MECHANISM_REGISTRY,
+  buildOversightParameterStoragePatch,
   buildOversightStoragePatch,
+  createDefaultOversightParameterSettings,
   createDefaultOversightMechanismSettings,
+  getOversightParameterStorageQueryDefaults,
   getOversightStorageQueryDefaults,
+  mapStorageToOversightParameterSettings,
   mapStorageToOversightSettings,
   type OversightMechanismId,
 } from '../oversight/registry';
+import { exportDesignMatrix } from '../oversight/design/exportDesignMatrix';
 
 // Import components
 import { Model } from './components/ModelList';
@@ -74,6 +80,7 @@ export function Options() {
   const [globalKnowledgeText, setGlobalKnowledgeText] = useState('');
   // Oversight mechanism toggles
   const [oversightSettings, setOversightSettings] = useState(createDefaultOversightMechanismSettings);
+  const [oversightParameterSettings, setOversightParameterSettings] = useState(createDefaultOversightParameterSettings);
 
   // Load saved settings when component mounts
   useEffect(() => {
@@ -103,6 +110,7 @@ export function Options() {
       openrouterModelId: '',
       globalKnowledgeText: '',
       ...getOversightStorageQueryDefaults(),
+      ...getOversightParameterStorageQueryDefaults(),
     }, (result) => {
       
       setProvider(result.provider);
@@ -130,6 +138,7 @@ export function Options() {
       setOpenrouterModelId(result.openrouterModelId || '');
       setGlobalKnowledgeText(result.globalKnowledgeText || '');
       setOversightSettings(mapStorageToOversightSettings(result as Record<string, unknown>));
+      setOversightParameterSettings(mapStorageToOversightParameterSettings(result as Record<string, unknown>));
     });
   }, []);
 
@@ -164,6 +173,7 @@ export function Options() {
       openrouterModelId,
       globalKnowledgeText,
       ...buildOversightStoragePatch(oversightSettings),
+      ...buildOversightParameterStoragePatch(oversightParameterSettings),
     }, () => {
       
       setIsSaving(false);
@@ -185,6 +195,20 @@ export function Options() {
     setOversightSettings((prev) => ({
       ...prev,
       [mechanismId]: enabled,
+    }));
+  };
+
+  const setOversightMechanismParameter = (
+    mechanismId: OversightMechanismId,
+    parameterKey: string,
+    value: OversightParameterValue
+  ) => {
+    setOversightParameterSettings((prev) => ({
+      ...prev,
+      [mechanismId]: {
+        ...prev[mechanismId],
+        [parameterKey]: value,
+      },
     }));
   };
 
@@ -236,6 +260,19 @@ export function Options() {
   
   const handleEditModel = (idx: number, field: string, value: any) => {
     setOpenaiCompatibleModels(models => models.map((m, i) => i === idx ? { ...m, [field]: value } : m));
+  };
+
+  const handleExportDesignMatrix = () => {
+    const content = exportDesignMatrix('json');
+    const blob = new Blob([content], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `oversight-design-matrix-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -304,7 +341,10 @@ export function Options() {
       setGlobalKnowledgeText={setGlobalKnowledgeText}
       oversightMechanisms={OVERSIGHT_MECHANISM_REGISTRY}
       oversightSettings={oversightSettings}
+      oversightParameterSettings={oversightParameterSettings}
       setOversightMechanismEnabled={setOversightMechanismEnabled}
+      setOversightMechanismParameter={setOversightMechanismParameter}
+      handleExportDesignMatrix={handleExportDesignMatrix}
     />
   );
 }

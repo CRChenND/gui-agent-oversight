@@ -9,6 +9,8 @@ import { SaveButton } from '../SaveButton';
 import type {
   OversightMechanismDefinition,
   OversightMechanismId,
+  OversightMechanismParameterSettings,
+  OversightParameterValue,
   OversightMechanismSettings,
 } from '../../../oversight/registry';
 
@@ -88,7 +90,14 @@ interface ProvidersTabProps {
   // Oversight mechanism settings
   oversightMechanisms: OversightMechanismDefinition[];
   oversightSettings: OversightMechanismSettings;
+  oversightParameterSettings: OversightMechanismParameterSettings;
   setOversightMechanismEnabled: (mechanismId: OversightMechanismId, enabled: boolean) => void;
+  setOversightMechanismParameter: (
+    mechanismId: OversightMechanismId,
+    parameterKey: string,
+    value: OversightParameterValue
+  ) => void;
+  handleExportDesignMatrix: () => void;
   
 }
 
@@ -165,7 +174,10 @@ export function ProvidersTab({
   setGlobalKnowledgeText,
   oversightMechanisms,
   oversightSettings,
+  oversightParameterSettings,
   setOversightMechanismEnabled,
+  setOversightMechanismParameter,
+  handleExportDesignMatrix,
   
 }: ProvidersTabProps) {
   return (
@@ -249,20 +261,31 @@ export function ProvidersTab({
           <FeatureToggleSettings
             mechanisms={oversightMechanisms}
             settings={oversightSettings}
+            parameterSettings={oversightParameterSettings}
             onToggle={setOversightMechanismEnabled}
+            onParameterChange={setOversightMechanismParameter}
           />
           
-          <SaveButton 
-            isSaving={isSaving}
-            saveStatus={saveStatus}
-            handleSave={handleSave}
-            isDisabled={
-              (provider === 'anthropic' && !anthropicApiKey.trim()) ||
-              (provider === 'openai' && !openaiApiKey.trim()) ||
-              (provider === 'gemini' && !geminiApiKey.trim()) ||
-              (provider === 'openrouter' && (!openrouterApiKey.trim() || !openrouterModelId.trim()))
-            }
-          />
+          <div className="flex flex-wrap items-center gap-3">
+            <SaveButton 
+              isSaving={isSaving}
+              saveStatus={saveStatus}
+              handleSave={handleSave}
+              isDisabled={
+                (provider === 'anthropic' && !anthropicApiKey.trim()) ||
+                (provider === 'openai' && !openaiApiKey.trim()) ||
+                (provider === 'gemini' && !geminiApiKey.trim()) ||
+                (provider === 'openrouter' && (!openrouterApiKey.trim() || !openrouterModelId.trim()))
+              }
+            />
+            <button
+              className="btn btn-outline"
+              onClick={handleExportDesignMatrix}
+              type="button"
+            >
+              Export Design Matrix
+            </button>
+          </div>
         </div>
       </div>
       

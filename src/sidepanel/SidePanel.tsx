@@ -1,10 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useMemo, useState, useEffect } from 'react';
 import { ConfigManager } from '../background/configManager';
 import {
   AGENT_FOCUS_MECHANISM_ID,
   TASK_GRAPH_MECHANISM_ID,
+  createDefaultOversightParameterSettings,
   createDefaultOversightMechanismSettings,
+  getOversightParameterStorageQueryDefaults,
   getOversightStorageQueryDefaults,
+  mapStorageToOversightParameterSettings,
   mapStorageToOversightSettings,
 } from '../oversight/registry';
 import { ApprovalRequest } from './components/ApprovalRequest';
@@ -18,9 +21,12 @@ import { useChromeMessaging } from './hooks/useChromeMessaging';
 import { useMessageManagement } from './hooks/useMessageManagement';
 import { useOversightMechanisms } from './hooks/useOversightMechanisms';
 import { useTabManagement } from './hooks/useTabManagement';
+import { ReplayTimeline } from './replay/ReplayTimeline';
+import { ReplayController, type ReplaySessionSummary } from '../replay/replayController';
 
 export function SidePanel() {
   const [mechanismSettings, setMechanismSettings] = useState(createDefaultOversightMechanismSettings);
+  const [mechanismParameterSettings, setMechanismParameterSettings] = useState(createDefaultOversightParameterSettings);
 
   // State for tab status
   const [tabStatus, setTabStatus] = useState<'attached' | 'detached' | 'unknown' | 'running' | 'idle' | 'error'>('unknown');
@@ -35,6 +41,12 @@ export function SidePanel() {
 
   // State to track if any LLM providers are configured
   const [hasConfiguredProviders, setHasConfiguredProviders] = useState<boolean>(false);
+  const [replaySessions, setReplaySessions] = useState<ReplaySessionSummary[]>([]);
+  const [selectedReplaySessionId, setSelectedReplaySessionId] = useState<string>('');
+  const [isReplayMode, setIsReplayMode] = useState(false);
+  const [replayCursor, setReplayCursor] = useState(-1);
+  const [replayEventCount, setReplayEventCount] = useState(0);
+  const replayController = useMemo(() => new ReplayController(), []);
 
   // Check if any providers are configured when component mounts
   useEffect(() => {
@@ -44,12 +56,24 @@ export function SidePanel() {
       setHasConfiguredProviders(providers.length > 0);
     };
     const loadFeatureFlags = async () => {
-      const result = await chrome.storage.sync.get(getOversightStorageQueryDefaults());
+      const result = await chrome.storage.sync.get({
+        ...getOversightStorageQueryDefaults(),
+        ...getOversightParameterStorageQueryDefaults(),
+      });
       setMechanismSettings(mapStorageToOversightSettings(result as Record<string, unknown>));
+      setMechanismParameterSettings(mapStorageToOversightParameterSettings(result as Record<string, unknown>));
+    };
+    const loadReplaySessions = async () => {
+      const sessions = await replayController.listSessions();
+      setReplaySessions(sessions);
+      if (sessions.length > 0 && !selectedReplaySessionId) {
+        setSelectedReplaySessionId(sessions[0].sessionId);
+      }
     };
 
     checkProviders();
     loadFeatureFlags();
+    loadReplaySessions();
 
     // Listen for provider configuration changes
     const handleMessage = (message: any) => {
@@ -64,7 +88,7 @@ export function SidePanel() {
     return () => {
       chrome.runtime.onMessage.removeListener(handleMessage);
     };
-  }, []);
+  }, [replayController, selectedReplaySessionId]);
 
   // Use custom hooks to manage state and functionality
   const {
@@ -119,15 +143,63 @@ export function SidePanel() {
     setTaskGraphExpanded,
     agentFocus,
     handleOversightEvent,
+    replayOversightEvents,
+    logHumanTelemetry,
     resetRunState,
     clearOversightState,
   } = useOversightMechanisms({
     mechanismSettings,
+    mechanismParameterSettings,
     getLatestThinking,
   });
 
   const enableAgentFocus = mechanismSettings[AGENT_FOCUS_MECHANISM_ID];
   const enableTaskGraph = mechanismSettings[TASK_GRAPH_MECHANISM_ID];
+
+  const applyReplayState = useCallback(() => {
+    const visibleEvents = replayController.getVisibleEvents();
+    replayOversightEvents(visibleEvents);
+    setReplayCursor(replayController.getCursor());
+    setReplayEventCount(replayController.getReplayEvents().length);
+  }, [replayController, replayOversightEvents]);
+
+  const handleLoadReplaySession = useCallback(async () => {
+    if (!selectedReplaySessionId) return;
+    await replayController.loadSession(selectedReplaySessionId);
+    setIsReplayMode(true);
+    applyReplayState();
+  }, [selectedReplaySessionId, replayController, applyReplayState]);
+
+  const handleExitReplay = useCallback(() => {
+    setIsReplayMode(false);
+    setReplayCursor(-1);
+    setReplayEventCount(0);
+    replayOversightEvents([]);
+  }, [replayOversightEvents]);
+
+  const handleReplayStepForward = useCallback(() => {
+    replayController.stepForward();
+    applyReplayState();
+  }, [replayController, applyReplayState]);
+
+  const handleReplayStepBackward = useCallback(() => {
+    replayController.stepBackward();
+    applyReplayState();
+  }, [replayController, applyReplayState]);
+
+  const handleReplayJumpToPosition = useCallback(
+    (position: number) => {
+      const events = replayController.getReplayEvents();
+      if (position <= 0 || events.length === 0) {
+        replayController.jumpTo(-Infinity);
+      } else {
+        const bounded = Math.min(position, events.length);
+        replayController.jumpTo(events[bounded - 1].timestamp);
+      }
+      applyReplayState();
+    },
+    [replayController, applyReplayState]
+  );
 
   // Heartbeat interval for checking agent status
   useEffect(() => {
@@ -147,6 +219,21 @@ export function SidePanel() {
 
   // Handlers for approval requests
   const handleApprove = (requestId: string) => {
+    const request = approvalRequests.find((req) => req.requestId === requestId);
+    void logHumanTelemetry('human_intervention', {
+      action: 'approval_accepted',
+      requestId,
+      toolName: request?.toolName,
+      toolInput: request?.toolInput,
+      reason: request?.reason,
+    });
+    void logHumanTelemetry('human_intervention', {
+      action: 'override_performed',
+      requestId,
+      toolName: request?.toolName,
+      toolInput: request?.toolInput,
+    });
+
     // Send approval to the background script
     approveRequest(requestId);
     // Remove the request from the list
@@ -156,12 +243,37 @@ export function SidePanel() {
   };
 
   const handleReject = (requestId: string) => {
+    const request = approvalRequests.find((req) => req.requestId === requestId);
+    void logHumanTelemetry('human_intervention', {
+      action: 'approval_rejected',
+      requestId,
+      toolName: request?.toolName,
+      toolInput: request?.toolInput,
+      reason: request?.reason,
+    });
+
     // Send rejection to the background script
     rejectRequest(requestId);
     // Remove the request from the list
     setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
     // Add a system message to indicate rejection
     addSystemMessage(`❌ Rejected action: ${requestId}`);
+  };
+
+  const handleDismissWarning = (requestId: string) => {
+    const request = approvalRequests.find((req) => req.requestId === requestId);
+    void logHumanTelemetry('human_monitoring', {
+      action: 'warning_dismissed',
+      requestId,
+      toolName: request?.toolName,
+      toolInput: request?.toolInput,
+      reason: request?.reason,
+    });
+
+    // Dismissing a pending approval also rejects it to avoid blocking execution.
+    rejectRequest(requestId);
+    setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
+    addSystemMessage(`⚠️ Dismissed warning: ${requestId} (auto-rejected)`);
   };
 
   // Set up Chrome messaging with callbacks
@@ -277,7 +389,10 @@ export function SidePanel() {
         });
       }
     },
-    onOversightEvent: handleOversightEvent
+    onOversightEvent: (event) => {
+      if (isReplayMode) return;
+      handleOversightEvent(event);
+    }
   });
 
   // Handle form submission
@@ -395,6 +510,19 @@ export function SidePanel() {
               </div>
             </div>
           </div>
+          <ReplayTimeline
+            sessions={replaySessions}
+            selectedSessionId={selectedReplaySessionId}
+            isReplayMode={isReplayMode}
+            eventCount={replayEventCount}
+            cursor={replayCursor}
+            onSelectSession={setSelectedReplaySessionId}
+            onLoadSession={handleLoadReplaySession}
+            onExitReplay={handleExitReplay}
+            onStepBackward={handleReplayStepBackward}
+            onStepForward={handleReplayStepForward}
+            onJumpToPosition={handleReplayJumpToPosition}
+          />
           {/* Display approval requests */}
           {approvalRequests.map(req => (
             <ApprovalRequest
@@ -405,6 +533,7 @@ export function SidePanel() {
               reason={req.reason}
               onApprove={handleApprove}
               onReject={handleReject}
+              onDismiss={handleDismissWarning}
             />
           ))}
 

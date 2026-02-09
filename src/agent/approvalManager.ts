@@ -1,4 +1,5 @@
 import { getWindowForTab } from '../background/tabManager';
+import { handleApprovalRequested } from '../background/oversightManager';
 
 // Pending approvals map
 const pendingApprovals = new Map<string, {
@@ -37,6 +38,15 @@ export async function requestApproval(
         console.error('Error getting window ID for tab:', error);
       }
     }
+
+    void handleApprovalRequested({
+      requestId,
+      tabId,
+      windowId,
+      toolName,
+      toolInput,
+      reason,
+    });
     
     // Send approval request to UI with a callback to handle errors
     chrome.runtime.sendMessage({

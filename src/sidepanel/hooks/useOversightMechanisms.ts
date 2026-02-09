@@ -6,17 +6,23 @@ import {
   type OversightUiState,
 } from '../oversight/mechanismManager';
 import {
+  type OversightMechanismParameterSettings,
   TASK_GRAPH_MECHANISM_ID,
   type OversightMechanismSettings,
 } from '../../oversight/registry';
+import { getOversightSessionManager } from '../../oversight/session/sessionManager';
+import { getOversightTelemetryLogger } from '../../oversight/telemetry/logger';
+import type { OversightTelemetryEvent } from '../../oversight/telemetry/types';
 
 interface UseOversightMechanismsProps {
   mechanismSettings: OversightMechanismSettings;
+  mechanismParameterSettings: OversightMechanismParameterSettings;
   getLatestThinking: () => string;
 }
 
 export function useOversightMechanisms({
   mechanismSettings,
+  mechanismParameterSettings,
   getLatestThinking,
 }: UseOversightMechanismsProps) {
   const [state, setState] = useState<OversightUiState>(() => createInitialOversightState());
@@ -24,12 +30,16 @@ export function useOversightMechanisms({
   const managerRef = useRef(
     new OversightMechanismManager({
       enabledMechanisms: mechanismSettings,
+      parameterSettings: mechanismParameterSettings,
     })
   );
 
   useEffect(() => {
-    managerRef.current.setConfig({ enabledMechanisms: mechanismSettings });
-  }, [mechanismSettings]);
+    managerRef.current.setConfig({
+      enabledMechanisms: mechanismSettings,
+      parameterSettings: mechanismParameterSettings,
+    });
+  }, [mechanismSettings, mechanismParameterSettings]);
 
   useEffect(() => {
     if (!mechanismSettings[TASK_GRAPH_MECHANISM_ID]) {
@@ -43,6 +53,23 @@ export function useOversightMechanisms({
     }
   }, [mechanismSettings]);
 
+  const logHumanTelemetry = useCallback(
+    async (eventType: OversightTelemetryEvent['eventType'], payload: Record<string, any>) => {
+      const sessionManager = getOversightSessionManager();
+      const logger = getOversightTelemetryLogger();
+      const sessionId = (await sessionManager.getActiveSessionId()) ?? (await sessionManager.startSession());
+
+      logger.log({
+        sessionId,
+        timestamp: Date.now(),
+        source: 'human',
+        eventType,
+        payload,
+      });
+    },
+    []
+  );
+
   const handleOversightEvent = useCallback(
     (event: OversightEvent) => {
       setState((prev) => managerRef.current.reduce(prev, event, { getLatestThinking }));
@@ -50,7 +77,25 @@ export function useOversightMechanisms({
     [getLatestThinking]
   );
 
+  const replayOversightEvents = useCallback(
+    (events: OversightEvent[]) => {
+      const base = createInitialOversightState();
+      const nextState = events.reduce(
+        (acc, event) => managerRef.current.reduce(acc, event, { getLatestThinking }),
+        base
+      );
+      setState(nextState);
+    },
+    [getLatestThinking]
+  );
+
   const setTaskGraphExpanded = useCallback((expanded: boolean) => {
+    if (expanded) {
+      void logHumanTelemetry('human_monitoring', {
+        action: 'explanation_expanded',
+      });
+    }
+
     setState((prev) => ({
       ...prev,
       taskGraph: {
@@ -58,7 +103,7 @@ export function useOversightMechanisms({
         expanded,
       },
     }));
-  }, []);
+  }, [logHumanTelemetry]);
 
   const resetRunState = useCallback(() => {
     setState((prev) => ({
@@ -87,9 +132,19 @@ export function useOversightMechanisms({
       setTaskGraphExpanded,
       agentFocus: state.agentFocus,
       handleOversightEvent,
+      replayOversightEvents,
+      logHumanTelemetry,
       resetRunState,
       clearOversightState,
     }),
-    [state, setTaskGraphExpanded, handleOversightEvent, resetRunState, clearOversightState]
+    [
+      state,
+      setTaskGraphExpanded,
+      handleOversightEvent,
+      replayOversightEvents,
+      logHumanTelemetry,
+      resetRunState,
+      clearOversightState
+    ]
   );
 }

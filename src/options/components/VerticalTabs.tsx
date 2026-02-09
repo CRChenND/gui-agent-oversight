@@ -5,6 +5,8 @@ import { ProvidersTab } from './tabs/ProvidersTab';
 import type {
   OversightMechanismDefinition,
   OversightMechanismId,
+  OversightMechanismParameterSettings,
+  OversightParameterValue,
   OversightMechanismSettings,
 } from '../../oversight/registry';
 
@@ -83,7 +85,14 @@ interface VerticalTabsProps {
   // Oversight mechanism settings
   oversightMechanisms: OversightMechanismDefinition[];
   oversightSettings: OversightMechanismSettings;
+  oversightParameterSettings: OversightMechanismParameterSettings;
   setOversightMechanismEnabled: (mechanismId: OversightMechanismId, enabled: boolean) => void;
+  setOversightMechanismParameter: (
+    mechanismId: OversightMechanismId,
+    parameterKey: string,
+    value: OversightParameterValue
+  ) => void;
+  handleExportDesignMatrix: () => void;
 }
 
 export function VerticalTabs(props: VerticalTabsProps) {
@@ -150,7 +159,10 @@ export function VerticalTabs(props: VerticalTabsProps) {
       setGlobalKnowledgeText={props.setGlobalKnowledgeText}
       oversightMechanisms={props.oversightMechanisms}
       oversightSettings={props.oversightSettings}
+      oversightParameterSettings={props.oversightParameterSettings}
       setOversightMechanismEnabled={props.setOversightMechanismEnabled}
+      setOversightMechanismParameter={props.setOversightMechanismParameter}
+      handleExportDesignMatrix={props.handleExportDesignMatrix}
     />
   );
 

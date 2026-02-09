@@ -6,7 +6,7 @@ import { logWithTimestamp } from './utils';
  * Initialize the extension
  */
 function initializeExtension(): void {
-  logWithTimestamp('IntentGuard extension initialized');
+  logWithTimestamp('Programmable Oversight Interaction Research Platform initialized');
 
   // Set up message listeners
   setupMessageListeners();
@@ -54,7 +54,7 @@ function setupEventListeners(): void {
 
   // Open options page when the extension is first installed
   chrome.runtime.onInstalled.addListener((details) => {
-    logWithTimestamp('IntentGuard extension installed');
+    logWithTimestamp('Programmable Oversight Interaction Research Platform installed');
 
     if (details.reason === 'install') {
       chrome.runtime.openOptionsPage();

@@ -7,6 +7,7 @@ interface ApprovalRequestProps {
   reason: string;
   onApprove: (requestId: string) => void;
   onReject: (requestId: string) => void;
+  onDismiss: (requestId: string) => void;
 }
 
 export function ApprovalRequest({ 
@@ -15,11 +16,21 @@ export function ApprovalRequest({
   toolInput, 
   reason, 
   onApprove, 
-  onReject 
+  onReject,
+  onDismiss
 }: ApprovalRequestProps) {
   return (
     <div className="card bg-warning text-warning-content p-4 my-2">
-      <h3 className="font-bold">Approval Required</h3>
+      <div className="flex items-start justify-between">
+        <h3 className="font-bold">Approval Required</h3>
+        <button
+          className="btn btn-ghost btn-xs"
+          onClick={() => onDismiss(requestId)}
+          aria-label="Dismiss warning"
+        >
+          Dismiss
+        </button>
+      </div>
       <p>The agent wants to execute a critical action:</p>
       <div className="bg-base-300 p-2 my-2 rounded">
         <p><strong>Tool:</strong> {toolName}</p>
