@@ -1,5 +1,5 @@
-import { getWindowForTab } from '../background/tabManager';
 import { handleApprovalRequested } from '../background/oversightManager';
+import { getWindowForTab } from '../background/tabManager';
 
 // Pending approvals map
 const pendingApprovals = new Map<string, {

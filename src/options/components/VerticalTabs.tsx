@@ -1,7 +1,4 @@
 import React, { useState } from 'react';
-import { Model } from './ModelList';
-import { OllamaModel } from './OllamaModelList';
-import { ProvidersTab } from './tabs/ProvidersTab';
 import type {
   OversightMechanismDefinition,
   OversightMechanismId,
@@ -9,6 +6,9 @@ import type {
   OversightParameterValue,
   OversightMechanismSettings,
 } from '../../oversight/registry';
+import { Model } from './ModelList';
+import { OllamaModel } from './OllamaModelList';
+import { ProvidersTab } from './tabs/ProvidersTab';
 
 interface VerticalTabsProps {
   // Provider selection

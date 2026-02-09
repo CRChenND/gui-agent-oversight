@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import { ConfigManager } from '../background/configManager';
 import {
   AGENT_FOCUS_MECHANISM_ID,
@@ -10,8 +10,8 @@ import {
   mapStorageToOversightParameterSettings,
   mapStorageToOversightSettings,
 } from '../oversight/registry';
-import { ApprovalRequest } from './components/ApprovalRequest';
 import { AgentAttentionBar } from './components/AgentAttentionBar';
+import { ApprovalRequest } from './components/ApprovalRequest';
 import { MessageDisplay } from './components/MessageDisplay';
 import { OutputHeader } from './components/OutputHeader';
 import { PromptForm } from './components/PromptForm';
@@ -21,14 +21,6 @@ import { useChromeMessaging } from './hooks/useChromeMessaging';
 import { useMessageManagement } from './hooks/useMessageManagement';
 import { useOversightMechanisms } from './hooks/useOversightMechanisms';
 import { useTabManagement } from './hooks/useTabManagement';
-import { ReplayTimeline } from './replay/ReplayTimeline';
-import { StepInspector } from './stepInspector/StepInspector';
-import {
-  ReplayController,
-  type ReplaySessionSummary,
-  type StepInspectionData,
-  type TraceStepSummary,
-} from '../replay/replayController';
 
 export function SidePanel() {
   const [mechanismSettings, setMechanismSettings] = useState(createDefaultOversightMechanismSettings);
@@ -47,16 +39,6 @@ export function SidePanel() {
 
   // State to track if any LLM providers are configured
   const [hasConfiguredProviders, setHasConfiguredProviders] = useState<boolean>(false);
-  const [replaySessions, setReplaySessions] = useState<ReplaySessionSummary[]>([]);
-  const [selectedReplaySessionId, setSelectedReplaySessionId] = useState<string>('');
-  const [isReplayMode, setIsReplayMode] = useState(false);
-  const [replayCursor, setReplayCursor] = useState(-1);
-  const [replayEventCount, setReplayEventCount] = useState(0);
-  const [traceSteps, setTraceSteps] = useState<TraceStepSummary[]>([]);
-  const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
-  const [stepInspection, setStepInspection] = useState<StepInspectionData | null>(null);
-  const replayController = useMemo(() => new ReplayController(), []);
-
   // Check if any providers are configured when component mounts
   useEffect(() => {
     const checkProviders = async () => {
@@ -72,17 +54,8 @@ export function SidePanel() {
       setMechanismSettings(mapStorageToOversightSettings(result as Record<string, unknown>));
       setMechanismParameterSettings(mapStorageToOversightParameterSettings(result as Record<string, unknown>));
     };
-    const loadReplaySessions = async () => {
-      const sessions = await replayController.listSessions();
-      setReplaySessions(sessions);
-      if (sessions.length > 0 && !selectedReplaySessionId) {
-        setSelectedReplaySessionId(sessions[0].sessionId);
-      }
-    };
-
     checkProviders();
     loadFeatureFlags();
-    loadReplaySessions();
 
     // Listen for provider configuration changes
     const handleMessage = (message: any) => {
@@ -97,7 +70,7 @@ export function SidePanel() {
     return () => {
       chrome.runtime.onMessage.removeListener(handleMessage);
     };
-  }, [replayController, selectedReplaySessionId]);
+  }, []);
 
   // Use custom hooks to manage state and functionality
   const {
@@ -152,7 +125,6 @@ export function SidePanel() {
     setTaskGraphExpanded,
     agentFocus,
     handleOversightEvent,
-    replayOversightEvents,
     logHumanTelemetry,
     resetRunState,
     clearOversightState,
@@ -165,68 +137,32 @@ export function SidePanel() {
   const enableAgentFocus = mechanismSettings[AGENT_FOCUS_MECHANISM_ID];
   const enableTaskGraph = mechanismSettings[TASK_GRAPH_MECHANISM_ID];
 
-  const applyReplayState = useCallback(() => {
-    const visibleEvents = replayController.getVisibleEvents();
-    replayOversightEvents(visibleEvents);
-    setReplayCursor(replayController.getCursor());
-    setReplayEventCount(replayController.getReplayEvents().length);
-    const steps = replayController.getStepSummaries();
-    setTraceSteps(steps);
-    const currentStepId = replayController.getCurrentStepId();
-    setSelectedStepId(currentStepId);
-    setStepInspection(currentStepId ? replayController.getStepInspection(currentStepId) : null);
-  }, [replayController, replayOversightEvents]);
+  const handleDownloadTaskGraph = useCallback(() => {
+    if (taskNodes.length === 0) return;
 
-  const handleLoadReplaySession = useCallback(async () => {
-    if (!selectedReplaySessionId) return;
-    await replayController.loadSession(selectedReplaySessionId);
-    setIsReplayMode(true);
-    applyReplayState();
-  }, [selectedReplaySessionId, replayController, applyReplayState]);
+    const exportData = {
+      exportedAt: Date.now(),
+      stepCount: taskNodes.length,
+      steps: taskNodes.map((node, index) => ({
+        index: index + 1,
+        stepId: node.stepId,
+        toolName: node.toolName,
+        focusLabel: node.focusLabel,
+        thinking: node.thinking || '',
+        status: node.status,
+        timestamp: node.timestamp,
+      })),
+    };
 
-  const handleExitReplay = useCallback(() => {
-    setIsReplayMode(false);
-    setReplayCursor(-1);
-    setReplayEventCount(0);
-    setTraceSteps([]);
-    setSelectedStepId(null);
-    setStepInspection(null);
-    replayOversightEvents([]);
-  }, [replayOversightEvents]);
-
-  const handleReplayStepForward = useCallback(() => {
-    replayController.stepForward();
-    applyReplayState();
-  }, [replayController, applyReplayState]);
-
-  const handleReplayStepBackward = useCallback(() => {
-    replayController.stepBackward();
-    applyReplayState();
-  }, [replayController, applyReplayState]);
-
-  const handleReplayJumpToPosition = useCallback(
-    (position: number) => {
-      const events = replayController.getReplayEvents();
-      if (position <= 0 || events.length === 0) {
-        replayController.jumpTo(-Infinity);
-      } else {
-        const bounded = Math.min(position, events.length);
-        replayController.jumpTo(events[bounded - 1].timestamp);
-      }
-      applyReplayState();
-    },
-    [replayController, applyReplayState]
-  );
-
-  const handleSelectTraceStep = useCallback(
-    (stepId: string) => {
-      replayController.jumpToStep(stepId);
-      setSelectedStepId(stepId);
-      setStepInspection(replayController.getStepInspection(stepId));
-      applyReplayState();
-    },
-    [replayController, applyReplayState]
-  );
+    const json = JSON.stringify(exportData, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `task-graph-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }, [taskNodes]);
 
   // Heartbeat interval for checking agent status
   useEffect(() => {
@@ -417,7 +353,6 @@ export function SidePanel() {
       }
     },
     onOversightEvent: (event) => {
-      if (isReplayMode) return;
       handleOversightEvent(event);
     }
   });
@@ -508,6 +443,8 @@ export function SidePanel() {
             <div className="card bg-base-100 shadow-md flex-1 flex flex-col overflow-hidden">
               <OutputHeader
                 onClearHistory={handleClearHistory}
+                onDownloadTaskGraph={handleDownloadTaskGraph}
+                canDownloadTaskGraph={taskNodes.length > 0}
                 isProcessing={isProcessing}
               />
               {enableAgentFocus && (
@@ -537,23 +474,6 @@ export function SidePanel() {
               </div>
             </div>
           </div>
-          <ReplayTimeline
-            sessions={replaySessions}
-            selectedSessionId={selectedReplaySessionId}
-            isTracePlaybackMode={isReplayMode}
-            eventCount={replayEventCount}
-            cursor={replayCursor}
-            steps={traceSteps}
-            selectedStepId={selectedStepId}
-            onSelectSession={setSelectedReplaySessionId}
-            onLoadSession={handleLoadReplaySession}
-            onExitTracePlayback={handleExitReplay}
-            onStepBackward={handleReplayStepBackward}
-            onStepForward={handleReplayStepForward}
-            onJumpToPosition={handleReplayJumpToPosition}
-            onSelectStep={handleSelectTraceStep}
-          />
-          {isReplayMode ? <StepInspector data={stepInspection} /> : null}
           {/* Display approval requests */}
           {approvalRequests.map(req => (
             <ApprovalRequest

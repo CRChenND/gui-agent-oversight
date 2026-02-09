@@ -21,7 +21,7 @@ The current extension name in `public/manifest.json` is `IntentGuard`.
 - Interaction telemetry with session lifecycle and JSON export
 - Parameterized oversight policies (per-mechanism configurable parameters)
 - Design-space metadata for mechanisms and design matrix export
-- Session trace playback timeline with step/jump controls
+- Task graph step export (download current task steps as JSON)
 - Experiment configuration DSL and runner for batch studies
 - Multi-provider model support (Anthropic, OpenAI, Gemini, Ollama, OpenAI-compatible, OpenRouter)
 
@@ -60,23 +60,7 @@ The current extension name in `public/manifest.json` is `IntentGuard`.
   - supports JSON and CSV export formats
 - Options page includes an `Export Design Matrix` button.
 
-### Phase 4: Session Trace Playback
-
-- Trace playback controller: `src/replay/replayController.ts`
-  - `loadSession(sessionId)`
-  - `stepForward()`
-  - `stepBackward()`
-  - `jumpTo(timestamp)`
-- Trace playback state is injected into the same side-panel reducer pipeline used by live events.
-- Trace playback timeline UI:
-  - `src/sidepanel/replay/ReplayTimeline.tsx`
-  - supports session selection, prev/next stepping, and slider jump.
-- Step inspector UI:
-  - `src/sidepanel/stepInspector/StepInspector.tsx`
-
-Trace Playback replays telemetry and UI state only. It does not guarantee deterministic browser re-execution.
-
-### Phase 5: Experiment Configuration DSL
+### Phase 4: Experiment Configuration DSL
 
 - Experiment schema and validation:
   - `src/experiments/schema.ts`
@@ -151,7 +135,6 @@ src/background/                 Service worker, tab management, oversight event 
 src/models/                     Model/provider adapters
 src/options/                    Options UI (registry-driven mechanism toggles)
 src/oversight/                  Shared oversight contracts and registry
-src/replay/                     Session trace playback controller
 src/experiments/                Experiment DSL schema and batch runner
 src/sidepanel/                  Side panel UI + oversight mechanism reducers
 src/tracking/                   Screenshot tracking utilities

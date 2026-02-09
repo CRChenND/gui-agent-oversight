@@ -1,10 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { OversightEvent } from '../../oversight/types';
-import {
-  createInitialOversightState,
-  OversightMechanismManager,
-  type OversightUiState,
-} from '../oversight/mechanismManager';
 import {
   type OversightMechanismParameterSettings,
   TASK_GRAPH_MECHANISM_ID,
@@ -13,6 +7,12 @@ import {
 import { getOversightSessionManager } from '../../oversight/session/sessionManager';
 import { getOversightTelemetryLogger } from '../../oversight/telemetry/logger';
 import type { OversightTelemetryEvent } from '../../oversight/telemetry/types';
+import type { OversightEvent } from '../../oversight/types';
+import {
+  createInitialOversightState,
+  OversightMechanismManager,
+  type OversightUiState,
+} from '../oversight/mechanismManager';
 
 interface UseOversightMechanismsProps {
   mechanismSettings: OversightMechanismSettings;

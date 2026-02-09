@@ -1,4 +1,3 @@
-import type { OversightEvent } from '../../oversight/types';
 import {
   AGENT_FOCUS_MECHANISM_ID,
   TASK_GRAPH_MECHANISM_ID,
@@ -8,8 +7,9 @@ import {
   type OversightParameterValue,
   type OversightMechanismSettings,
 } from '../../oversight/registry';
-import type { TaskNode, TaskNodeStatus } from '../components/TaskExecutionGraph';
+import type { OversightEvent } from '../../oversight/types';
 import type { AgentThinkingSummary } from '../../oversight/types';
+import type { TaskNode, TaskNodeStatus } from '../components/TaskExecutionGraph';
 
 export interface OversightConfig {
   enabledMechanisms: OversightMechanismSettings;

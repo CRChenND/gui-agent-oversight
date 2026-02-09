@@ -1,9 +1,15 @@
 // Import provider-specific types
 import Anthropic from "@anthropic-ai/sdk";
 import { BrowserAgent, createBrowserAgent, executePromptWithFallback, needsReinitialization } from "../agent/AgentCore";
-import { registerThinkingDispatch } from "../agent/thinking/thinkingEmitter";
 import { ExecutionCallbacks } from "../agent/ExecutionEngine";
 import { contextTokenCount } from "../agent/TokenManager";
+import { registerThinkingDispatch } from "../agent/thinking/thinkingEmitter";
+import {
+  AGENT_FOCUS_MECHANISM_ID,
+  getOversightStorageQueryDefaults,
+  mapStorageToOversightSettings,
+} from "../oversight/registry";
+import { getOversightSessionManager } from "../oversight/session/sessionManager";
 import { ScreenshotManager } from "../tracking/screenshotManager";
 import { ConfigManager } from "./configManager";
 import {
@@ -16,11 +22,6 @@ import {
   handleToolFailed,
   handleToolStarted
 } from "./oversightManager";
-import {
-  AGENT_FOCUS_MECHANISM_ID,
-  getOversightStorageQueryDefaults,
-  mapStorageToOversightSettings,
-} from "../oversight/registry";
 import { 
   resetStreamingState, 
   addToStreamingBuffer, 
@@ -45,7 +46,6 @@ import {
 } from "./tabManager";
 import { ProviderType, AgentStatus, AgentStatusInfo } from "./types";
 import { sendUIMessage, logWithTimestamp, handleError } from "./utils";
-import { getOversightSessionManager } from "../oversight/session/sessionManager";
 
 // Generic message format that works with all providers
 interface GenericMessage {

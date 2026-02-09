@@ -1,14 +1,18 @@
-import { faTrash } from '@fortawesome/free-solid-svg-icons';
+import { faDownload, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import React from 'react';
 
 interface OutputHeaderProps {
   onClearHistory: () => void;
+  onDownloadTaskGraph: () => void;
+  canDownloadTaskGraph: boolean;
   isProcessing: boolean;
 }
 
 export const OutputHeader: React.FC<OutputHeaderProps> = ({
   onClearHistory,
+  onDownloadTaskGraph,
+  canDownloadTaskGraph,
   isProcessing
 }) => {
   return (
@@ -24,6 +28,15 @@ export const OutputHeader: React.FC<OutputHeaderProps> = ({
             disabled={isProcessing}
           >
             <FontAwesomeIcon icon={faTrash} />
+          </button>
+        </div>
+        <div className="tooltip tooltip-bottom" data-tip="Download current task graph steps as JSON">
+          <button
+            onClick={onDownloadTaskGraph}
+            className="btn btn-sm btn-outline"
+            disabled={!canDownloadTaskGraph}
+          >
+            <FontAwesomeIcon icon={faDownload} />
           </button>
         </div>
       </div>

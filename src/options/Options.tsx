@@ -9,6 +9,7 @@ import {
   geminiDefaultModelId,
   ollamaDefaultModelId
 } from '../models/models';
+import { exportDesignMatrix } from '../oversight/design/exportDesignMatrix';
 import {
   type OversightParameterValue,
   OVERSIGHT_MECHANISM_REGISTRY,
@@ -22,7 +23,6 @@ import {
   mapStorageToOversightSettings,
   type OversightMechanismId,
 } from '../oversight/registry';
-import { exportDesignMatrix } from '../oversight/design/exportDesignMatrix';
 
 // Import components
 import { Model } from './components/ModelList';

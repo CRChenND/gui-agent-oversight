@@ -1,11 +1,4 @@
 import React from 'react';
-import { FeatureToggleSettings } from '../FeatureToggleSettings';
-import { GlobalKnowledgeSettings } from '../GlobalKnowledgeSettings';
-import { Model } from '../ModelList';
-import { OllamaModel } from '../OllamaModelList';
-import { ProviderSelector } from '../ProviderSelector';
-import { ProviderSettings } from '../ProviderSettings';
-import { SaveButton } from '../SaveButton';
 import type {
   OversightMechanismDefinition,
   OversightMechanismId,
@@ -13,6 +6,13 @@ import type {
   OversightParameterValue,
   OversightMechanismSettings,
 } from '../../../oversight/registry';
+import { FeatureToggleSettings } from '../FeatureToggleSettings';
+import { GlobalKnowledgeSettings } from '../GlobalKnowledgeSettings';
+import { Model } from '../ModelList';
+import { OllamaModel } from '../OllamaModelList';
+import { ProviderSelector } from '../ProviderSelector';
+import { ProviderSettings } from '../ProviderSettings';
+import { SaveButton } from '../SaveButton';
 
 interface ProvidersTabProps {
   // Provider selection

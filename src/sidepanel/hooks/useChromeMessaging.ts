@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
-import { ChromeMessage } from '../types';
 import type { OversightEvent } from '../../oversight/types';
+import { ChromeMessage } from '../types';
 
 interface UseChromeMessagingProps {
   tabId: number | null;

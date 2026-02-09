@@ -1,10 +1,10 @@
 import type { Page } from 'playwright-crx';
-import { clearAttentionOverlay, inferAttentionTarget, renderAttentionOverlay } from './attentionTracker';
-import { sendUIMessage, logWithTimestamp } from './utils';
-import type { AgentThinkingSummary, OversightEvent } from '../oversight/types';
 import { getOversightSessionManager } from '../oversight/session/sessionManager';
 import { getOversightTelemetryLogger } from '../oversight/telemetry/logger';
 import type { OversightTelemetryEvent } from '../oversight/telemetry/types';
+import type { AgentThinkingSummary, OversightEvent } from '../oversight/types';
+import { clearAttentionOverlay, inferAttentionTarget, renderAttentionOverlay } from './attentionTracker';
+import { sendUIMessage, logWithTimestamp } from './utils';
 
 function emitOversightEvent(event: OversightEvent, tabId: number, windowId?: number): void {
   sendUIMessage('oversightEvent', { event }, tabId, windowId);
