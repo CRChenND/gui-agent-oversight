@@ -1,4 +1,6 @@
-# GUI Agent Oversight Platform
+# MORPH
+
+**MORPH** stands for **Modular Oversight Runtime for Programmable Human–agent systems**.
 
 `gui-agent-oversight` is a Chrome Extension (Manifest V3) for testing and comparing **oversight mechanisms** for GUI agents.
 
@@ -9,7 +11,7 @@ It provides a shared runtime for browser automation plus a pluggable oversight l
 - turn mechanisms on/off from a registry-driven settings UI
 - add new mechanisms with minimal changes to core agent code
 
-The current extension name in `public/manifest.json` is `IntentGuard`.
+The current extension name in `public/manifest.json` is `MORPH`.
 
 ## What This Platform Includes
 

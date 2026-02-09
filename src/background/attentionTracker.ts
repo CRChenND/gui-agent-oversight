@@ -114,7 +114,7 @@ export function inferAttentionTarget(toolName: string, toolInput: string): Atten
 
 export async function clearAttentionOverlay(page: Page): Promise<void> {
   await page.evaluate(() => {
-    const existing = document.getElementById("__intentguard_attention_overlay__");
+    const existing = document.getElementById("__morph_attention_overlay__");
     if (existing) existing.remove();
   });
 }
@@ -126,7 +126,7 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
   }
 
   await page.evaluate((payload: AttentionTarget) => {
-    const OVERLAY_ID = "__intentguard_attention_overlay__";
+    const OVERLAY_ID = "__morph_attention_overlay__";
     const old = document.getElementById(OVERLAY_ID);
     if (old) old.remove();
 

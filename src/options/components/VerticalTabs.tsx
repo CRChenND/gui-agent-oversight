@@ -180,7 +180,7 @@ export function VerticalTabs(props: VerticalTabsProps) {
       {/* Left Sidebar - Single Tab (Providers) */}
       <div className="w-64 bg-base-100 shadow-lg">
         <div className="p-4">
-          <h1 className="text-2xl font-bold text-primary mb-6">IntentGuard</h1>
+          <h1 className="text-2xl font-bold text-primary mb-6">MORPH</h1>
           <div className="tabs tabs-vertical w-full">
             {tabs.map((tab) => (
               <button

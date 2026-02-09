@@ -44,7 +44,7 @@ Remember to follow the verification-first workflow: navigate → observe → ana
       ? `\n\n## USER GLOBAL KNOWLEDGE\n${this.globalKnowledgeText}\n`
       : "";
   
-    return `You are a browser-automation assistant called **IntentGuard**.
+    return `You are a browser-automation assistant called **MORPH**.
   
   You have access to these tools:
   
