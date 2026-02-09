@@ -2,6 +2,11 @@ import React, { useState } from 'react';
 import { Model } from './ModelList';
 import { OllamaModel } from './OllamaModelList';
 import { ProvidersTab } from './tabs/ProvidersTab';
+import type {
+  OversightMechanismDefinition,
+  OversightMechanismId,
+  OversightMechanismSettings,
+} from '../../oversight/registry';
 
 interface VerticalTabsProps {
   // Provider selection
@@ -75,11 +80,10 @@ interface VerticalTabsProps {
   // Global knowledge
   globalKnowledgeText?: string;
   setGlobalKnowledgeText?: (val: string) => void;
-  // Feature toggles
-  enableAgentFocus: boolean;
-  setEnableAgentFocus: (val: boolean) => void;
-  enableTaskGraph: boolean;
-  setEnableTaskGraph: (val: boolean) => void;
+  // Oversight mechanism settings
+  oversightMechanisms: OversightMechanismDefinition[];
+  oversightSettings: OversightMechanismSettings;
+  setOversightMechanismEnabled: (mechanismId: OversightMechanismId, enabled: boolean) => void;
 }
 
 export function VerticalTabs(props: VerticalTabsProps) {
@@ -89,134 +93,73 @@ export function VerticalTabs(props: VerticalTabsProps) {
     { id: 'providers', label: 'LLM Configuration', icon: '🤖' },
   ];
 
+  const renderProvidersTab = () => (
+    <ProvidersTab
+      provider={props.provider}
+      setProvider={props.setProvider}
+      anthropicApiKey={props.anthropicApiKey}
+      setAnthropicApiKey={props.setAnthropicApiKey}
+      anthropicBaseUrl={props.anthropicBaseUrl}
+      setAnthropicBaseUrl={props.setAnthropicBaseUrl}
+      thinkingBudgetTokens={props.thinkingBudgetTokens}
+      setThinkingBudgetTokens={props.setThinkingBudgetTokens}
+      openaiApiKey={props.openaiApiKey}
+      setOpenaiApiKey={props.setOpenaiApiKey}
+      openaiBaseUrl={props.openaiBaseUrl}
+      setOpenaiBaseUrl={props.setOpenaiBaseUrl}
+      geminiApiKey={props.geminiApiKey}
+      setGeminiApiKey={props.setGeminiApiKey}
+      geminiBaseUrl={props.geminiBaseUrl}
+      setGeminiBaseUrl={props.setGeminiBaseUrl}
+      ollamaApiKey={props.ollamaApiKey}
+      setOllamaApiKey={props.setOllamaApiKey}
+      ollamaBaseUrl={props.ollamaBaseUrl}
+      setOllamaBaseUrl={props.setOllamaBaseUrl}
+      ollamaModelId={props.ollamaModelId}
+      setOllamaModelId={props.setOllamaModelId}
+      ollamaCustomModels={props.ollamaCustomModels}
+      setOllamaCustomModels={props.setOllamaCustomModels}
+      newOllamaModel={props.newOllamaModel}
+      setNewOllamaModel={props.setNewOllamaModel}
+      handleAddOllamaModel={props.handleAddOllamaModel}
+      handleRemoveOllamaModel={props.handleRemoveOllamaModel}
+      handleEditOllamaModel={props.handleEditOllamaModel}
+      openaiCompatibleApiKey={props.openaiCompatibleApiKey}
+      setOpenaiCompatibleApiKey={props.setOpenaiCompatibleApiKey}
+      openaiCompatibleBaseUrl={props.openaiCompatibleBaseUrl}
+      setOpenaiCompatibleBaseUrl={props.setOpenaiCompatibleBaseUrl}
+      openaiCompatibleModelId={props.openaiCompatibleModelId}
+      setOpenaiCompatibleModelId={props.setOpenaiCompatibleModelId}
+      openaiCompatibleModels={props.openaiCompatibleModels}
+      setOpenaiCompatibleModels={props.setOpenaiCompatibleModels}
+      newModel={props.newModel}
+      setNewModel={props.setNewModel}
+      openrouterApiKey={props.openrouterApiKey}
+      setOpenrouterApiKey={props.setOpenrouterApiKey}
+      openrouterBaseUrl={props.openrouterBaseUrl}
+      setOpenrouterBaseUrl={props.setOpenrouterBaseUrl}
+      openrouterModelId={props.openrouterModelId}
+      setOpenrouterModelId={props.setOpenrouterModelId}
+      isSaving={props.isSaving}
+      saveStatus={props.saveStatus}
+      handleSave={props.handleSave}
+      handleAddModel={props.handleAddModel}
+      handleRemoveModel={props.handleRemoveModel}
+      handleEditModel={props.handleEditModel}
+      globalKnowledgeText={props.globalKnowledgeText}
+      setGlobalKnowledgeText={props.setGlobalKnowledgeText}
+      oversightMechanisms={props.oversightMechanisms}
+      oversightSettings={props.oversightSettings}
+      setOversightMechanismEnabled={props.setOversightMechanismEnabled}
+    />
+  );
+
   const renderTabContent = () => {
     switch (activeTab) {
       case 'providers':
-        return (
-          <ProvidersTab
-            provider={props.provider}
-            setProvider={props.setProvider}
-            anthropicApiKey={props.anthropicApiKey}
-            setAnthropicApiKey={props.setAnthropicApiKey}
-            anthropicBaseUrl={props.anthropicBaseUrl}
-            setAnthropicBaseUrl={props.setAnthropicBaseUrl}
-            thinkingBudgetTokens={props.thinkingBudgetTokens}
-            setThinkingBudgetTokens={props.setThinkingBudgetTokens}
-            openaiApiKey={props.openaiApiKey}
-            setOpenaiApiKey={props.setOpenaiApiKey}
-            openaiBaseUrl={props.openaiBaseUrl}
-            setOpenaiBaseUrl={props.setOpenaiBaseUrl}
-            geminiApiKey={props.geminiApiKey}
-            setGeminiApiKey={props.setGeminiApiKey}
-            geminiBaseUrl={props.geminiBaseUrl}
-            setGeminiBaseUrl={props.setGeminiBaseUrl}
-            ollamaApiKey={props.ollamaApiKey}
-            setOllamaApiKey={props.setOllamaApiKey}
-            ollamaBaseUrl={props.ollamaBaseUrl}
-            setOllamaBaseUrl={props.setOllamaBaseUrl}
-            ollamaModelId={props.ollamaModelId}
-            setOllamaModelId={props.setOllamaModelId}
-            ollamaCustomModels={props.ollamaCustomModels}
-            setOllamaCustomModels={props.setOllamaCustomModels}
-            newOllamaModel={props.newOllamaModel}
-            setNewOllamaModel={props.setNewOllamaModel}
-            handleAddOllamaModel={props.handleAddOllamaModel}
-            handleRemoveOllamaModel={props.handleRemoveOllamaModel}
-          handleEditOllamaModel={props.handleEditOllamaModel}
-          openaiCompatibleApiKey={props.openaiCompatibleApiKey}
-          setOpenaiCompatibleApiKey={props.setOpenaiCompatibleApiKey}
-          openaiCompatibleBaseUrl={props.openaiCompatibleBaseUrl}
-          setOpenaiCompatibleBaseUrl={props.setOpenaiCompatibleBaseUrl}
-          openaiCompatibleModelId={props.openaiCompatibleModelId}
-          setOpenaiCompatibleModelId={props.setOpenaiCompatibleModelId}
-          openaiCompatibleModels={props.openaiCompatibleModels}
-          setOpenaiCompatibleModels={props.setOpenaiCompatibleModels}
-          newModel={props.newModel}
-          setNewModel={props.setNewModel}
-          // OpenRouter
-          openrouterApiKey={props.openrouterApiKey}
-          setOpenrouterApiKey={props.setOpenrouterApiKey}
-          openrouterBaseUrl={props.openrouterBaseUrl}
-          setOpenrouterBaseUrl={props.setOpenrouterBaseUrl}
-          openrouterModelId={props.openrouterModelId}
-          setOpenrouterModelId={props.setOpenrouterModelId}
-          isSaving={props.isSaving}
-          saveStatus={props.saveStatus}
-          handleSave={props.handleSave}
-          handleAddModel={props.handleAddModel}
-          handleRemoveModel={props.handleRemoveModel}
-          handleEditModel={props.handleEditModel}
-          globalKnowledgeText={props.globalKnowledgeText}
-          setGlobalKnowledgeText={props.setGlobalKnowledgeText}
-          enableAgentFocus={props.enableAgentFocus}
-          setEnableAgentFocus={props.setEnableAgentFocus}
-          enableTaskGraph={props.enableTaskGraph}
-          setEnableTaskGraph={props.setEnableTaskGraph}
-        />
-      );
-    default:
-        return (
-          <ProvidersTab
-            provider={props.provider}
-            setProvider={props.setProvider}
-            anthropicApiKey={props.anthropicApiKey}
-            setAnthropicApiKey={props.setAnthropicApiKey}
-            anthropicBaseUrl={props.anthropicBaseUrl}
-            setAnthropicBaseUrl={props.setAnthropicBaseUrl}
-            thinkingBudgetTokens={props.thinkingBudgetTokens}
-            setThinkingBudgetTokens={props.setThinkingBudgetTokens}
-            openaiApiKey={props.openaiApiKey}
-            setOpenaiApiKey={props.setOpenaiApiKey}
-            openaiBaseUrl={props.openaiBaseUrl}
-            setOpenaiBaseUrl={props.setOpenaiBaseUrl}
-            geminiApiKey={props.geminiApiKey}
-            setGeminiApiKey={props.setGeminiApiKey}
-            geminiBaseUrl={props.geminiBaseUrl}
-            setGeminiBaseUrl={props.setGeminiBaseUrl}
-            ollamaApiKey={props.ollamaApiKey}
-            setOllamaApiKey={props.setOllamaApiKey}
-            ollamaBaseUrl={props.ollamaBaseUrl}
-            setOllamaBaseUrl={props.setOllamaBaseUrl}
-            ollamaModelId={props.ollamaModelId}
-            setOllamaModelId={props.setOllamaModelId}
-            ollamaCustomModels={props.ollamaCustomModels}
-            setOllamaCustomModels={props.setOllamaCustomModels}
-            newOllamaModel={props.newOllamaModel}
-            setNewOllamaModel={props.setNewOllamaModel}
-            handleAddOllamaModel={props.handleAddOllamaModel}
-            handleRemoveOllamaModel={props.handleRemoveOllamaModel}
-          handleEditOllamaModel={props.handleEditOllamaModel}
-          openaiCompatibleApiKey={props.openaiCompatibleApiKey}
-          setOpenaiCompatibleApiKey={props.setOpenaiCompatibleApiKey}
-          openaiCompatibleBaseUrl={props.openaiCompatibleBaseUrl}
-          setOpenaiCompatibleBaseUrl={props.setOpenaiCompatibleBaseUrl}
-          openaiCompatibleModelId={props.openaiCompatibleModelId}
-          setOpenaiCompatibleModelId={props.setOpenaiCompatibleModelId}
-          openaiCompatibleModels={props.openaiCompatibleModels}
-          setOpenaiCompatibleModels={props.setOpenaiCompatibleModels}
-          newModel={props.newModel}
-          setNewModel={props.setNewModel}
-          // OpenRouter
-          openrouterApiKey={props.openrouterApiKey}
-          setOpenrouterApiKey={props.setOpenrouterApiKey}
-          openrouterBaseUrl={props.openrouterBaseUrl}
-          setOpenrouterBaseUrl={props.setOpenrouterBaseUrl}
-          openrouterModelId={props.openrouterModelId}
-          setOpenrouterModelId={props.setOpenrouterModelId}
-          isSaving={props.isSaving}
-          saveStatus={props.saveStatus}
-          handleSave={props.handleSave}
-          handleAddModel={props.handleAddModel}
-          handleRemoveModel={props.handleRemoveModel}
-          handleEditModel={props.handleEditModel}
-          globalKnowledgeText={props.globalKnowledgeText}
-          setGlobalKnowledgeText={props.setGlobalKnowledgeText}
-          enableAgentFocus={props.enableAgentFocus}
-          setEnableAgentFocus={props.setEnableAgentFocus}
-          enableTaskGraph={props.enableTaskGraph}
-          setEnableTaskGraph={props.setEnableTaskGraph}
-        />
-        );
+        return renderProvidersTab();
+      default:
+        return renderProvidersTab();
     }
   };
 

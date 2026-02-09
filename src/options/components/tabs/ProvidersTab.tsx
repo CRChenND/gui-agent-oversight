@@ -6,6 +6,11 @@ import { OllamaModel } from '../OllamaModelList';
 import { ProviderSelector } from '../ProviderSelector';
 import { ProviderSettings } from '../ProviderSettings';
 import { SaveButton } from '../SaveButton';
+import type {
+  OversightMechanismDefinition,
+  OversightMechanismId,
+  OversightMechanismSettings,
+} from '../../../oversight/registry';
 
 interface ProvidersTabProps {
   // Provider selection
@@ -80,11 +85,10 @@ interface ProvidersTabProps {
   // Global knowledge
   globalKnowledgeText?: string;
   setGlobalKnowledgeText?: (val: string) => void;
-  // Feature toggles
-  enableAgentFocus: boolean;
-  setEnableAgentFocus: (val: boolean) => void;
-  enableTaskGraph: boolean;
-  setEnableTaskGraph: (val: boolean) => void;
+  // Oversight mechanism settings
+  oversightMechanisms: OversightMechanismDefinition[];
+  oversightSettings: OversightMechanismSettings;
+  setOversightMechanismEnabled: (mechanismId: OversightMechanismId, enabled: boolean) => void;
   
 }
 
@@ -159,10 +163,9 @@ export function ProvidersTab({
   setOpenrouterModelId,
   globalKnowledgeText,
   setGlobalKnowledgeText,
-  enableAgentFocus,
-  setEnableAgentFocus,
-  enableTaskGraph,
-  setEnableTaskGraph,
+  oversightMechanisms,
+  oversightSettings,
+  setOversightMechanismEnabled,
   
 }: ProvidersTabProps) {
   return (
@@ -244,10 +247,9 @@ export function ProvidersTab({
           )}
 
           <FeatureToggleSettings
-            enableAgentFocus={enableAgentFocus}
-            setEnableAgentFocus={setEnableAgentFocus}
-            enableTaskGraph={enableTaskGraph}
-            setEnableTaskGraph={setEnableTaskGraph}
+            mechanisms={oversightMechanisms}
+            settings={oversightSettings}
+            onToggle={setOversightMechanismEnabled}
           />
           
           <SaveButton 

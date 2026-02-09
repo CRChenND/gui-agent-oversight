@@ -80,6 +80,11 @@ export function handleMessage(
         sendResponse({ success: true });
         return true;
         
+      case 'oversightEvent':
+        // Pass-through for oversight event broadcasts sent from background to UI.
+        sendResponse({ success: true });
+        return true;
+        
       case 'forceResetPlaywright':
         // Handle async function and keep message channel open
         handleForceResetPlaywright(message, sendResponse)
@@ -142,6 +147,7 @@ function isBackgroundMessage(message: any): message is BackgroundMessage {
       // message.action === 'tokenUsageUpdated' ||
       message.action === 'updateOutput' ||  // Add support for output updates
       message.action === 'providerConfigChanged' ||  // Add support for provider config changes
+      message.action === 'oversightEvent' ||
       message.action === 'tabStatusChanged' ||
       message.action === 'targetCreated' ||
       message.action === 'targetDestroyed' ||

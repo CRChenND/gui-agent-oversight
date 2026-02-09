@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { BrowserAgent } from "../agent/AgentCore";
+import type { OversightEvent } from "../oversight/types";
 
 // Provider types
 export type ProviderType = 'anthropic' | 'openai' | 'gemini' | 'ollama' | 'openai-compatible' | 'openrouter';
@@ -200,6 +201,15 @@ export interface AgentStatusUpdateMessage {
   windowId?: number;
 }
 
+export interface OversightEventMessage {
+  action: 'oversightEvent';
+  content: {
+    event: OversightEvent;
+  };
+  tabId?: number;
+  windowId?: number;
+}
+
 export type BackgroundMessage = 
   | ExecutePromptMessage
   | CancelExecutionMessage
@@ -211,6 +221,7 @@ export type BackgroundMessage =
   // | TokenUsageUpdatedMessage
   | UpdateOutputMessage
   | ProviderConfigChangedMessage
+  | OversightEventMessage
   | ForceResetPlaywrightMessage
   | RequestApprovalMessage
   | CheckAgentStatusMessage;
@@ -302,7 +313,8 @@ export type UIMessage =
   | PageDialogMessage
   | PageConsoleMessage
   | PageErrorMessage
-  | AgentStatusUpdateMessage;
+  | AgentStatusUpdateMessage
+  | OversightEventMessage;
 
 // State types
 export interface TabState {

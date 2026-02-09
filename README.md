@@ -1,31 +1,79 @@
-# gui-agent-oversight
+# GUI Agent Oversight Platform
 
-Browser extension for natural-language browser automation with human oversight.
+`gui-agent-oversight` is a Chrome Extension (Manifest V3) for testing and comparing **oversight mechanisms** for GUI agents.
 
-This project builds a Chrome Extension (Manifest V3) with:
-- a side panel chat UI
-- an options page for provider/config management
-- a background agent controller that executes browser tools
-- optional approval flow for sensitive actions
+It provides a shared runtime for browser automation plus a pluggable oversight layer, so you can:
+- run the same agent tasks under different oversight policies
+- turn mechanisms on/off from a registry-driven settings UI
+- add new mechanisms with minimal changes to core agent code
 
-The extension name in `manifest.json` is currently `IntentGuard`.
+The current extension name in `public/manifest.json` is `IntentGuard`.
 
-## Features
+## What This Platform Includes
 
-- Natural language browser control through tool execution
-- Multiple model provider support (Anthropic, OpenAI, Gemini, Ollama, OpenAI-compatible endpoints, OpenRouter)
-- Side panel workflow for prompt, streaming output, screenshots, and status
-- Tab-aware automation and recovery logic when debug sessions are detached
-- Optional approval requests before executing risky actions
+- Side panel chat UI for prompt execution and streamed agent output
+- Background controller for tab/session lifecycle and tool execution
+- Oversight event pipeline between runtime and UI
+- Registry-based oversight mechanism settings
+- Optional approval flow for risky actions
+- Multi-provider model support (Anthropic, OpenAI, Gemini, Ollama, OpenAI-compatible, OpenRouter)
 
-## Tech Stack
+## Core Oversight Architecture
 
-- TypeScript
-- React
-- Vite
-- Tailwind CSS + DaisyUI
-- `playwright-crx` for browser automation integration
-- Chrome Extension APIs (MV3)
+### 1. Oversight Event Contract
+
+Shared event types are defined in `src/oversight/types.ts`.
+
+```ts
+export type OversightEvent =
+  | { kind: 'tool_started'; ... }
+  | { kind: 'run_completed'; ... }
+  | { kind: 'run_cancelled'; ... }
+  | { kind: 'run_failed'; ... };
+```
+
+Background publishes these events as runtime messages (`action: 'oversightEvent'`).
+
+### 2. Mechanism Registry
+
+Mechanisms are declared in `src/oversight/registry.ts`.
+
+Each mechanism has:
+- stable ID
+- UI title + description
+- storage key
+- default enabled state
+- optional legacy keys for migration compatibility
+
+The options page reads this registry and renders toggles automatically.
+
+### 3. Side Panel Mechanism Reducers
+
+Side-panel mechanism logic lives in:
+- `src/sidepanel/oversight/mechanismManager.ts`
+- `src/sidepanel/hooks/useOversightMechanisms.ts`
+
+Each mechanism is implemented as a reducer-like unit that consumes `OversightEvent` and updates UI state.
+
+### 4. Background Oversight Manager
+
+Background oversight integration is in `src/background/oversightManager.ts`.
+
+It translates runtime lifecycle points (tool start, completion, cancellation, failure) into standardized `OversightEvent`s and handles optional overlays.
+
+## Repository Structure
+
+```text
+public/                         Static extension assets (manifest/html/icons)
+scripts/                        Build helper scripts
+src/agent/                      Agent runtime, tools, execution engine
+src/background/                 Service worker, tab management, oversight event emission
+src/models/                     Model/provider adapters
+src/options/                    Options UI (registry-driven mechanism toggles)
+src/oversight/                  Shared oversight contracts and registry
+src/sidepanel/                  Side panel UI + oversight mechanism reducers
+src/tracking/                   Screenshot tracking utilities
+```
 
 ## Requirements
 
@@ -33,42 +81,43 @@ The extension name in `manifest.json` is currently `IntentGuard`.
 - npm
 - Google Chrome (for loading unpacked extension)
 
-## Installation
+## Install
 
 ```bash
 npm install
 ```
 
-## Development
+## Run in Development
 
-Start watch build:
+1. Start extension build watch:
 
 ```bash
 npm run dev
 ```
 
-This writes extension artifacts to `dist/` and keeps rebuilding on file changes.
+2. Load extension in Chrome:
+- Open `chrome://extensions`
+- Enable `Developer mode`
+- Click `Load unpacked`
+- Select the `dist/` directory
 
-In Chrome:
-1. Open `chrome://extensions`
-2. Enable `Developer mode`
-3. Click `Load unpacked`
-4. Select the `dist/` folder
-5. Click refresh on the extension card after rebuilds
+3. After code changes:
+- Keep `npm run dev` running
+- Click refresh on the extension card in `chrome://extensions`
 
-Optional UI-only dev server:
+Optional UI-only Vite server:
 
 ```bash
 npm run dev:serve
 ```
 
-## Build
+## Build for Distribution
 
 ```bash
 npm run build
 ```
 
-Build output is generated in `dist/`, including copied static files from `public/`.
+This runs TypeScript compile + Vite build and copies static assets to `dist/`.
 
 ## Lint
 
@@ -77,31 +126,92 @@ npm run lint
 npm run lint:fix
 ```
 
-## Project Structure
+## Add a New Oversight Mechanism
 
-```text
-public/                 Extension static assets (manifest, html, icons)
-scripts/                Build helper scripts
-src/background/         MV3 service worker, message routing, tab/session lifecycle
-src/agent/              Agent runtime, execution engine, tools, prompt/global-knowledge management
-src/sidepanel/          Side panel React UI
-src/options/            Options page React UI
-src/models/             Provider adapters and model definitions
-src/tracking/           Screenshot tracking utilities
+This is the main extension point of the platform.
+
+### Step 1: Register the mechanism
+
+Edit `src/oversight/registry.ts`:
+- add a new mechanism ID constant
+- extend `OversightMechanismId` and `OversightMechanismSettings`
+- add one entry to `OVERSIGHT_MECHANISM_REGISTRY`
+
+Minimal example:
+
+```ts
+export const RISK_SCORE_MECHANISM_ID = 'risk-score' as const;
+
+// add to OversightMechanismId and OversightMechanismSettings
+
+OVERSIGHT_MECHANISM_REGISTRY.push({
+  id: RISK_SCORE_MECHANISM_ID,
+  title: 'Enable Risk Score',
+  description: 'Show per-step risk scoring in the side panel.',
+  storageKey: 'oversight.riskScore.enabled',
+  defaultEnabled: true,
+});
 ```
 
-## Provider Configuration
+No manual options UI wiring is needed after this. The toggle is auto-rendered.
 
-Open the extension options page and configure your provider credentials/model settings.
+### Step 2: Extend the event contract (if needed)
 
-On first install, options may open automatically. You can also open options from the extension page.
+If your mechanism needs new runtime signals, extend `OversightEvent` in `src/oversight/types.ts`.
 
-## Security and Permissions
+Then emit the new event from background integration points (usually via `src/background/oversightManager.ts`).
 
-This extension requests high-privilege permissions (`debugger`, `tabs`, `activeTab`, host permissions on all URLs) to automate browser actions.
+### Step 3: Implement side-panel reducer logic
 
-Review permissions and run only in trusted environments.
+In `src/sidepanel/oversight/mechanismManager.ts`, add a mechanism reducer:
 
-## License
+```ts
+const riskScoreMechanism: OversightMechanism = {
+  id: RISK_SCORE_MECHANISM_ID,
+  reduce: (state, event, ctx) => {
+    // transform oversight events into UI state
+    return state;
+  },
+};
+```
 
-See `LICENSE`.
+Add it to the `mechanisms` list.
+
+### Step 4: Render mechanism UI (optional)
+
+If the mechanism has visible UI, add component(s) under `src/sidepanel/components/` and render from `src/sidepanel/SidePanel.tsx` using state exposed by `useOversightMechanisms`.
+
+### Step 5: Verify
+
+```bash
+npm run build
+```
+
+Then reload extension and test mechanism toggling in Options.
+
+## Existing Integration Interfaces
+
+### Background -> UI event message
+
+`useChromeMessaging` expects:
+
+```ts
+{ action: 'oversightEvent', content: { event: OversightEvent }, tabId?, windowId? }
+```
+
+### Side-panel mechanism contract
+
+Mechanisms follow this reducer contract in `mechanismManager.ts`:
+
+```ts
+interface OversightMechanism {
+  id: OversightMechanismId;
+  reduce: (state: OversightUiState, event: OversightEvent, ctx: OversightContext) => OversightUiState;
+}
+```
+
+## Security Notes
+
+This extension uses high-privilege capabilities (`debugger`, `tabs`, `activeTab`, broad host permissions) to automate real browser actions.
+
+Use only in trusted environments and with trusted model/provider configuration.

@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { ChromeMessage } from '../types';
+import type { OversightEvent } from '../../oversight/types';
 
 interface UseChromeMessagingProps {
   tabId: number | null;
@@ -26,6 +27,7 @@ interface UseChromeMessagingProps {
   onPageError?: (tabId: number, error: string) => void;
   onAgentStatusUpdate?: (status: string, lastHeartbeat: number) => void;
   onAttentionUpdate?: (content: any) => void;
+  onOversightEvent?: (event: OversightEvent) => void;
 }
 
 export const useChromeMessaging = ({
@@ -52,7 +54,8 @@ export const useChromeMessaging = ({
   onPageConsole,
   onPageError,
   onAgentStatusUpdate,
-  onAttentionUpdate
+  onAttentionUpdate,
+  onOversightEvent
 }: UseChromeMessagingProps) => {
 
   // Listen for updates from the background script
@@ -109,8 +112,28 @@ export const useChromeMessaging = ({
         onUpdateScreenshot(message.content);
       } else if (message.action === 'processingComplete') {
         onProcessingComplete();
+      } else if (message.action === 'oversightEvent' && onOversightEvent && message.content?.event) {
+        onOversightEvent(message.content.event);
       } else if (message.action === 'attentionUpdate' && onAttentionUpdate) {
         onAttentionUpdate(message.content);
+      } else if (message.action === 'attentionUpdate' && onOversightEvent && message.content) {
+        const content = message.content;
+        if (content.state === 'active' && typeof content.toolName === 'string') {
+          onOversightEvent({
+            kind: 'tool_started',
+            timestamp: typeof content.timestamp === 'number' ? content.timestamp : Date.now(),
+            toolName: content.toolName,
+            toolInput: typeof content.toolInput === 'string' ? content.toolInput : '',
+            focusType: content.focusType || 'none',
+            focusLabel: typeof content.focusLabel === 'string' ? content.focusLabel : 'Focus updated'
+          });
+        } else {
+          onOversightEvent({
+            kind: 'run_completed',
+            timestamp: typeof content.timestamp === 'number' ? content.timestamp : Date.now(),
+            focusLabel: typeof content.focusLabel === 'string' ? content.focusLabel : 'Task completed'
+          });
+        }
       } else if (message.action === 'requestApproval') {
         // Handle approval requests
         // Check if the fields exist rather than if they're truthy
@@ -228,7 +251,8 @@ export const useChromeMessaging = ({
     onPageConsole,
     onPageError,
     onAgentStatusUpdate,
-    onAttentionUpdate
+    onAttentionUpdate,
+    onOversightEvent
   ]);
 
   const executePrompt = (prompt: string) => {

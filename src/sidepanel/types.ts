@@ -1,3 +1,5 @@
+import type { OversightEvent } from '../oversight/types';
+
 // Define message types
 export type MessageType = 'system' | 'llm' | 'screenshot';
 
@@ -35,6 +37,7 @@ export interface ChromeMessage {
   attentionState?: 'active' | 'idle';
   focusType?: 'selector' | 'coordinates' | 'url' | 'text' | 'none';
   focusLabel?: string;
+  event?: OversightEvent;
   
   // Tab replacement properties
   oldTabId?: number;

@@ -1,20 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import { ConfigManager } from '../background/configManager';
+import {
+  AGENT_FOCUS_MECHANISM_ID,
+  TASK_GRAPH_MECHANISM_ID,
+  createDefaultOversightMechanismSettings,
+  getOversightStorageQueryDefaults,
+  mapStorageToOversightSettings,
+} from '../oversight/registry';
 import { ApprovalRequest } from './components/ApprovalRequest';
+import { AgentAttentionBar } from './components/AgentAttentionBar';
 import { MessageDisplay } from './components/MessageDisplay';
 import { OutputHeader } from './components/OutputHeader';
 import { PromptForm } from './components/PromptForm';
 import { ProviderSelector } from './components/ProviderSelector';
-import { TaskExecutionGraph, TaskNode } from './components/TaskExecutionGraph';
-import { TabStatusBar } from './components/TabStatusBar';
+import { TaskExecutionGraph } from './components/TaskExecutionGraph';
 import { useChromeMessaging } from './hooks/useChromeMessaging';
 import { useMessageManagement } from './hooks/useMessageManagement';
+import { useOversightMechanisms } from './hooks/useOversightMechanisms';
 import { useTabManagement } from './hooks/useTabManagement';
 
 export function SidePanel() {
-  const [taskNodes, setTaskNodes] = useState<TaskNode[]>([]);
-  const [isTaskGraphExpanded, setIsTaskGraphExpanded] = useState(false);
-  const [enableTaskGraph, setEnableTaskGraph] = useState(true);
+  const [mechanismSettings, setMechanismSettings] = useState(createDefaultOversightMechanismSettings);
 
   // State for tab status
   const [tabStatus, setTabStatus] = useState<'attached' | 'detached' | 'unknown' | 'running' | 'idle' | 'error'>('unknown');
@@ -38,15 +44,8 @@ export function SidePanel() {
       setHasConfiguredProviders(providers.length > 0);
     };
     const loadFeatureFlags = async () => {
-      const { enableTaskGraph: taskGraphEnabled } = await chrome.storage.sync.get({
-        enableTaskGraph: true,
-      });
-      const enabled = taskGraphEnabled !== false;
-      setEnableTaskGraph(enabled);
-      if (!enabled) {
-        setTaskNodes([]);
-        setIsTaskGraphExpanded(false);
-      }
+      const result = await chrome.storage.sync.get(getOversightStorageQueryDefaults());
+      setMechanismSettings(mapStorageToOversightSettings(result as Record<string, unknown>));
     };
 
     checkProviders();
@@ -71,7 +70,6 @@ export function SidePanel() {
   const {
     tabId,
     windowId,
-    tabTitle,
     setTabTitle
   } = useTabManagement();
 
@@ -114,6 +112,22 @@ export function SidePanel() {
 
     return '';
   };
+
+  const {
+    taskNodes,
+    isTaskGraphExpanded,
+    setTaskGraphExpanded,
+    agentFocus,
+    handleOversightEvent,
+    resetRunState,
+    clearOversightState,
+  } = useOversightMechanisms({
+    mechanismSettings,
+    getLatestThinking,
+  });
+
+  const enableAgentFocus = mechanismSettings[AGENT_FOCUS_MECHANISM_ID];
+  const enableTaskGraph = mechanismSettings[TASK_GRAPH_MECHANISM_ID];
 
   // Heartbeat interval for checking agent status
   useEffect(() => {
@@ -205,12 +219,6 @@ export function SidePanel() {
       completeStreaming();
       // Also update the tab status to idle to ensure the UI indicator changes
       setTabStatus('idle');
-      if (enableTaskGraph) {
-        setIsTaskGraphExpanded(false);
-        setTaskNodes(prev => prev.map(node => (
-          node.status === 'active' ? { ...node, status: 'completed' } : node
-        )));
-      }
     },
     onRequestApproval: (request) => {
       // Add the request to the list
@@ -233,11 +241,11 @@ export function SidePanel() {
       // Add a system message to indicate the tab change
       addSystemMessage(`Switched to tab: ${title} (${url})`);
     },
-    onPageDialog: (tabId, dialogInfo) => {
+    onPageDialog: (_tabId, dialogInfo) => {
       // Add a system message about the dialog
       addSystemMessage(`📢 Dialog: ${dialogInfo.type} - ${dialogInfo.message}`);
     },
-    onPageError: (tabId, error) => {
+    onPageError: (_tabId, error) => {
       // Add a system message about the error
       addSystemMessage(`❌ Page Error: ${error}`);
     },
@@ -261,41 +269,15 @@ export function SidePanel() {
       }
 
       if (status === 'error') {
-        if (enableTaskGraph) {
-          setIsTaskGraphExpanded(false);
-          setTaskNodes(prev => {
-            const next = [...prev];
-            for (let i = next.length - 1; i >= 0; i--) {
-              if (next[i].status === 'active') {
-                next[i] = { ...next[i], status: 'error' };
-                break;
-              }
-            }
-            return next;
-          });
-        }
-      }
-    },
-    onAttentionUpdate: (content) => {
-      if (!content || !enableTaskGraph) return;
-      if (content.state === 'active' && typeof content.toolName === 'string') {
-        const thinking = getLatestThinking();
-        setTaskNodes(prev => {
-          const next: TaskNode[] = prev.map(node => (
-            node.status === 'active' ? { ...node, status: 'completed' as const } : node
-          ));
-          next.push({
-            id: `${Date.now()}-${content.toolName}`,
-            toolName: content.toolName,
-            focusLabel: typeof content.focusLabel === 'string' ? content.focusLabel : 'Focus updated',
-            thinking,
-            status: 'active' as const,
-            timestamp: typeof content.timestamp === 'number' ? content.timestamp : Date.now()
-          });
-          return next;
+        handleOversightEvent({
+          kind: 'run_failed',
+          timestamp: Date.now(),
+          focusLabel: 'Execution failed',
+          error: 'Agent status error',
         });
       }
-    }
+    },
+    onOversightEvent: handleOversightEvent
   });
 
   // Handle form submission
@@ -303,10 +285,7 @@ export function SidePanel() {
     setIsProcessing(true);
     // Update the tab status to running
     setTabStatus('running');
-    if (enableTaskGraph) {
-      setTaskNodes([]);
-      setIsTaskGraphExpanded(true);
-    }
+    resetRunState();
 
     // Add a system message to indicate a new prompt
     addSystemMessage(`New prompt: "${prompt}"`);
@@ -319,19 +298,12 @@ export function SidePanel() {
       setIsProcessing(false);
       // Update the tab status to error
       setTabStatus('error');
-      if (enableTaskGraph) {
-        setIsTaskGraphExpanded(false);
-        setTaskNodes(prev => {
-          const next = [...prev];
-          for (let i = next.length - 1; i >= 0; i--) {
-            if (next[i].status === 'active') {
-              next[i] = { ...next[i], status: 'error' };
-              break;
-            }
-          }
-          return next;
-        });
-      }
+      handleOversightEvent({
+        kind: 'run_failed',
+        timestamp: Date.now(),
+        focusLabel: 'Execution failed',
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 
@@ -356,20 +328,18 @@ export function SidePanel() {
 
     // Update the tab status to idle
     setTabStatus('idle');
-    if (enableTaskGraph) {
-      setIsTaskGraphExpanded(false);
-      setTaskNodes(prev => prev.map(node => (
-        node.status === 'active' ? { ...node, status: 'cancelled' } : node
-      )));
-    }
+    handleOversightEvent({
+      kind: 'run_cancelled',
+      timestamp: Date.now(),
+      focusLabel: 'Execution cancelled',
+    });
   };
 
   // Handle clearing history
   const handleClearHistory = () => {
     clearMessages();
     clearHistory();
-    setTaskNodes([]);
-    setIsTaskGraphExpanded(false);
+    clearOversightState();
   };
 
 
@@ -398,11 +368,19 @@ export function SidePanel() {
                 onClearHistory={handleClearHistory}
                 isProcessing={isProcessing}
               />
+              {enableAgentFocus && (
+                <AgentAttentionBar
+                  state={agentFocus.state}
+                  toolName={agentFocus.toolName}
+                  focusLabel={agentFocus.focusLabel}
+                  updatedAt={agentFocus.updatedAt}
+                />
+              )}
               {enableTaskGraph && (
                 <TaskExecutionGraph
                   nodes={taskNodes}
                   expanded={isTaskGraphExpanded}
-                  onToggle={() => setIsTaskGraphExpanded(prev => !prev)}
+                  onToggle={() => setTaskGraphExpanded(!isTaskGraphExpanded)}
                 />
               )}
               <div

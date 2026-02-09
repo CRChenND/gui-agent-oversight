@@ -9,6 +9,14 @@ import {
   geminiDefaultModelId,
   ollamaDefaultModelId
 } from '../models/models';
+import {
+  OVERSIGHT_MECHANISM_REGISTRY,
+  buildOversightStoragePatch,
+  createDefaultOversightMechanismSettings,
+  getOversightStorageQueryDefaults,
+  mapStorageToOversightSettings,
+  type OversightMechanismId,
+} from '../oversight/registry';
 
 // Import components
 import { Model } from './components/ModelList';
@@ -64,9 +72,8 @@ export function Options() {
   const [newModel, setNewModel] = useState({ id: '', name: '', isReasoningModel: false });
   // Global always-on knowledge
   const [globalKnowledgeText, setGlobalKnowledgeText] = useState('');
-  // Feature toggles
-  const [enableAgentFocus, setEnableAgentFocus] = useState(true);
-  const [enableTaskGraph, setEnableTaskGraph] = useState(true);
+  // Oversight mechanism toggles
+  const [oversightSettings, setOversightSettings] = useState(createDefaultOversightMechanismSettings);
 
   // Load saved settings when component mounts
   useEffect(() => {
@@ -95,8 +102,7 @@ export function Options() {
       openrouterBaseUrl: 'https://openrouter.ai/api/v1',
       openrouterModelId: '',
       globalKnowledgeText: '',
-      enableAgentFocus: true,
-      enableTaskGraph: true,
+      ...getOversightStorageQueryDefaults(),
     }, (result) => {
       
       setProvider(result.provider);
@@ -123,8 +129,7 @@ export function Options() {
       setOpenrouterBaseUrl(result.openrouterBaseUrl || 'https://openrouter.ai/api/v1');
       setOpenrouterModelId(result.openrouterModelId || '');
       setGlobalKnowledgeText(result.globalKnowledgeText || '');
-      setEnableAgentFocus(result.enableAgentFocus ?? true);
-      setEnableTaskGraph(result.enableTaskGraph ?? true);
+      setOversightSettings(mapStorageToOversightSettings(result as Record<string, unknown>));
     });
   }, []);
 
@@ -158,8 +163,7 @@ export function Options() {
       openrouterBaseUrl,
       openrouterModelId,
       globalKnowledgeText,
-      enableAgentFocus,
-      enableTaskGraph,
+      ...buildOversightStoragePatch(oversightSettings),
     }, () => {
       
       setIsSaving(false);
@@ -175,6 +179,13 @@ export function Options() {
         setSaveStatus('');
       }, 3000);
     });
+  };
+
+  const setOversightMechanismEnabled = (mechanismId: OversightMechanismId, enabled: boolean) => {
+    setOversightSettings((prev) => ({
+      ...prev,
+      [mechanismId]: enabled,
+    }));
   };
 
   // ollama model list operations
@@ -291,10 +302,9 @@ export function Options() {
       handleEditModel={handleEditModel}
       globalKnowledgeText={globalKnowledgeText}
       setGlobalKnowledgeText={setGlobalKnowledgeText}
-      enableAgentFocus={enableAgentFocus}
-      setEnableAgentFocus={setEnableAgentFocus}
-      enableTaskGraph={enableTaskGraph}
-      setEnableTaskGraph={setEnableTaskGraph}
+      oversightMechanisms={OVERSIGHT_MECHANISM_REGISTRY}
+      oversightSettings={oversightSettings}
+      setOversightMechanismEnabled={setOversightMechanismEnabled}
     />
   );
 }

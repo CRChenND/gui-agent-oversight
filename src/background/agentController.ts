@@ -5,7 +5,12 @@ import { ExecutionCallbacks } from "../agent/ExecutionEngine";
 import { contextTokenCount } from "../agent/TokenManager";
 import { ScreenshotManager } from "../tracking/screenshotManager";
 import { ConfigManager } from "./configManager";
-import { clearAttentionOverlay, inferAttentionTarget, renderAttentionOverlay } from "./attentionTracker";
+import { handleRunCancelled, handleRunCompleted, handleRunFailed, handleToolStarted } from "./oversightManager";
+import {
+  AGENT_FOCUS_MECHANISM_ID,
+  getOversightStorageQueryDefaults,
+  mapStorageToOversightSettings,
+} from "../oversight/registry";
 import { 
   resetStreamingState, 
   addToStreamingBuffer, 
@@ -442,20 +447,13 @@ export function cancelExecution(tabId?: number): void {
     content: 'Cancelling execution...'
   }, tabId);
 
-  sendUIMessage('attentionUpdate', {
-    state: 'idle',
-    toolName: null,
-    focusType: 'none',
-    focusLabel: 'Execution cancelled',
-    timestamp: Date.now()
-  }, tabId);
-
   const tabState = getTabState(tabId);
-  if (tabState?.page) {
-    void clearAttentionOverlay(tabState.page).catch((error) => {
-      logWithTimestamp(`Failed to clear attention overlay on cancel: ${error instanceof Error ? error.message : String(error)}`, 'warn');
-    });
-  }
+  void handleRunCancelled({
+    tabId,
+    windowId,
+    page: tabState?.page,
+    focusLabel: 'Execution cancelled'
+  });
   
   // Immediately notify UI that processing is complete
   sendUIMessage('processingComplete', null, tabId);
@@ -639,9 +637,9 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
     
     // Always enable streaming
     const useStreaming = true;
-    const { enableAgentFocus } = await chrome.storage.sync.get({
-      enableAgentFocus: true
-    });
+    const mechanismStorage = await chrome.storage.sync.get(getOversightStorageQueryDefaults());
+    const mechanismSettings = mapStorageToOversightSettings(mechanismStorage as Record<string, unknown>);
+    const enableAgentFocus = mechanismSettings[AGENT_FOCUS_MECHANISM_ID];
     
     // Reset streaming buffer and segment ID
     resetStreamingState();
@@ -813,21 +811,14 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
         }
       },
       onToolStart: (toolName, toolInput) => {
-        const attentionTarget = inferAttentionTarget(toolName, toolInput);
-        sendUIMessage('attentionUpdate', {
-          state: 'active',
+        void handleToolStarted({
+          tabId: targetTabId,
+          windowId: updatedTabState.windowId,
+          page: updatedTabState.page,
           toolName,
           toolInput,
-          focusType: attentionTarget.type,
-          focusLabel: attentionTarget.label,
-          timestamp: Date.now()
-        }, targetTabId);
-
-        if (enableAgentFocus && updatedTabState.page) {
-          void renderAttentionOverlay(updatedTabState.page, attentionTarget).catch((error) => {
-            logWithTimestamp(`Failed to render attention overlay: ${error instanceof Error ? error.message : String(error)}`, 'warn');
-          });
-        }
+          enableAgentFocus,
+        });
 
         if (useStreaming) {
           // Get the window ID for this tab
@@ -838,22 +829,14 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
         }
       },
       onComplete: () => {
-        sendUIMessage('attentionUpdate', {
-          state: 'idle',
-          toolName: null,
-          focusType: 'none',
-          focusLabel: 'Task completed',
-          timestamp: Date.now()
-        }, targetTabId);
-
-        if (updatedTabState.page) {
-          void clearAttentionOverlay(updatedTabState.page).catch((error) => {
-            logWithTimestamp(`Failed to clear attention overlay: ${error instanceof Error ? error.message : String(error)}`, 'warn');
-          });
-        }
-
         // Get the window ID for this tab
         const windowId = getWindowForTab(targetTabId);
+        void handleRunCompleted({
+          tabId: targetTabId,
+          windowId,
+          page: updatedTabState.page,
+          focusLabel: 'Task completed'
+        });
         
         // Finalize the last segment if needed FIRST
         // This ensures the final LLM output is not lost
@@ -916,6 +899,16 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
     );
   } catch (error) {
     const errorMessage = handleError(error, 'executing prompt');
+    if (tabId) {
+      const tabState = getTabState(tabId);
+      void handleRunFailed({
+        tabId,
+        windowId: getWindowForTab(tabId),
+        page: tabState?.page,
+        focusLabel: 'Execution failed',
+        error: errorMessage
+      });
+    }
     sendUIMessage('updateOutput', {
       type: 'system',
       content: `Error: ${errorMessage}`

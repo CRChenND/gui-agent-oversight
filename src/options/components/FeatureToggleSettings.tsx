@@ -1,17 +1,16 @@
 import React from 'react';
+import type { OversightMechanismDefinition, OversightMechanismId, OversightMechanismSettings } from '../../oversight/registry';
 
 interface FeatureToggleSettingsProps {
-  enableAgentFocus: boolean;
-  setEnableAgentFocus: (value: boolean) => void;
-  enableTaskGraph: boolean;
-  setEnableTaskGraph: (value: boolean) => void;
+  mechanisms: OversightMechanismDefinition[];
+  settings: OversightMechanismSettings;
+  onToggle: (mechanismId: OversightMechanismId, value: boolean) => void;
 }
 
 export function FeatureToggleSettings({
-  enableAgentFocus,
-  setEnableAgentFocus,
-  enableTaskGraph,
-  setEnableTaskGraph
+  mechanisms,
+  settings,
+  onToggle
 }: FeatureToggleSettingsProps) {
   return (
     <div className="border rounded-lg p-4 mb-4">
@@ -21,35 +20,20 @@ export function FeatureToggleSettings({
       </p>
 
       <div className="space-y-3">
-        <label className="flex items-center justify-between gap-3">
-          <div>
-            <div className="font-medium">Enable Agent Focus</div>
-            <div className="text-xs text-base-content/70">
-              Show page attention overlay for the current tool target.
+        {mechanisms.map((mechanism) => (
+          <label key={mechanism.id} className="flex items-center justify-between gap-3">
+            <div>
+              <div className="font-medium">{mechanism.title}</div>
+              <div className="text-xs text-base-content/70">{mechanism.description}</div>
             </div>
-          </div>
-          <input
-            type="checkbox"
-            className="toggle toggle-primary"
-            checked={enableAgentFocus}
-            onChange={(e) => setEnableAgentFocus(e.target.checked)}
-          />
-        </label>
-
-        <label className="flex items-center justify-between gap-3">
-          <div>
-            <div className="font-medium">Enable Task Graph</div>
-            <div className="text-xs text-base-content/70">
-              Show step-by-step task nodes and status colors in the side panel.
-            </div>
-          </div>
-          <input
-            type="checkbox"
-            className="toggle toggle-primary"
-            checked={enableTaskGraph}
-            onChange={(e) => setEnableTaskGraph(e.target.checked)}
-          />
-        </label>
+            <input
+              type="checkbox"
+              className="toggle toggle-primary"
+              checked={settings[mechanism.id]}
+              onChange={(e) => onToggle(mechanism.id, e.target.checked)}
+            />
+          </label>
+        ))}
       </div>
     </div>
   );
