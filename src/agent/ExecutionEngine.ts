@@ -4,6 +4,8 @@ import { PromptManager } from "./PromptManager";
 import { trimHistory } from "./TokenManager";
 import { ToolManager } from "./ToolManager";
 import { requestApproval } from "./approvalManager";
+import { emitAgentThinking } from "./thinking/thinkingEmitter";
+import { buildThinkingSummary, createStepId } from "./thinking/thinkingSummary";
 
 // Constants
 const MAX_STEPS = 50;            // prevent infinite loops
@@ -18,10 +20,10 @@ export interface ExecutionCallbacks {
   onToolOutput: (s: string) => void;
   onComplete: () => void;
   onError?: (error: any) => void;
-  onToolStart?: (toolName: string, toolInput: string) => void;
-  onToolEnd?: (result: string) => void;
-  onToolError?: (toolName: string, toolInput: string, error: string) => void;
-  onRiskSignal?: (toolName: string, payload: Record<string, unknown>) => void;
+  onToolStart?: (stepId: string, toolName: string, toolInput: string) => void;
+  onToolEnd?: (stepId: string, result: string) => void;
+  onToolError?: (stepId: string, toolName: string, toolInput: string, error: string) => void;
+  onRiskSignal?: (stepId: string, toolName: string, payload: Record<string, unknown>) => void;
   onSegmentComplete?: (segment: string) => void;
   onFallbackStarted?: () => void;
 }
@@ -233,11 +235,6 @@ export class ExecutionEngine {
             adaptedCallbacks.onSegmentComplete(textBeforeToolCall);
           }
 
-          // Signal that a tool call is starting
-          if (adaptedCallbacks.onToolStart) {
-            adaptedCallbacks.onToolStart(toolName.trim(), toolInput.trim());
-          }
-
           // Clear the buffer
           streamBuffer = "";
 
@@ -432,6 +429,17 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             break;
           }
           const tool = this.toolManager.findTool(toolName);
+          const stepId = createStepId(step);
+          const thinking = buildThinkingSummary({
+            goal: prompt,
+            toolName,
+            toolInput,
+            accumulatedText,
+          });
+          emitAgentThinking(stepId, toolName, thinking);
+          if (adaptedCallbacks.onToolStart) {
+            adaptedCallbacks.onToolStart(stepId, toolName, toolInput);
+          }
 
           // Check if the LLM has marked this as requiring approval
           const requiresApproval = llmRequiresApproval;
@@ -460,7 +468,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
 
           if (requiresApproval) {
             if (adaptedCallbacks.onRiskSignal) {
-              adaptedCallbacks.onRiskSignal(toolName, {
+              adaptedCallbacks.onRiskSignal(stepId, toolName, {
                 signal: 'approval_required',
                 reason,
                 requiresApproval: true,
@@ -476,7 +484,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
 
             try {
               // Request approval from the user
-              const approved = await requestApproval(tabId, toolName, toolInput, reason);
+              const approved = await requestApproval(tabId, stepId, toolName, toolInput, reason);
 
               if (approved) {
                 // User approved, execute the tool
@@ -494,6 +502,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
                 } catch (toolError) {
                   if (adaptedCallbacks.onToolError) {
                     adaptedCallbacks.onToolError(
+                      stepId,
                       toolName,
                       toolInput,
                       toolError instanceof Error ? toolError.message : String(toolError)
@@ -510,6 +519,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               console.error(`Error in approval process:`, approvalError);
               if (adaptedCallbacks.onToolError) {
                 adaptedCallbacks.onToolError(
+                  stepId,
                   toolName,
                   toolInput,
                   approvalError instanceof Error ? approvalError.message : String(approvalError)
@@ -525,6 +535,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             } catch (toolError) {
               if (adaptedCallbacks.onToolError) {
                 adaptedCallbacks.onToolError(
+                  stepId,
                   toolName,
                   toolInput,
                   toolError instanceof Error ? toolError.message : String(toolError)
@@ -536,7 +547,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
 
           // Signal that tool execution is complete
           if (adaptedCallbacks.onToolEnd) {
-            adaptedCallbacks.onToolEnd(result);
+            adaptedCallbacks.onToolEnd(stepId, result);
           }
 
           // Check for cancellation after tool execution

@@ -9,6 +9,7 @@ import {
   type OversightMechanismSettings,
 } from '../../oversight/registry';
 import type { TaskNode, TaskNodeStatus } from '../components/TaskExecutionGraph';
+import type { AgentThinkingSummary } from '../../oversight/types';
 
 export interface OversightConfig {
   enabledMechanisms: OversightMechanismSettings;
@@ -28,6 +29,7 @@ export interface OversightUiState {
     expanded: boolean;
   };
   agentFocus: AgentFocusState;
+  thinkingByStepId: Record<string, AgentThinkingSummary>;
 }
 
 interface OversightContextInput {
@@ -59,10 +61,11 @@ const taskGraphMechanism: OversightMechanism = {
 
       const nextNodes = markActiveNodes(state.taskGraph.nodes, 'completed');
       nextNodes.push({
-        id: `${event.timestamp}-${event.toolName}`,
+        id: event.stepId,
+        stepId: event.stepId,
         toolName: event.toolName,
         focusLabel: event.focusLabel || 'Focus updated',
-        thinking: ctx.getLatestThinking(),
+        thinking: state.thinkingByStepId[event.stepId]?.rationale || state.thinkingByStepId[event.stepId]?.goal || ctx.getLatestThinking(),
         status: 'active',
         timestamp: event.timestamp,
       });
@@ -74,6 +77,27 @@ const taskGraphMechanism: OversightMechanism = {
         taskGraph: {
           nodes: cappedNodes,
           expanded: autoExpand ? true : state.taskGraph.expanded,
+        },
+      };
+    }
+
+    if (event.kind === 'agent_thinking') {
+      const nextNodes = state.taskGraph.nodes.map((node) => {
+        if (node.stepId !== event.stepId) return node;
+        return {
+          ...node,
+          thinking: event.thinking.rationale || event.thinking.goal,
+        };
+      });
+      return {
+        ...state,
+        taskGraph: {
+          ...state.taskGraph,
+          nodes: nextNodes,
+        },
+        thinkingByStepId: {
+          ...state.thinkingByStepId,
+          [event.stepId]: event.thinking,
         },
       };
     }
@@ -158,6 +182,7 @@ export function createInitialOversightState(): OversightUiState {
       focusLabel: 'Waiting for agent action',
       updatedAt: Date.now(),
     },
+    thinkingByStepId: {},
   };
 }
 

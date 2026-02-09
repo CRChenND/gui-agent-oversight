@@ -22,7 +22,13 @@ import { useMessageManagement } from './hooks/useMessageManagement';
 import { useOversightMechanisms } from './hooks/useOversightMechanisms';
 import { useTabManagement } from './hooks/useTabManagement';
 import { ReplayTimeline } from './replay/ReplayTimeline';
-import { ReplayController, type ReplaySessionSummary } from '../replay/replayController';
+import { StepInspector } from './stepInspector/StepInspector';
+import {
+  ReplayController,
+  type ReplaySessionSummary,
+  type StepInspectionData,
+  type TraceStepSummary,
+} from '../replay/replayController';
 
 export function SidePanel() {
   const [mechanismSettings, setMechanismSettings] = useState(createDefaultOversightMechanismSettings);
@@ -46,6 +52,9 @@ export function SidePanel() {
   const [isReplayMode, setIsReplayMode] = useState(false);
   const [replayCursor, setReplayCursor] = useState(-1);
   const [replayEventCount, setReplayEventCount] = useState(0);
+  const [traceSteps, setTraceSteps] = useState<TraceStepSummary[]>([]);
+  const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
+  const [stepInspection, setStepInspection] = useState<StepInspectionData | null>(null);
   const replayController = useMemo(() => new ReplayController(), []);
 
   // Check if any providers are configured when component mounts
@@ -161,6 +170,11 @@ export function SidePanel() {
     replayOversightEvents(visibleEvents);
     setReplayCursor(replayController.getCursor());
     setReplayEventCount(replayController.getReplayEvents().length);
+    const steps = replayController.getStepSummaries();
+    setTraceSteps(steps);
+    const currentStepId = replayController.getCurrentStepId();
+    setSelectedStepId(currentStepId);
+    setStepInspection(currentStepId ? replayController.getStepInspection(currentStepId) : null);
   }, [replayController, replayOversightEvents]);
 
   const handleLoadReplaySession = useCallback(async () => {
@@ -174,6 +188,9 @@ export function SidePanel() {
     setIsReplayMode(false);
     setReplayCursor(-1);
     setReplayEventCount(0);
+    setTraceSteps([]);
+    setSelectedStepId(null);
+    setStepInspection(null);
     replayOversightEvents([]);
   }, [replayOversightEvents]);
 
@@ -196,6 +213,16 @@ export function SidePanel() {
         const bounded = Math.min(position, events.length);
         replayController.jumpTo(events[bounded - 1].timestamp);
       }
+      applyReplayState();
+    },
+    [replayController, applyReplayState]
+  );
+
+  const handleSelectTraceStep = useCallback(
+    (stepId: string) => {
+      replayController.jumpToStep(stepId);
+      setSelectedStepId(stepId);
+      setStepInspection(replayController.getStepInspection(stepId));
       applyReplayState();
     },
     [replayController, applyReplayState]
@@ -513,16 +540,20 @@ export function SidePanel() {
           <ReplayTimeline
             sessions={replaySessions}
             selectedSessionId={selectedReplaySessionId}
-            isReplayMode={isReplayMode}
+            isTracePlaybackMode={isReplayMode}
             eventCount={replayEventCount}
             cursor={replayCursor}
+            steps={traceSteps}
+            selectedStepId={selectedStepId}
             onSelectSession={setSelectedReplaySessionId}
             onLoadSession={handleLoadReplaySession}
-            onExitReplay={handleExitReplay}
+            onExitTracePlayback={handleExitReplay}
             onStepBackward={handleReplayStepBackward}
             onStepForward={handleReplayStepForward}
             onJumpToPosition={handleReplayJumpToPosition}
+            onSelectStep={handleSelectTraceStep}
           />
+          {isReplayMode ? <StepInspector data={stepInspection} /> : null}
           {/* Display approval requests */}
           {approvalRequests.map(req => (
             <ApprovalRequest

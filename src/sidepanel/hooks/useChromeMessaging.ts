@@ -122,6 +122,10 @@ export const useChromeMessaging = ({
           onOversightEvent({
             kind: 'tool_started',
             timestamp: typeof content.timestamp === 'number' ? content.timestamp : Date.now(),
+            stepId:
+              typeof content.stepId === 'string'
+                ? content.stepId
+                : `legacy_step_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
             toolName: content.toolName,
             toolInput: typeof content.toolInput === 'string' ? content.toolInput : '',
             focusType: content.focusType || 'none',

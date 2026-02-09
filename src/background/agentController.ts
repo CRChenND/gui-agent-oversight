@@ -1,12 +1,14 @@
 // Import provider-specific types
 import Anthropic from "@anthropic-ai/sdk";
 import { BrowserAgent, createBrowserAgent, executePromptWithFallback, needsReinitialization } from "../agent/AgentCore";
+import { registerThinkingDispatch } from "../agent/thinking/thinkingEmitter";
 import { ExecutionCallbacks } from "../agent/ExecutionEngine";
 import { contextTokenCount } from "../agent/TokenManager";
 import { ScreenshotManager } from "../tracking/screenshotManager";
 import { ConfigManager } from "./configManager";
 import {
   handleRiskSignal,
+  handleAgentThinking,
   handleRunCancelled,
   handleRunCompleted,
   handleRunFailed,
@@ -681,7 +683,7 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
     }
     
     // Create callbacks for the agent
-    let currentToolCall: { toolName: string; toolInput: string } | null = null;
+    let currentToolCall: { stepId: string; toolName: string; toolInput: string } | null = null;
 
     const callbacks: ExecutionCallbacks = {
       onLlmChunk: (chunk) => {
@@ -747,15 +749,17 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
           content: content
         }, targetTabId);
       },
-      onToolEnd: (result) => {
+      onToolEnd: (stepId, result) => {
         const windowId = getWindowForTab(targetTabId);
         const toolName = currentToolCall?.toolName ?? 'unknown_tool';
         const toolInput = currentToolCall?.toolInput ?? '';
+        const resolvedStepId = currentToolCall?.stepId ?? stepId;
         currentToolCall = null;
 
         void handleToolCompleted({
           tabId: targetTabId,
           windowId,
+          stepId: resolvedStepId,
           toolName,
           toolInput,
           result,
@@ -794,22 +798,24 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
           // Not JSON or not a screenshot, ignore
         }
       },
-      onToolError: (toolName, toolInput, error) => {
+      onToolError: (stepId, toolName, toolInput, error) => {
         const windowId = getWindowForTab(targetTabId);
         currentToolCall = null;
         void handleToolFailed({
           tabId: targetTabId,
           windowId,
+          stepId,
           toolName,
           toolInput,
           error,
         });
       },
-      onRiskSignal: (toolName, signal) => {
+      onRiskSignal: (stepId, toolName, signal) => {
         const windowId = getWindowForTab(targetTabId);
         void handleRiskSignal({
           tabId: targetTabId,
           windowId,
+          stepId,
           toolName,
           signal,
         });
@@ -855,12 +861,13 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
           incrementSegmentId();
         }
       },
-      onToolStart: (toolName, toolInput) => {
-        currentToolCall = { toolName, toolInput };
+      onToolStart: (stepId, toolName, toolInput) => {
+        currentToolCall = { stepId, toolName, toolInput };
         void handleToolStarted({
           tabId: targetTabId,
           windowId: updatedTabState.windowId,
           page: updatedTabState.page,
+          stepId,
           toolName,
           toolInput,
           enableAgentFocus,
@@ -912,6 +919,17 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
         sendUIMessage('processingComplete', null, targetTabId, windowId);
       }
     };
+
+    registerThinkingDispatch((event) => {
+      if (event.kind !== 'agent_thinking') return;
+      void handleAgentThinking({
+        tabId: targetTabId,
+        windowId: updatedTabState.windowId,
+        stepId: event.stepId,
+        toolName: event.toolName,
+        thinking: event.thinking,
+      });
+    });
     
     // Get the agent for this window
     const updatedWindowId = updatedTabState.windowId;

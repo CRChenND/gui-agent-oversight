@@ -1,18 +1,21 @@
 import React from 'react';
-import type { ReplaySessionSummary } from '../../replay/replayController';
+import type { ReplaySessionSummary, TraceStepSummary } from '../../replay/replayController';
 
 interface ReplayTimelineProps {
   sessions: ReplaySessionSummary[];
   selectedSessionId: string;
-  isReplayMode: boolean;
+  isTracePlaybackMode: boolean;
   eventCount: number;
   cursor: number;
+  steps: TraceStepSummary[];
+  selectedStepId: string | null;
   onSelectSession: (sessionId: string) => void;
   onLoadSession: () => void;
-  onExitReplay: () => void;
+  onExitTracePlayback: () => void;
   onStepBackward: () => void;
   onStepForward: () => void;
   onJumpToPosition: (position: number) => void;
+  onSelectStep: (stepId: string) => void;
 }
 
 function formatTime(timestamp: number): string {
@@ -22,22 +25,25 @@ function formatTime(timestamp: number): string {
 export function ReplayTimeline({
   sessions,
   selectedSessionId,
-  isReplayMode,
+  isTracePlaybackMode,
   eventCount,
   cursor,
+  steps,
+  selectedStepId,
   onSelectSession,
   onLoadSession,
-  onExitReplay,
+  onExitTracePlayback,
   onStepBackward,
   onStepForward,
   onJumpToPosition,
+  onSelectStep,
 }: ReplayTimelineProps) {
   const position = cursor + 1;
 
   return (
     <div className="card bg-base-100 shadow-md p-3">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="font-semibold">Replay</span>
+        <span className="font-semibold">Trace Playback</span>
         <select
           className="select select-bordered select-sm"
           value={selectedSessionId}
@@ -53,7 +59,7 @@ export function ReplayTimeline({
         <button className="btn btn-sm btn-outline" onClick={onLoadSession} disabled={!selectedSessionId}>
           Load
         </button>
-        <button className="btn btn-sm" onClick={onExitReplay} disabled={!isReplayMode}>
+        <button className="btn btn-sm" onClick={onExitTracePlayback} disabled={!isTracePlaybackMode}>
           Exit
         </button>
       </div>
@@ -70,7 +76,7 @@ export function ReplayTimeline({
         </div>
       )}
 
-      {isReplayMode && (
+      {isTracePlaybackMode && (
         <div className="mt-3">
           <div className="flex items-center gap-2">
             <button className="btn btn-xs" onClick={onStepBackward} disabled={position <= 0}>
@@ -89,6 +95,20 @@ export function ReplayTimeline({
             value={position}
             onChange={(e) => onJumpToPosition(Number(e.target.value))}
           />
+          {steps.length > 0 ? (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {steps.map((step) => (
+                <button
+                  key={step.stepId}
+                  className={`btn btn-xs ${selectedStepId === step.stepId ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => onSelectStep(step.stepId)}
+                  title={`${step.toolName} @ ${formatTime(step.timestamp)}`}
+                >
+                  {step.toolName}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       )}
     </div>

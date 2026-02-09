@@ -4,6 +4,7 @@ export type TaskNodeStatus = 'active' | 'completed' | 'cancelled' | 'error';
 
 export interface TaskNode {
   id: string;
+  stepId: string;
   toolName: string;
   focusLabel: string;
   thinking?: string;

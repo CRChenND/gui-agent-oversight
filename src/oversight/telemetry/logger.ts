@@ -1,6 +1,10 @@
+import type { AgentThinkingSummary } from '../types';
+import { enforceThinkingSizeLimit, redactThinking, type TelemetryRedactionLevel } from './redaction';
 import type { OversightTelemetryEvent } from './types';
 
 const TELEMETRY_STORAGE_KEY = 'oversight.telemetry.sessions';
+const TELEMETRY_REDACTION_LEVEL_KEY = 'telemetry.redactionLevel';
+const TELEMETRY_REDACTION_MAX_TEXT_KEY = 'telemetry.redactionMaxTextLength';
 
 type TelemetryStorage = Record<string, OversightTelemetryEvent[]>;
 
@@ -36,24 +40,72 @@ export class OversightTelemetryLogger {
   private flushedCounts = new Map<string, number>();
   private isInitialized = false;
   private flushQueue: Promise<void> = Promise.resolve();
+  private redactionLevel: TelemetryRedactionLevel = 'normal';
+  private redactionMaxTextLength: number | undefined = 320;
 
   private async ensureInitialized(): Promise<void> {
     if (this.isInitialized) return;
 
-    const stored = await chrome.storage.local.get(TELEMETRY_STORAGE_KEY);
-    const normalized = normalizeTelemetryStorage(stored[TELEMETRY_STORAGE_KEY]);
+    const [localStored, syncStored] = await Promise.all([
+      chrome.storage.local.get(TELEMETRY_STORAGE_KEY),
+      chrome.storage.sync.get({
+        [TELEMETRY_REDACTION_LEVEL_KEY]: 'normal',
+        [TELEMETRY_REDACTION_MAX_TEXT_KEY]: 320,
+      }),
+    ]);
+    const normalized = normalizeTelemetryStorage(localStored[TELEMETRY_STORAGE_KEY]);
+
+    const maybeLevel = syncStored[TELEMETRY_REDACTION_LEVEL_KEY];
+    if (maybeLevel === 'strict' || maybeLevel === 'normal' || maybeLevel === 'off') {
+      this.redactionLevel = maybeLevel;
+    }
+
+    const maybeMaxLength = syncStored[TELEMETRY_REDACTION_MAX_TEXT_KEY];
+    if (typeof maybeMaxLength === 'number' && Number.isFinite(maybeMaxLength) && maybeMaxLength > 0) {
+      this.redactionMaxTextLength = maybeMaxLength;
+    }
 
     for (const [sessionId, events] of Object.entries(normalized)) {
-      this.sessionEvents.set(sessionId, [...events]);
-      this.flushedCounts.set(sessionId, events.length);
+      const sorted = [...events].sort((a, b) => a.timestamp - b.timestamp);
+      const pendingLocal = this.sessionEvents.get(sessionId) ?? [];
+      const merged = [...sorted, ...pendingLocal].sort((a, b) => a.timestamp - b.timestamp);
+      this.sessionEvents.set(sessionId, merged);
+      this.flushedCounts.set(sessionId, sorted.length);
     }
 
     this.isInitialized = true;
   }
 
+  private sanitizeThinkingPayload(event: OversightTelemetryEvent): OversightTelemetryEvent {
+    if (event.eventType !== 'agent_thinking') {
+      return event;
+    }
+
+    const maybeThinking = event.payload?.thinkingSummary as AgentThinkingSummary | undefined;
+    if (!maybeThinking || typeof maybeThinking.goal !== 'string') {
+      return event;
+    }
+
+    const redacted = redactThinking(maybeThinking, this.redactionLevel, this.redactionMaxTextLength);
+    const bounded = enforceThinkingSizeLimit(redacted);
+
+    return {
+      ...event,
+      payload: {
+        ...event.payload,
+        thinkingSummary: bounded,
+      },
+    };
+  }
+
   log(event: OversightTelemetryEvent): void {
+    if (!this.isInitialized) {
+      void this.ensureInitialized();
+    }
+
     const current = this.sessionEvents.get(event.sessionId) ?? [];
-    current.push(event);
+    current.push(this.sanitizeThinkingPayload(event));
+    current.sort((a, b) => a.timestamp - b.timestamp);
     this.sessionEvents.set(event.sessionId, current);
 
     this.flushQueue = this.flushQueue
@@ -77,7 +129,7 @@ export class OversightTelemetryLogger {
       if (pending.length === 0) continue;
 
       const existing = mergedStorage[sessionId] ?? [];
-      mergedStorage[sessionId] = existing.concat(pending);
+      mergedStorage[sessionId] = existing.concat(pending).sort((a, b) => a.timestamp - b.timestamp);
       this.flushedCounts.set(sessionId, events.length);
       this.sessionEvents.set(sessionId, mergedStorage[sessionId]);
     }
@@ -86,12 +138,45 @@ export class OversightTelemetryLogger {
   }
 
   getSessionEvents(sessionId: string): OversightTelemetryEvent[] {
-    return [...(this.sessionEvents.get(sessionId) ?? [])];
+    return [...(this.sessionEvents.get(sessionId) ?? [])].sort((a, b) => a.timestamp - b.timestamp);
+  }
+
+  getSessionEventsByStepId(sessionId: string, stepId: string): OversightTelemetryEvent[] {
+    return this.getSessionEvents(sessionId).filter((event) => event.payload?.stepId === stepId);
   }
 
   async exportSessionLog(sessionId: string): Promise<string> {
     await this.flush();
-    return JSON.stringify(this.getSessionEvents(sessionId), null, 2);
+    const events = this.getSessionEvents(sessionId);
+    const groupedByStepId: Record<string, OversightTelemetryEvent[]> = {};
+
+    for (const event of events) {
+      const stepId = typeof event.payload?.stepId === 'string' ? event.payload.stepId : '';
+      if (!stepId) continue;
+      groupedByStepId[stepId] = groupedByStepId[stepId] ?? [];
+      groupedByStepId[stepId].push(event);
+    }
+
+    return JSON.stringify(
+      {
+        sessionId,
+        exportedAt: Date.now(),
+        events: events.map((event) => ({
+          sessionId: event.sessionId,
+          stepId: typeof event.payload?.stepId === 'string' ? event.payload.stepId : undefined,
+          timestamp: event.timestamp,
+          eventType: event.eventType,
+          thinkingSummary: event.payload?.thinkingSummary,
+          mechanismState: event.payload?.mechanismState,
+          humanInteraction: event.source === 'human' ? event.payload : undefined,
+          source: event.source,
+          payload: event.payload,
+        })),
+        groupedByStepId,
+      },
+      null,
+      2
+    );
   }
 }
 

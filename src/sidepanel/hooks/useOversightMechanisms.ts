@@ -112,6 +112,7 @@ export function useOversightMechanisms({
         nodes: [],
         expanded: mechanismSettings[TASK_GRAPH_MECHANISM_ID],
       },
+      thinkingByStepId: {},
     }));
   }, [mechanismSettings]);
 
@@ -122,6 +123,7 @@ export function useOversightMechanisms({
         nodes: [],
         expanded: false,
       },
+      thinkingByStepId: {},
     }));
   }, []);
 

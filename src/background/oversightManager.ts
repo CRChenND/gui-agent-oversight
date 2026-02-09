@@ -1,7 +1,7 @@
 import type { Page } from 'playwright-crx';
 import { clearAttentionOverlay, inferAttentionTarget, renderAttentionOverlay } from './attentionTracker';
 import { sendUIMessage, logWithTimestamp } from './utils';
-import type { OversightEvent } from '../oversight/types';
+import type { AgentThinkingSummary, OversightEvent } from '../oversight/types';
 import { getOversightSessionManager } from '../oversight/session/sessionManager';
 import { getOversightTelemetryLogger } from '../oversight/telemetry/logger';
 import type { OversightTelemetryEvent } from '../oversight/telemetry/types';
@@ -38,17 +38,19 @@ export async function handleToolStarted(args: {
   tabId: number;
   windowId?: number;
   page?: Page;
+  stepId: string;
   toolName: string;
   toolInput: string;
   enableAgentFocus: boolean;
 }): Promise<void> {
-  const { tabId, windowId, page, toolName, toolInput, enableAgentFocus } = args;
+  const { tabId, windowId, page, stepId, toolName, toolInput, enableAgentFocus } = args;
   const attentionTarget = inferAttentionTarget(toolName, toolInput);
 
   emitOversightEvent(
     {
       kind: 'tool_started',
       timestamp: Date.now(),
+      stepId,
       toolName,
       toolInput,
       focusType: attentionTarget.type,
@@ -63,6 +65,7 @@ export async function handleToolStarted(args: {
     eventType: 'agent_action',
     payload: {
       phase: 'tool_started',
+      stepId,
       toolName,
       toolInput,
       focusType: attentionTarget.type,
@@ -87,16 +90,18 @@ export async function handleToolStarted(args: {
 export async function handleToolCompleted(args: {
   tabId: number;
   windowId?: number;
+  stepId: string;
   toolName: string;
   toolInput: string;
   result: string;
 }): Promise<void> {
-  const { tabId, windowId, toolName, toolInput, result } = args;
+  const { tabId, windowId, stepId, toolName, toolInput, result } = args;
   void logTelemetry({
     source: 'agent',
     eventType: 'agent_action',
     payload: {
       phase: 'tool_completed',
+      stepId,
       toolName,
       toolInput,
       result,
@@ -109,16 +114,18 @@ export async function handleToolCompleted(args: {
 export async function handleToolFailed(args: {
   tabId: number;
   windowId?: number;
+  stepId: string;
   toolName: string;
   toolInput: string;
   error: string;
 }): Promise<void> {
-  const { tabId, windowId, toolName, toolInput, error } = args;
+  const { tabId, windowId, stepId, toolName, toolInput, error } = args;
   void logTelemetry({
     source: 'agent',
     eventType: 'agent_action',
     payload: {
       phase: 'tool_failed',
+      stepId,
       toolName,
       toolInput,
       error,
@@ -131,15 +138,17 @@ export async function handleToolFailed(args: {
 export async function handleRiskSignal(args: {
   tabId: number;
   windowId?: number;
+  stepId: string;
   toolName: string;
   signal: Record<string, unknown>;
 }): Promise<void> {
-  const { tabId, windowId, toolName, signal } = args;
+  const { tabId, windowId, stepId, toolName, signal } = args;
   void logTelemetry({
     source: 'system',
     eventType: 'oversight_signal',
     payload: {
       phase: 'risk_signal_emitted',
+      stepId,
       toolName,
       signal,
       tabId,
@@ -151,21 +160,60 @@ export async function handleRiskSignal(args: {
 export async function handleApprovalRequested(args: {
   tabId: number;
   windowId?: number;
+  stepId: string;
   requestId: string;
   toolName: string;
   toolInput: string;
   reason: string;
 }): Promise<void> {
-  const { tabId, windowId, requestId, toolName, toolInput, reason } = args;
+  const { tabId, windowId, stepId, requestId, toolName, toolInput, reason } = args;
   void logTelemetry({
     source: 'system',
     eventType: 'oversight_signal',
     payload: {
       phase: 'approval_requested',
+      stepId,
       requestId,
       toolName,
       toolInput,
       reason,
+      tabId,
+      windowId,
+    },
+  });
+}
+
+export async function handleAgentThinking(args: {
+  tabId: number;
+  windowId?: number;
+  stepId: string;
+  toolName?: string;
+  thinking: AgentThinkingSummary;
+}): Promise<void> {
+  const { tabId, windowId, stepId, toolName, thinking } = args;
+  const timestamp = Date.now();
+
+  emitOversightEvent(
+    {
+      kind: 'agent_thinking',
+      timestamp,
+      stepId,
+      toolName,
+      thinking,
+    },
+    tabId,
+    windowId
+  );
+
+  void logTelemetry({
+    source: 'agent',
+    eventType: 'agent_thinking',
+    timestamp,
+    payload: {
+      phase: 'agent_thinking',
+      stepId,
+      toolName,
+      thinkingSummary: thinking,
       tabId,
       windowId,
     },

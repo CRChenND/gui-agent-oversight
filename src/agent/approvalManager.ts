@@ -20,6 +20,7 @@ const pendingApprovals = new Map<string, {
  */
 export async function requestApproval(
   tabId: number,
+  stepId: string,
   toolName: string,
   toolInput: string,
   reason: string,
@@ -40,6 +41,7 @@ export async function requestApproval(
     }
 
     void handleApprovalRequested({
+      stepId,
       requestId,
       tabId,
       windowId,
