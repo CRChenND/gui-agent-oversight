@@ -50,6 +50,122 @@ The current extension name in `public/manifest.json` is `MORPH`.
   - `ctx.getParameter(mechanismId, paramKey)`
 - Mechanism logic is parameter-driven (e.g. task graph node cap and auto-expand behavior).
 
+### Interaction Features Reference
+
+`Options -> Interaction Features` now exposes policy parameters that directly affect runtime behavior in sidepanel and approval flow.
+
+#### 1) Task Graph (`task-graph`)
+
+- `maxNodes` (`number`)
+  - Max number of nodes retained in task graph.
+- `contentGranularity` (`enum: task | step | substep`)
+  - `task`: summary-level view.
+  - `step`: per-step node view (default).
+  - `substep`: reserved for tool-call level detail (current UI treats it similarly to step).
+- `informationDensity` (`enum: compact | balanced | detailed`)
+  - Controls vertical density and graph viewport height.
+- `colorEncoding` (`enum: semantic | monochrome | high_contrast`)
+  - Controls node/status visual encoding style.
+
+#### 2) Monitoring (`monitoring`)
+
+- `monitoringContentScope` (`enum: minimal | standard | full`)
+  - Controls how much metadata is shown in oversight panels.
+- `explanationAvailability` (`enum: none | summary | full`)
+  - `none`: hides step explanations.
+  - `summary`: shortened explanation text.
+  - `full`: full explanation/rationale text.
+- `explanationFormat` (`enum: text | snippet | diff`)
+  - `text`: standard narrative explanation.
+  - `snippet`: short clipped explanation.
+  - `diff`: heuristic-vs-LLM style impact explanation view.
+- `notificationModality` (`enum: badge | modal | mixed`)
+  - `badge`: non-blocking badge entry point for approvals.
+  - `modal`: approval popup overlay directly.
+  - `mixed`: both badge and popup behavior.
+- `feedbackLatencyMs` (`number`)
+  - Delay before approval prompts are shown.
+- `persistenceMs` (`number`)
+  - Auto-dismiss/timeout for approval prompts (auto-reject on expiry).
+- `showPostHocPanel` (`boolean`)
+  - Shows post-hoc session summary in oversight tab (step count, high-impact count, decisions).
+
+#### 3) Intervention Gate (`interventionGate`)
+
+- `gatePolicy` (`enum: never | always | impact | adaptive`)
+  - Core gate strategy for whether a step should be gated.
+- `controlMode` (`enum: approve_all | risky_only | step_through`)
+  - `approve_all`: bypass pre-action approvals.
+  - `risky_only`: only risky/gated actions request approval.
+  - `step_through`: every step requests approval.
+- `timingPolicy` (`enum: pre_action | pre_navigation | post_action`)
+  - `pre_action`: standard approval before execution.
+  - `pre_navigation`: pre-action approval only for navigation tools.
+  - `post_action`: execute step first, then require post-action review.
+    - If post-action review is denied, execution is hard-stopped.
+- `interruptCooldownMs` (`number`)
+  - Minimum interval between approval prompts; during cooldown requests are auto-approved.
+- `interruptTopK` (`number`)
+  - Per-minute cap for approval prompts; beyond cap requests are auto-approved.
+- `userActionOptions` (`enum: basic | extended`)
+  - `basic`: approve / reject / dismiss.
+  - `extended`: approve / reject / dismiss + edit / retry / rollback controls in popup.
+
+#### 4) Conversation Rendering Features
+
+LLM step metadata tags are parsed and rendered as structured cards in conversation:
+
+- `<thinking_summary>...</thinking_summary>`
+- `<impact>low|medium|high</impact>`
+- `<impact_rationale>...</impact_rationale>`
+
+This avoids raw XML clutter and preserves readable step-level context.
+
+#### Example Configurations
+
+Use these as starting presets in `Interaction Features`:
+
+1. Low-interruption baseline
+```text
+gatePolicy=impact
+controlMode=risky_only
+timingPolicy=pre_navigation
+notificationModality=badge
+feedbackLatencyMs=0
+persistenceMs=0
+explanationAvailability=summary
+informationDensity=compact
+```
+
+2. Balanced oversight
+```text
+gatePolicy=impact
+controlMode=risky_only
+timingPolicy=pre_action
+notificationModality=mixed
+interruptCooldownMs=3000
+interruptTopK=10
+explanationAvailability=full
+explanationFormat=text
+informationDensity=balanced
+showPostHocPanel=true
+```
+
+3. Strict step-through audit
+```text
+gatePolicy=always
+controlMode=step_through
+timingPolicy=post_action
+notificationModality=modal
+interruptCooldownMs=0
+interruptTopK=999
+userActionOptions=extended
+explanationAvailability=full
+explanationFormat=diff
+informationDensity=detailed
+colorEncoding=high_contrast
+```
+
 ### Phase 3: Oversight Design Metadata
 
 - Registry descriptors include `interactionProperties`:

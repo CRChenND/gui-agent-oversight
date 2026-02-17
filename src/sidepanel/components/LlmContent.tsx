@@ -7,6 +7,26 @@ interface LlmContentProps {
 }
 
 export const LlmContent: React.FC<LlmContentProps> = ({ content }) => {
+  // Extract structured step metadata tags for prettier rendering in conversation.
+  const stepMetadata: Array<{ thinkingSummary: string; impact: 'low' | 'medium' | 'high'; impactRationale: string }> = [];
+  const metadataTripletRegex =
+    /<thinking_summary>([\s\S]*?)<\/thinking_summary>\s*<impact>(low|medium|high)<\/impact>\s*<impact_rationale>([\s\S]*?)<\/impact_rationale>/gi;
+  let metadataMatch;
+  while ((metadataMatch = metadataTripletRegex.exec(content)) !== null) {
+    stepMetadata.push({
+      thinkingSummary: metadataMatch[1].trim(),
+      impact: metadataMatch[2].trim().toLowerCase() as 'low' | 'medium' | 'high',
+      impactRationale: metadataMatch[3].trim(),
+    });
+  }
+
+  const contentWithoutMetadata = content
+    .replace(metadataTripletRegex, '')
+    .replace(/<thinking_summary>[\s\S]*?<\/thinking_summary>/gi, '')
+    .replace(/<impact>([\s\S]*?)<\/impact>/gi, '')
+    .replace(/<impact_rationale>[\s\S]*?<\/impact_rationale>/gi, '')
+    .trim();
+
   // Split content into regular text and tool calls
   const parts: Array<{ type: 'text' | 'tool', content: string }> = [];
   
@@ -16,7 +36,7 @@ export const LlmContent: React.FC<LlmContentProps> = ({ content }) => {
   let lastIndex = 0;
   
   // Create a copy of the content to work with
-  const contentCopy = content.toString();
+  const contentCopy = contentWithoutMetadata.toString();
   
   // Reset regex lastIndex
   combinedToolCallRegex.lastIndex = 0;
@@ -59,6 +79,28 @@ export const LlmContent: React.FC<LlmContentProps> = ({ content }) => {
   
   return (
     <>
+      {stepMetadata.map((item, index) => {
+        const impactClass =
+          item.impact === 'high'
+            ? 'badge badge-error'
+            : item.impact === 'medium'
+              ? 'badge badge-warning'
+              : 'badge badge-success';
+        return (
+          <div key={`step-meta-${index}`} className="mb-2 rounded border border-base-300 bg-base-200 p-3 text-sm">
+            <div className="mb-1 flex items-center justify-between">
+              <span className="font-semibold text-base-content/80">Step Metadata</span>
+              <span className={impactClass}>impact: {item.impact}</span>
+            </div>
+            <div className="mb-1">
+              <span className="font-semibold">Thinking:</span> {item.thinkingSummary}
+            </div>
+            <div>
+              <span className="font-semibold">Impact rationale:</span> {item.impactRationale}
+            </div>
+          </div>
+        );
+      })}
       {parts.map((part, index) => {
         if (part.type === 'text') {
           // Render regular text with markdown

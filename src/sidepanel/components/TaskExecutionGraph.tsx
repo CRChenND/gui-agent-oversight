@@ -201,9 +201,6 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                   {node.intervention && monitoringContentScope !== 'minimal' ? (
                     <div className="mt-1 flex flex-wrap items-center gap-1">
                       <span className={impactBadgeMap[node.intervention.impact]}>impact: {node.intervention.impact}</span>
-                      <span className={`badge badge-xs ${node.intervention.requiresApproval ? 'badge-warning' : 'badge-ghost'}`}>
-                        approval: {node.intervention.requiresApproval ? 'yes' : 'no'}
-                      </span>
                       {node.intervention.promptedByGate && monitoringContentScope === 'full' ? (
                         <span className="badge badge-xs badge-info">gate:{node.intervention.gatePolicy}</span>
                       ) : null}
