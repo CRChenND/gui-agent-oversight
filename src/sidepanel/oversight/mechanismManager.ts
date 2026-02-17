@@ -1,14 +1,22 @@
 import {
+  ADAPTIVE_CONTROLLER_MECHANISM_ID,
   AGENT_FOCUS_MECHANISM_ID,
+  INTERVENTION_GATE_MECHANISM_ID,
   TASK_GRAPH_MECHANISM_ID,
   getOversightParameterDefaultValue,
   type OversightMechanismId,
   type OversightMechanismParameterSettings,
-  type OversightParameterValue,
   type OversightMechanismSettings,
+  type OversightParameterValue,
 } from '../../oversight/registry';
-import type { OversightEvent } from '../../oversight/types';
-import type { AgentThinkingSummary } from '../../oversight/types';
+import type {
+  AgentThinkingSummary,
+  InterventionEvent,
+  OversightEvent,
+  OversightLevel,
+  StepContextEvent,
+  StepImpact,
+} from '../../oversight/types';
 import type { TaskNode, TaskNodeStatus } from '../components/TaskExecutionGraph';
 
 export interface OversightConfig {
@@ -23,6 +31,13 @@ export interface AgentFocusState {
   updatedAt: number;
 }
 
+export interface AdaptiveOversightRuntimeState {
+  currentLevel: OversightLevel;
+  recentRiskEvents: number;
+  consecutiveApprovals: number;
+  lowRiskNoInterventionStreak: number;
+}
+
 export interface OversightUiState {
   taskGraph: {
     nodes: TaskNode[];
@@ -30,10 +45,17 @@ export interface OversightUiState {
   };
   agentFocus: AgentFocusState;
   thinkingByStepId: Record<string, AgentThinkingSummary>;
+  interventionGate: {
+    openStepId: string | null;
+    promptedStepIds: string[];
+    decisions: Array<{ stepId: string; decision: 'approve' | 'deny' | 'edit' | 'rollback' }>;
+  };
+  adaptiveState: AdaptiveOversightRuntimeState;
 }
 
 interface OversightContextInput {
   getLatestThinking: () => string;
+  emitTelemetry?: (event: InterventionEvent | OversightEvent) => void;
 }
 
 interface OversightContext extends OversightContextInput {
@@ -49,14 +71,75 @@ function markActiveNodes(nodes: TaskNode[], status: TaskNodeStatus): TaskNode[] 
   return nodes.map((node) => (node.status === 'active' ? { ...node, status } : node));
 }
 
+function getGatePolicy(ctx: OversightContext): 'never' | 'always' | 'impact' | 'adaptive' {
+  const raw = ctx.getParameter(INTERVENTION_GATE_MECHANISM_ID, 'gatePolicy');
+  return raw === 'never' || raw === 'always' || raw === 'impact' || raw === 'adaptive' ? raw : 'impact';
+}
+
+function shouldPromptAdaptive(level: OversightLevel, step: StepContextEvent): boolean {
+  if (level === 'stepwise') return true;
+  if (level === 'impact_gated') return step.impact === 'high';
+  return false;
+}
+
+function shouldOpenGateForStep(state: OversightUiState, step: StepContextEvent, ctx: OversightContext): boolean {
+  const policy = getGatePolicy(ctx);
+  if (policy === 'never') return false;
+  if (policy === 'always') return true;
+  if (policy === 'impact') return step.impact === 'high';
+  return shouldPromptAdaptive(state.adaptiveState.currentLevel, step);
+}
+
+function asBoolean(value: unknown, fallback = false): boolean {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function asString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
+function asImpact(value: unknown, fallback: StepImpact): StepImpact {
+  return value === 'low' || value === 'medium' || value === 'high' ? value : fallback;
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : [];
+}
+
+function transitionOversightLevel(
+  state: OversightUiState,
+  to: OversightLevel,
+  reason: string,
+  ctx: OversightContext
+): OversightUiState {
+  if (state.adaptiveState.currentLevel === to) {
+    return state;
+  }
+
+  const levelEvent: OversightEvent = {
+    kind: 'oversight_level_changed',
+    from: state.adaptiveState.currentLevel,
+    to,
+    reason,
+    timestamp: Date.now(),
+  };
+
+  ctx.emitTelemetry?.(levelEvent);
+
+  return {
+    ...state,
+    adaptiveState: {
+      ...state.adaptiveState,
+      currentLevel: to,
+    },
+  };
+}
+
 const taskGraphMechanism: OversightMechanism = {
   id: TASK_GRAPH_MECHANISM_ID,
   reduce: (state, event, ctx) => {
     if (event.kind === 'tool_started') {
-      const maxNodes = Math.max(
-        1,
-        Number(ctx.getParameter(TASK_GRAPH_MECHANISM_ID, 'maxNodes') ?? 20)
-      );
+      const maxNodes = Math.max(1, Number(ctx.getParameter(TASK_GRAPH_MECHANISM_ID, 'maxNodes') ?? 20));
       const autoExpand = Boolean(ctx.getParameter(TASK_GRAPH_MECHANISM_ID, 'autoExpand') ?? true);
 
       const nextNodes = markActiveNodes(state.taskGraph.nodes, 'completed');
@@ -65,7 +148,10 @@ const taskGraphMechanism: OversightMechanism = {
         stepId: event.stepId,
         toolName: event.toolName,
         focusLabel: event.focusLabel || 'Focus updated',
-        thinking: state.thinkingByStepId[event.stepId]?.rationale || state.thinkingByStepId[event.stepId]?.goal || ctx.getLatestThinking(),
+        thinking:
+          state.thinkingByStepId[event.stepId]?.rationale ||
+          state.thinkingByStepId[event.stepId]?.goal ||
+          ctx.getLatestThinking(),
         status: 'active',
         timestamp: event.timestamp,
       });
@@ -168,7 +254,171 @@ const agentFocusMechanism: OversightMechanism = {
   },
 };
 
-const mechanisms: OversightMechanism[] = [taskGraphMechanism, agentFocusMechanism];
+const interventionGateMechanism: OversightMechanism = {
+  id: INTERVENTION_GATE_MECHANISM_ID,
+  reduce: (state, event, ctx) => {
+    if (event.kind === 'risk_signal') {
+      const payload = event.signal;
+      const impact = asImpact(payload.impact, 'medium');
+      const reasons = asStringArray(payload.reasons);
+      const reasonText = asString(payload.reason, reasons.join(' '));
+      const impactSource: 'llm' | 'heuristic' = asString(payload.impactSource) === 'llm' ? 'llm' : 'heuristic';
+
+      const nextNodes = state.taskGraph.nodes.map((node) => {
+        if (node.stepId !== event.stepId) return node;
+        return {
+          ...node,
+          intervention: {
+            impact,
+            impactSource,
+            impactRationale: asString(payload.impactRationale) || undefined,
+            requiresApproval: asBoolean(payload.requiresApproval),
+            llmRequiresApproval: asBoolean(payload.llmRequiresApproval),
+            promptedByGate: asBoolean(payload.promptedByGate),
+            gatePolicy: asString(payload.gatePolicy, 'impact'),
+            adaptiveGateLevel: asString(payload.adaptiveGateLevel, state.adaptiveState.currentLevel),
+            reasonText,
+          },
+        };
+      });
+
+      return {
+        ...state,
+        taskGraph: {
+          ...state.taskGraph,
+          nodes: nextNodes,
+        },
+        interventionGate: {
+          ...state.interventionGate,
+          openStepId:
+            asBoolean(payload.requiresApproval) || asBoolean(payload.promptedByGate) ? event.stepId : state.interventionGate.openStepId,
+        },
+      };
+    }
+
+    if (event.kind === 'step_context') {
+      if (!shouldOpenGateForStep(state, event, ctx)) {
+        return state;
+      }
+
+      ctx.emitTelemetry?.({ kind: 'intervention_prompted', stepId: event.stepId });
+
+      return {
+        ...state,
+        interventionGate: {
+          ...state.interventionGate,
+          openStepId: event.stepId,
+          promptedStepIds: state.interventionGate.promptedStepIds.includes(event.stepId)
+            ? state.interventionGate.promptedStepIds
+            : [...state.interventionGate.promptedStepIds, event.stepId],
+        },
+      };
+    }
+
+    if (event.kind === 'intervention_decision') {
+      const nextNodes = state.taskGraph.nodes.map((node) => {
+        if (node.stepId !== event.stepId) return node;
+        return {
+          ...node,
+          intervention: {
+            ...(node.intervention || {
+              impact: 'medium' as StepImpact,
+              impactSource: 'heuristic' as const,
+              impactRationale: undefined,
+              requiresApproval: false,
+              llmRequiresApproval: false,
+              promptedByGate: false,
+              gatePolicy: 'impact',
+              adaptiveGateLevel: state.adaptiveState.currentLevel,
+            }),
+            decision: event.decision,
+          },
+        };
+      });
+
+      return {
+        ...state,
+        taskGraph: {
+          ...state.taskGraph,
+          nodes: nextNodes,
+        },
+        interventionGate: {
+          ...state.interventionGate,
+          openStepId: state.interventionGate.openStepId === event.stepId ? null : state.interventionGate.openStepId,
+          decisions: [...state.interventionGate.decisions, { stepId: event.stepId, decision: event.decision }],
+        },
+      };
+    }
+
+    return state;
+  },
+};
+
+const adaptiveControllerMechanism: OversightMechanism = {
+  id: ADAPTIVE_CONTROLLER_MECHANISM_ID,
+  reduce: (state, event, ctx) => {
+    let nextState = state;
+
+    if (event.kind === 'step_context') {
+      const willPrompt = shouldOpenGateForStep(state, event, ctx);
+
+      if (event.impact === 'high') {
+        const elevatedLevel =
+          nextState.adaptiveState.currentLevel === 'observe' ? 'impact_gated' : nextState.adaptiveState.currentLevel;
+        nextState = transitionOversightLevel(nextState, elevatedLevel, 'high_impact_step_detected', ctx);
+      }
+
+      const missedHighRisk = event.impact === 'high' && event.gold_risky && !willPrompt;
+      const nextRecentRiskEvents = missedHighRisk
+        ? nextState.adaptiveState.recentRiskEvents + 1
+        : Math.max(0, nextState.adaptiveState.recentRiskEvents - 1);
+
+      const lowRiskNoInterventionStreak =
+        event.impact === 'low' && !willPrompt ? nextState.adaptiveState.lowRiskNoInterventionStreak + 1 : 0;
+
+      nextState = {
+        ...nextState,
+        adaptiveState: {
+          ...nextState.adaptiveState,
+          recentRiskEvents: nextRecentRiskEvents,
+          lowRiskNoInterventionStreak,
+        },
+      };
+
+      if (nextRecentRiskEvents >= 2) {
+        nextState = transitionOversightLevel(nextState, 'stepwise', 'two_missed_high_risk_events', ctx);
+      }
+
+      if (lowRiskNoInterventionStreak >= 5) {
+        if (nextState.adaptiveState.currentLevel === 'stepwise') {
+          nextState = transitionOversightLevel(nextState, 'impact_gated', 'five_low_risk_without_intervention', ctx);
+        } else if (nextState.adaptiveState.currentLevel === 'impact_gated') {
+          nextState = transitionOversightLevel(nextState, 'observe', 'five_low_risk_without_intervention', ctx);
+        }
+      }
+    }
+
+    if (event.kind === 'intervention_decision') {
+      const nextApprovals = event.decision === 'approve' ? nextState.adaptiveState.consecutiveApprovals + 1 : 0;
+      nextState = {
+        ...nextState,
+        adaptiveState: {
+          ...nextState.adaptiveState,
+          consecutiveApprovals: nextApprovals,
+        },
+      };
+    }
+
+    return nextState;
+  },
+};
+
+const mechanisms: OversightMechanism[] = [
+  taskGraphMechanism,
+  agentFocusMechanism,
+  interventionGateMechanism,
+  adaptiveControllerMechanism,
+];
 
 export function createInitialOversightState(): OversightUiState {
   return {
@@ -183,6 +433,17 @@ export function createInitialOversightState(): OversightUiState {
       updatedAt: Date.now(),
     },
     thinkingByStepId: {},
+    interventionGate: {
+      openStepId: null,
+      promptedStepIds: [],
+      decisions: [],
+    },
+    adaptiveState: {
+      currentLevel: 'observe',
+      recentRiskEvents: 0,
+      consecutiveApprovals: 0,
+      lowRiskNoInterventionStreak: 0,
+    },
   };
 }
 
@@ -197,10 +458,7 @@ export class OversightMechanismManager {
     this.config = config;
   }
 
-  private getParameter(
-    mechanismId: OversightMechanismId,
-    parameterKey: string
-  ): OversightParameterValue | undefined {
+  private getParameter(mechanismId: OversightMechanismId, parameterKey: string): OversightParameterValue | undefined {
     const configured = this.config.parameterSettings[mechanismId]?.[parameterKey];
     if (configured !== undefined) {
       return configured;

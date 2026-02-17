@@ -1,12 +1,9 @@
 import React from 'react';
 import type {
   OversightMechanismDefinition,
-  OversightMechanismId,
   OversightMechanismParameterSettings,
-  OversightParameterValue,
   OversightMechanismSettings,
 } from '../../../oversight/registry';
-import { FeatureToggleSettings } from '../FeatureToggleSettings';
 import { GlobalKnowledgeSettings } from '../GlobalKnowledgeSettings';
 import { Model } from '../ModelList';
 import { OllamaModel } from '../OllamaModelList';
@@ -87,17 +84,10 @@ interface ProvidersTabProps {
   // Global knowledge
   globalKnowledgeText?: string;
   setGlobalKnowledgeText?: (val: string) => void;
-  // Oversight mechanism settings
+  // Retained for compatibility with VerticalTabs prop wiring
   oversightMechanisms: OversightMechanismDefinition[];
   oversightSettings: OversightMechanismSettings;
   oversightParameterSettings: OversightMechanismParameterSettings;
-  setOversightMechanismEnabled: (mechanismId: OversightMechanismId, enabled: boolean) => void;
-  setOversightMechanismParameter: (
-    mechanismId: OversightMechanismId,
-    parameterKey: string,
-    value: OversightParameterValue
-  ) => void;
-  handleExportDesignMatrix: () => void;
   
 }
 
@@ -175,9 +165,6 @@ export function ProvidersTab({
   oversightMechanisms,
   oversightSettings,
   oversightParameterSettings,
-  setOversightMechanismEnabled,
-  setOversightMechanismParameter,
-  handleExportDesignMatrix,
   
 }: ProvidersTabProps) {
   return (
@@ -258,14 +245,6 @@ export function ProvidersTab({
             />
           )}
 
-          <FeatureToggleSettings
-            mechanisms={oversightMechanisms}
-            settings={oversightSettings}
-            parameterSettings={oversightParameterSettings}
-            onToggle={setOversightMechanismEnabled}
-            onParameterChange={setOversightMechanismParameter}
-          />
-          
           <div className="flex flex-wrap items-center gap-3">
             <SaveButton 
               isSaving={isSaving}
@@ -278,13 +257,6 @@ export function ProvidersTab({
                 (provider === 'openrouter' && (!openrouterApiKey.trim() || !openrouterModelId.trim()))
               }
             />
-            <button
-              className="btn btn-outline"
-              onClick={handleExportDesignMatrix}
-              type="button"
-            >
-              Export Design Matrix
-            </button>
           </div>
         </div>
       </div>

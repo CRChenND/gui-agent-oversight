@@ -18,6 +18,7 @@ import {
   handleRunCancelled,
   handleRunCompleted,
   handleRunFailed,
+  setActiveTaskStepContexts,
   handleToolCompleted,
   handleToolFailed,
   handleToolStarted
@@ -44,7 +45,7 @@ import {
   getAgentForTab,
   isConnectionHealthy
 } from "./tabManager";
-import { ProviderType, AgentStatus, AgentStatusInfo } from "./types";
+import { ProviderType, AgentStatus, AgentStatusInfo, TaskExecutionContext } from "./types";
 import { sendUIMessage, logWithTimestamp, handleError } from "./utils";
 
 // Generic message format that works with all providers
@@ -481,7 +482,12 @@ export function cancelExecution(tabId?: number): void {
  * @param tabId Optional tab ID to execute the prompt for
  * @param isReflectionPrompt Optional flag to indicate if this is a reflection prompt
  */
-export async function executePrompt(prompt: string, tabId?: number, isReflectionPrompt: boolean = false): Promise<void> {
+export async function executePrompt(
+  prompt: string,
+  tabId?: number,
+  isReflectionPrompt: boolean = false,
+  taskContext?: TaskExecutionContext
+): Promise<void> {
   try {
     // Get provider configuration from ConfigManager
     const configManager = ConfigManager.getInstance();
@@ -637,6 +643,7 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
     
     // Execute the prompt
     await getOversightSessionManager().startSession();
+    setActiveTaskStepContexts(taskContext?.steps || []);
     sendUIMessage('updateOutput', {
       type: 'system',
       content: `Executing prompt: "${prompt}"`

@@ -8,6 +8,7 @@ import type {
 } from '../../oversight/registry';
 import { Model } from './ModelList';
 import { OllamaModel } from './OllamaModelList';
+import { InteractionTab } from './tabs/InteractionTab';
 import { ProvidersTab } from './tabs/ProvidersTab';
 
 interface VerticalTabsProps {
@@ -100,6 +101,7 @@ export function VerticalTabs(props: VerticalTabsProps) {
 
   const tabs = [
     { id: 'providers', label: 'LLM Configuration', icon: '🤖' },
+    { id: 'interaction', label: 'Interaction Features', icon: '🧭' },
   ];
 
   const renderProvidersTab = () => (
@@ -160,8 +162,19 @@ export function VerticalTabs(props: VerticalTabsProps) {
       oversightMechanisms={props.oversightMechanisms}
       oversightSettings={props.oversightSettings}
       oversightParameterSettings={props.oversightParameterSettings}
-      setOversightMechanismEnabled={props.setOversightMechanismEnabled}
-      setOversightMechanismParameter={props.setOversightMechanismParameter}
+    />
+  );
+
+  const renderInteractionTab = () => (
+    <InteractionTab
+      mechanisms={props.oversightMechanisms}
+      settings={props.oversightSettings}
+      parameterSettings={props.oversightParameterSettings}
+      onToggle={props.setOversightMechanismEnabled}
+      onParameterChange={props.setOversightMechanismParameter}
+      isSaving={props.isSaving}
+      saveStatus={props.saveStatus}
+      handleSave={props.handleSave}
       handleExportDesignMatrix={props.handleExportDesignMatrix}
     />
   );
@@ -170,6 +183,8 @@ export function VerticalTabs(props: VerticalTabsProps) {
     switch (activeTab) {
       case 'providers':
         return renderProvidersTab();
+      case 'interaction':
+        return renderInteractionTab();
       default:
         return renderProvidersTab();
     }

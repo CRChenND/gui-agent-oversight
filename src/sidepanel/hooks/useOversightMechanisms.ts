@@ -70,23 +70,49 @@ export function useOversightMechanisms({
     []
   );
 
+  const emitOversightMechanismTelemetry = useCallback((event: OversightEvent) => {
+    void (async () => {
+      const sessionManager = getOversightSessionManager();
+      const logger = getOversightTelemetryLogger();
+      const sessionId = (await sessionManager.getActiveSessionId()) ?? (await sessionManager.startSession());
+
+      const eventType: OversightTelemetryEvent['eventType'] =
+        event.kind === 'oversight_level_changed' || event.kind === 'run_completed' || event.kind === 'run_cancelled' || event.kind === 'run_failed'
+          ? 'state_transition'
+          : 'oversight_signal';
+
+      logger.log({
+        sessionId,
+        timestamp: Date.now(),
+        source: 'system',
+        eventType,
+        payload: {
+          ...event,
+        },
+      });
+    })();
+  }, []);
+
   const handleOversightEvent = useCallback(
     (event: OversightEvent) => {
-      setState((prev) => managerRef.current.reduce(prev, event, { getLatestThinking }));
+      setState((prev) =>
+        managerRef.current.reduce(prev, event, { getLatestThinking, emitTelemetry: emitOversightMechanismTelemetry })
+      );
     },
-    [getLatestThinking]
+    [emitOversightMechanismTelemetry, getLatestThinking]
   );
 
   const replayOversightEvents = useCallback(
     (events: OversightEvent[]) => {
       const base = createInitialOversightState();
       const nextState = events.reduce(
-        (acc, event) => managerRef.current.reduce(acc, event, { getLatestThinking }),
+        (acc, event) =>
+          managerRef.current.reduce(acc, event, { getLatestThinking, emitTelemetry: emitOversightMechanismTelemetry }),
         base
       );
       setState(nextState);
     },
-    [getLatestThinking]
+    [emitOversightMechanismTelemetry, getLatestThinking]
   );
 
   const setTaskGraphExpanded = useCallback((expanded: boolean) => {
@@ -133,6 +159,8 @@ export function useOversightMechanisms({
       isTaskGraphExpanded: state.taskGraph.expanded,
       setTaskGraphExpanded,
       agentFocus: state.agentFocus,
+      interventionGate: state.interventionGate,
+      adaptiveState: state.adaptiveState,
       handleOversightEvent,
       replayOversightEvents,
       logHumanTelemetry,

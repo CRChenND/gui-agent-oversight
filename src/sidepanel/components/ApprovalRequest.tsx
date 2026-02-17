@@ -8,6 +8,10 @@ interface ApprovalRequestProps {
   onApprove: (requestId: string) => void;
   onReject: (requestId: string) => void;
   onDismiss: (requestId: string) => void;
+  onEdit?: (requestId: string) => void;
+  onRetry?: (requestId: string) => void;
+  onRollback?: (requestId: string) => void;
+  compact?: boolean;
 }
 
 export function ApprovalRequest({ 
@@ -17,7 +21,11 @@ export function ApprovalRequest({
   reason, 
   onApprove, 
   onReject,
-  onDismiss
+  onDismiss,
+  onEdit,
+  onRetry,
+  onRollback,
+  compact = false,
 }: ApprovalRequestProps) {
   return (
     <div className="card bg-warning text-warning-content p-4 my-2">
@@ -31,13 +39,37 @@ export function ApprovalRequest({
           Dismiss
         </button>
       </div>
-      <p>The agent wants to execute a critical action:</p>
+      <p>{compact ? 'Critical action pending.' : 'The agent wants to execute a critical action:'}</p>
       <div className="bg-base-300 p-2 my-2 rounded">
         <p><strong>Tool:</strong> {toolName}</p>
-        <p><strong>Input:</strong> {toolInput}</p>
+        {!compact ? <p><strong>Input:</strong> {toolInput}</p> : null}
         {reason && <p><strong>Reason:</strong> {reason}</p>}
       </div>
-      <div className="flex gap-2 justify-end mt-2">
+      <div className="flex flex-wrap gap-2 justify-end mt-2">
+        {onEdit ? (
+          <button
+            className="btn btn-outline btn-sm"
+            onClick={() => onEdit(requestId)}
+          >
+            Edit
+          </button>
+        ) : null}
+        {onRetry ? (
+          <button
+            className="btn btn-outline btn-sm"
+            onClick={() => onRetry(requestId)}
+          >
+            Retry
+          </button>
+        ) : null}
+        {onRollback ? (
+          <button
+            className="btn btn-outline btn-sm"
+            onClick={() => onRollback(requestId)}
+          >
+            Rollback
+          </button>
+        ) : null}
         <button 
           className="btn btn-error" 
           onClick={() => onReject(requestId)}

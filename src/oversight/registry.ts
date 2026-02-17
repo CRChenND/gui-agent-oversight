@@ -1,9 +1,15 @@
 export const AGENT_FOCUS_MECHANISM_ID = 'agent-focus' as const;
 export const TASK_GRAPH_MECHANISM_ID = 'task-graph' as const;
+export const MONITORING_MECHANISM_ID = 'monitoring' as const;
+export const INTERVENTION_GATE_MECHANISM_ID = 'interventionGate' as const;
+export const ADAPTIVE_CONTROLLER_MECHANISM_ID = 'adaptiveController' as const;
 
 export type OversightMechanismId =
   | typeof AGENT_FOCUS_MECHANISM_ID
-  | typeof TASK_GRAPH_MECHANISM_ID;
+  | typeof TASK_GRAPH_MECHANISM_ID
+  | typeof MONITORING_MECHANISM_ID
+  | typeof INTERVENTION_GATE_MECHANISM_ID
+  | typeof ADAPTIVE_CONTROLLER_MECHANISM_ID;
 
 export type OversightParameterType = 'number' | 'boolean' | 'enum';
 export type OversightParameterValue = number | boolean | string;
@@ -13,6 +19,7 @@ export interface OversightParameterDescriptor {
   type: OversightParameterType;
   default: OversightParameterValue;
   options?: OversightParameterValue[];
+  values?: OversightParameterValue[];
 }
 
 export interface OversightInteractionProperties {
@@ -35,10 +42,7 @@ export interface OversightMechanismDescriptor {
 
 export type OversightMechanismDefinition = OversightMechanismDescriptor;
 
-export interface OversightMechanismSettings {
-  [AGENT_FOCUS_MECHANISM_ID]: boolean;
-  [TASK_GRAPH_MECHANISM_ID]: boolean;
-}
+export type OversightMechanismSettings = Record<OversightMechanismId, boolean>;
 
 export type OversightMechanismParameterSettings = Record<
   OversightMechanismId,
@@ -91,7 +95,152 @@ export const OVERSIGHT_MECHANISM_REGISTRY: OversightMechanismDescriptor[] = [
         type: 'number',
         default: 20,
       },
+      {
+        key: 'contentGranularity',
+        type: 'enum',
+        default: 'step',
+        options: ['task', 'step', 'substep'],
+        values: ['task', 'step', 'substep'],
+      },
+      {
+        key: 'informationDensity',
+        type: 'enum',
+        default: 'balanced',
+        options: ['compact', 'balanced', 'detailed'],
+        values: ['compact', 'balanced', 'detailed'],
+      },
+      {
+        key: 'colorEncoding',
+        type: 'enum',
+        default: 'semantic',
+        options: ['semantic', 'monochrome', 'high_contrast'],
+        values: ['semantic', 'monochrome', 'high_contrast'],
+      },
     ],
+  },
+  {
+    id: MONITORING_MECHANISM_ID,
+    title: 'Monitoring',
+    description: 'Baseline passive oversight for experiment conditions.',
+    storageKey: 'oversight.monitoring.enabled',
+    defaultEnabled: true,
+    interactionProperties: {
+      interruptionLevel: 'low',
+      oversightGranularity: 'step',
+      feedbackLatency: 'instant',
+      agencyModel: 'awareness',
+    },
+    parameters: [
+      {
+        key: 'monitoringContentScope',
+        type: 'enum',
+        default: 'full',
+        options: ['minimal', 'standard', 'full'],
+        values: ['minimal', 'standard', 'full'],
+      },
+      {
+        key: 'explanationAvailability',
+        type: 'enum',
+        default: 'summary',
+        options: ['none', 'summary', 'full'],
+        values: ['none', 'summary', 'full'],
+      },
+      {
+        key: 'explanationFormat',
+        type: 'enum',
+        default: 'text',
+        options: ['text', 'snippet', 'diff'],
+        values: ['text', 'snippet', 'diff'],
+      },
+      {
+        key: 'notificationModality',
+        type: 'enum',
+        default: 'mixed',
+        options: ['badge', 'modal', 'mixed'],
+        values: ['badge', 'modal', 'mixed'],
+      },
+      {
+        key: 'feedbackLatencyMs',
+        type: 'number',
+        default: 0,
+      },
+      {
+        key: 'persistenceMs',
+        type: 'number',
+        default: 0,
+      },
+      {
+        key: 'showPostHocPanel',
+        type: 'boolean',
+        default: false,
+      },
+    ],
+  },
+  {
+    id: INTERVENTION_GATE_MECHANISM_ID,
+    title: 'Intervention Gate',
+    description: 'Unified intervention gate driven by experiment gate policy.',
+    storageKey: 'oversight.interventionGate.enabled',
+    defaultEnabled: false,
+    interactionProperties: {
+      interruptionLevel: 'high',
+      oversightGranularity: 'step',
+      feedbackLatency: 'instant',
+      agencyModel: 'approval',
+    },
+    parameters: [
+      {
+        key: 'gatePolicy',
+        type: 'enum',
+        default: 'impact',
+        options: ['never', 'always', 'impact', 'adaptive'],
+        values: ['never', 'always', 'impact', 'adaptive'],
+      },
+      {
+        key: 'controlMode',
+        type: 'enum',
+        default: 'risky_only',
+        options: ['approve_all', 'risky_only', 'step_through'],
+        values: ['approve_all', 'risky_only', 'step_through'],
+      },
+      {
+        key: 'timingPolicy',
+        type: 'enum',
+        default: 'pre_action',
+        options: ['pre_action', 'pre_navigation', 'post_action'],
+        values: ['pre_action', 'pre_navigation', 'post_action'],
+      },
+      {
+        key: 'interruptCooldownMs',
+        type: 'number',
+        default: 0,
+      },
+      {
+        key: 'interruptTopK',
+        type: 'number',
+        default: 999,
+      },
+      {
+        key: 'userActionOptions',
+        type: 'enum',
+        default: 'basic',
+        options: ['basic', 'extended'],
+        values: ['basic', 'extended'],
+      },
+    ],
+  },
+  {
+    id: ADAPTIVE_CONTROLLER_MECHANISM_ID,
+    title: 'Adaptive Controller',
+    description: 'Adaptive oversight state machine controlling gate strictness.',
+    storageKey: 'oversight.adaptiveController.enabled',
+    defaultEnabled: false,
+    interactionProperties: {
+      interruptionLevel: 'medium',
+      oversightGranularity: 'task',
+      feedbackLatency: 'instant',
+      agencyModel: 'prediction',
+    },
   },
 ];
 
@@ -187,7 +336,8 @@ function coerceParameterValue(
   }
 
   if (descriptor.type === 'enum') {
-    if (typeof rawValue === 'string' && descriptor.options?.includes(rawValue)) {
+    const enumValues = descriptor.options || descriptor.values;
+    if (typeof rawValue === 'string' && enumValues?.includes(rawValue)) {
       return rawValue;
     }
     return descriptor.default;

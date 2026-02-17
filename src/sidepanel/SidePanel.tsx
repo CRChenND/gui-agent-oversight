@@ -1,7 +1,9 @@
-import React, { useCallback, useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ConfigManager } from '../background/configManager';
 import {
   AGENT_FOCUS_MECHANISM_ID,
+  INTERVENTION_GATE_MECHANISM_ID,
+  MONITORING_MECHANISM_ID,
   TASK_GRAPH_MECHANISM_ID,
   createDefaultOversightParameterSettings,
   createDefaultOversightMechanismSettings,
@@ -23,6 +25,7 @@ import { useOversightMechanisms } from './hooks/useOversightMechanisms';
 import { useTabManagement } from './hooks/useTabManagement';
 
 export function SidePanel() {
+  const [activePanel, setActivePanel] = useState<'conversation' | 'oversight'>('conversation');
   const [mechanismSettings, setMechanismSettings] = useState(createDefaultOversightMechanismSettings);
   const [mechanismParameterSettings, setMechanismParameterSettings] = useState(createDefaultOversightParameterSettings);
 
@@ -32,10 +35,15 @@ export function SidePanel() {
   // State for approval requests
   const [approvalRequests, setApprovalRequests] = useState<Array<{
     requestId: string;
+    stepId?: string;
     toolName: string;
     toolInput: string;
     reason: string;
   }>>([]);
+  const [haltReason, setHaltReason] = useState<string | null>(null);
+  const [showApprovalOverlay, setShowApprovalOverlay] = useState(true);
+  const lastApprovalPromptTsRef = useRef(0);
+  const approvalPromptWindowRef = useRef<number[]>([]);
 
   // State to track if any LLM providers are configured
   const [hasConfiguredProviders, setHasConfiguredProviders] = useState<boolean>(false);
@@ -121,8 +129,6 @@ export function SidePanel() {
 
   const {
     taskNodes,
-    isTaskGraphExpanded,
-    setTaskGraphExpanded,
     agentFocus,
     handleOversightEvent,
     logHumanTelemetry,
@@ -136,6 +142,60 @@ export function SidePanel() {
 
   const enableAgentFocus = mechanismSettings[AGENT_FOCUS_MECHANISM_ID];
   const enableTaskGraph = mechanismSettings[TASK_GRAPH_MECHANISM_ID];
+  const monitoringParams = mechanismParameterSettings[MONITORING_MECHANISM_ID] || {};
+  const interventionParams = mechanismParameterSettings[INTERVENTION_GATE_MECHANISM_ID] || {};
+  const taskGraphParams = mechanismParameterSettings[TASK_GRAPH_MECHANISM_ID] || {};
+  const monitoringContentScope =
+    monitoringParams.monitoringContentScope === 'minimal' ||
+    monitoringParams.monitoringContentScope === 'standard' ||
+    monitoringParams.monitoringContentScope === 'full'
+      ? monitoringParams.monitoringContentScope
+      : 'full';
+  const explanationAvailability =
+    monitoringParams.explanationAvailability === 'none' ||
+    monitoringParams.explanationAvailability === 'summary' ||
+    monitoringParams.explanationAvailability === 'full'
+      ? monitoringParams.explanationAvailability
+      : 'summary';
+  const explanationFormat =
+    monitoringParams.explanationFormat === 'text' ||
+    monitoringParams.explanationFormat === 'snippet' ||
+    monitoringParams.explanationFormat === 'diff'
+      ? monitoringParams.explanationFormat
+      : 'text';
+  const notificationModality =
+    monitoringParams.notificationModality === 'badge' ||
+    monitoringParams.notificationModality === 'modal' ||
+    monitoringParams.notificationModality === 'mixed'
+      ? monitoringParams.notificationModality
+      : 'mixed';
+  const feedbackLatencyMs = Math.max(0, Number(monitoringParams.feedbackLatencyMs || 0));
+  const persistenceMs = Math.max(0, Number(monitoringParams.persistenceMs || 0));
+  const showPostHocPanel = Boolean(monitoringParams.showPostHocPanel);
+  const contentGranularity =
+    taskGraphParams.contentGranularity === 'task' ||
+    taskGraphParams.contentGranularity === 'step' ||
+    taskGraphParams.contentGranularity === 'substep'
+      ? taskGraphParams.contentGranularity
+      : 'step';
+  const informationDensity =
+    taskGraphParams.informationDensity === 'compact' ||
+    taskGraphParams.informationDensity === 'balanced' ||
+    taskGraphParams.informationDensity === 'detailed'
+      ? taskGraphParams.informationDensity
+      : 'balanced';
+  const colorEncoding =
+    taskGraphParams.colorEncoding === 'semantic' ||
+    taskGraphParams.colorEncoding === 'monochrome' ||
+    taskGraphParams.colorEncoding === 'high_contrast'
+      ? taskGraphParams.colorEncoding
+      : 'semantic';
+  const interruptCooldownMs = Math.max(0, Number(interventionParams.interruptCooldownMs || 0));
+  const interruptTopK = Math.max(1, Number(interventionParams.interruptTopK || 999));
+  const userActionOptions = interventionParams.userActionOptions === 'extended' ? 'extended' : 'basic';
+  const approvedCount = taskNodes.filter((node) => node.intervention?.decision === 'approve').length;
+  const deniedCount = taskNodes.filter((node) => node.intervention?.decision === 'deny').length;
+  const highImpactCount = taskNodes.filter((node) => node.intervention?.impact === 'high').length;
 
   const handleDownloadTaskGraph = useCallback(() => {
     if (taskNodes.length === 0) return;
@@ -183,9 +243,11 @@ export function SidePanel() {
   // Handlers for approval requests
   const handleApprove = (requestId: string) => {
     const request = approvalRequests.find((req) => req.requestId === requestId);
+    const stepId = request?.stepId || requestId;
     void logHumanTelemetry('human_intervention', {
       action: 'approval_accepted',
       requestId,
+      stepId,
       toolName: request?.toolName,
       toolInput: request?.toolInput,
       reason: request?.reason,
@@ -193,8 +255,19 @@ export function SidePanel() {
     void logHumanTelemetry('human_intervention', {
       action: 'override_performed',
       requestId,
+      stepId,
       toolName: request?.toolName,
       toolInput: request?.toolInput,
+    });
+    void logHumanTelemetry('oversight_signal', {
+      kind: 'intervention_decision',
+      stepId,
+      decision: 'approve',
+    });
+    handleOversightEvent({
+      kind: 'intervention_decision',
+      stepId,
+      decision: 'approve',
     });
 
     // Send approval to the background script
@@ -203,16 +276,35 @@ export function SidePanel() {
     setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
     // Add a system message to indicate approval
     addSystemMessage(`✅ Approved action: ${requestId}`);
+    setHaltReason(null);
   };
 
   const handleReject = (requestId: string) => {
     const request = approvalRequests.find((req) => req.requestId === requestId);
+    const stepId = request?.stepId || requestId;
     void logHumanTelemetry('human_intervention', {
       action: 'approval_rejected',
       requestId,
+      stepId,
       toolName: request?.toolName,
       toolInput: request?.toolInput,
       reason: request?.reason,
+    });
+    void logHumanTelemetry('oversight_signal', {
+      kind: 'intervention_decision',
+      stepId,
+      decision: 'deny',
+    });
+    void logHumanTelemetry('state_transition', {
+      kind: 'step_outcome',
+      stepId,
+      executed: false,
+      blockedByUser: true,
+    });
+    handleOversightEvent({
+      kind: 'intervention_decision',
+      stepId,
+      decision: 'deny',
     });
 
     // Send rejection to the background script
@@ -223,20 +315,99 @@ export function SidePanel() {
     addSystemMessage(`❌ Rejected action: ${requestId}`);
   };
 
+  const sendApprovalDecision = useCallback((requestId: string, approved: boolean) => {
+    chrome.runtime.sendMessage({
+      action: 'approvalResponse',
+      requestId,
+      approved,
+      tabId: tabId || undefined,
+      windowId: windowId || undefined,
+    });
+  }, [tabId, windowId]);
+
   const handleDismissWarning = (requestId: string) => {
     const request = approvalRequests.find((req) => req.requestId === requestId);
+    const stepId = request?.stepId || requestId;
     void logHumanTelemetry('human_monitoring', {
       action: 'warning_dismissed',
       requestId,
+      stepId,
       toolName: request?.toolName,
       toolInput: request?.toolInput,
       reason: request?.reason,
     });
+    void logHumanTelemetry('oversight_signal', {
+      kind: 'intervention_decision',
+      stepId,
+      decision: 'deny',
+    });
+    void logHumanTelemetry('state_transition', {
+      kind: 'step_outcome',
+      stepId,
+      executed: false,
+      blockedByUser: true,
+    });
+    handleOversightEvent({
+      kind: 'intervention_decision',
+      stepId,
+      decision: 'deny',
+    });
 
     // Dismissing a pending approval also rejects it to avoid blocking execution.
-    rejectRequest(requestId);
+    sendApprovalDecision(requestId, false);
     setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
     addSystemMessage(`⚠️ Dismissed warning: ${requestId} (auto-rejected)`);
+  };
+
+  const handleEdit = (requestId: string) => {
+    const request = approvalRequests.find((req) => req.requestId === requestId);
+    const stepId = request?.stepId || requestId;
+    const note = window.prompt('Edit instruction note (records intervention and rejects current step):', '') || '';
+    void logHumanTelemetry('human_intervention', {
+      action: 'edit_submitted',
+      requestId,
+      stepId,
+      note,
+    });
+    handleOversightEvent({
+      kind: 'intervention_decision',
+      stepId,
+      decision: 'edit',
+    });
+    sendApprovalDecision(requestId, false);
+    setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
+    addSystemMessage(`✏️ Edit requested for ${requestId}${note ? `: ${note}` : ''}`);
+  };
+
+  const handleRetry = (requestId: string) => {
+    const request = approvalRequests.find((req) => req.requestId === requestId);
+    const stepId = request?.stepId || requestId;
+    void logHumanTelemetry('human_intervention', {
+      action: 'retry_requested',
+      requestId,
+      stepId,
+    });
+    sendApprovalDecision(requestId, false);
+    setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
+    addSystemMessage(`🔁 Retry requested for ${requestId}. Re-run after adjusting context.`);
+  };
+
+  const handleRollback = (requestId: string) => {
+    const request = approvalRequests.find((req) => req.requestId === requestId);
+    const stepId = request?.stepId || requestId;
+    void logHumanTelemetry('human_intervention', {
+      action: 'rollback_requested',
+      requestId,
+      stepId,
+    });
+    handleOversightEvent({
+      kind: 'intervention_decision',
+      stepId,
+      decision: 'rollback',
+    });
+    sendApprovalDecision(requestId, false);
+    setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
+    addSystemMessage(`↩️ Rollback requested for ${requestId}. Manual rollback may be required.`);
   };
 
   // Set up Chrome messaging with callbacks
@@ -254,6 +425,9 @@ export function SidePanel() {
           typeof content.content === 'string' &&
           content.content.startsWith('🕹️ tool:')) {
         return;
+      }
+      if (typeof content?.content === 'string' && content.content.includes('Execution stopped by post-action review policy')) {
+        setHaltReason('Stopped by post-action review policy');
       }
       addMessage({ ...content, isComplete: true });
     },
@@ -296,8 +470,43 @@ export function SidePanel() {
       setTabStatus('idle');
     },
     onRequestApproval: (request) => {
-      // Add the request to the list
-      setApprovalRequests(prev => [...prev, request]);
+      const now = Date.now();
+      approvalPromptWindowRef.current = approvalPromptWindowRef.current.filter((ts) => now - ts < 60000);
+
+      if (approvalPromptWindowRef.current.length >= interruptTopK) {
+        sendApprovalDecision(request.requestId, true);
+        addSystemMessage(`ℹ️ Auto-approved ${request.requestId} due to interruptTopK.`);
+        return;
+      }
+
+      if (interruptCooldownMs > 0 && now - lastApprovalPromptTsRef.current < interruptCooldownMs) {
+        sendApprovalDecision(request.requestId, true);
+        addSystemMessage(`ℹ️ Auto-approved ${request.requestId} due to interrupt cooldown.`);
+        return;
+      }
+
+      window.setTimeout(() => {
+        setApprovalRequests(prev => [...prev, request]);
+        const timestamp = Date.now();
+        lastApprovalPromptTsRef.current = timestamp;
+        approvalPromptWindowRef.current.push(timestamp);
+
+        if (notificationModality !== 'badge') {
+          setShowApprovalOverlay(true);
+        }
+
+        if (persistenceMs > 0) {
+          window.setTimeout(() => {
+            setApprovalRequests((prev) => {
+              const exists = prev.some((item) => item.requestId === request.requestId);
+              if (!exists) return prev;
+              sendApprovalDecision(request.requestId, false);
+              addSystemMessage(`⌛ Auto-rejected expired approval: ${request.requestId}`);
+              return prev.filter((item) => item.requestId !== request.requestId);
+            });
+          }, persistenceMs);
+        }
+      }, feedbackLatencyMs);
     },
     setTabTitle,
     // New event handlers for tab events
@@ -360,12 +569,14 @@ export function SidePanel() {
   // Handle form submission
   const handleSubmit = async (prompt: string) => {
     setIsProcessing(true);
+    setHaltReason(null);
     // Update the tab status to running
     setTabStatus('running');
     resetRunState();
 
     // Add a system message to indicate a new prompt
     addSystemMessage(`New prompt: "${prompt}"`);
+    setActivePanel('conversation');
 
     try {
       await executePrompt(prompt);
@@ -417,6 +628,7 @@ export function SidePanel() {
     clearMessages();
     clearHistory();
     clearOversightState();
+    setHaltReason(null);
   };
 
 
@@ -424,6 +636,10 @@ export function SidePanel() {
   const navigateToOptions = () => {
     chrome.runtime.openOptionsPage();
   };
+
+  const pendingApprovalCount = approvalRequests.length;
+  const shouldShowBadge = pendingApprovalCount > 0 && (notificationModality === 'badge' || notificationModality === 'mixed');
+  const shouldShowOverlay = pendingApprovalCount > 0 && (notificationModality === 'modal' || notificationModality === 'mixed' || showApprovalOverlay);
 
   return (
     <div className="flex flex-col h-screen p-4 bg-base-200">
@@ -447,46 +663,112 @@ export function SidePanel() {
                 canDownloadTaskGraph={taskNodes.length > 0}
                 isProcessing={isProcessing}
               />
-              {enableAgentFocus && (
-                <AgentAttentionBar
-                  state={agentFocus.state}
-                  toolName={agentFocus.toolName}
-                  focusLabel={agentFocus.focusLabel}
-                  updatedAt={agentFocus.updatedAt}
-                />
-              )}
-              {enableTaskGraph && (
-                <TaskExecutionGraph
-                  nodes={taskNodes}
-                  expanded={isTaskGraphExpanded}
-                  onToggle={() => setTaskGraphExpanded(!isTaskGraphExpanded)}
-                />
-              )}
-              <div
-                ref={outputRef}
-                className="card-body p-3 overflow-auto bg-base-100 flex-1"
-              >
-                <MessageDisplay
-                  messages={messages}
-                  streamingSegments={streamingSegments}
-                  isStreaming={isStreaming}
-                />
+              <div className="mx-3 mt-3 mb-2 flex gap-2 rounded-md bg-base-200 p-1">
+                <button
+                  className={`btn btn-sm flex-1 ${activePanel === 'conversation' ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => setActivePanel('conversation')}
+                >
+                  Conversation
+                </button>
+                <button
+                  className={`btn btn-sm flex-1 ${activePanel === 'oversight' ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => setActivePanel('oversight')}
+                >
+                  Oversight
+                </button>
               </div>
+
+              {haltReason ? (
+                <div className="mx-3 mb-2 rounded-md border border-warning/40 bg-warning/15 px-3 py-2 text-xs text-warning-content">
+                  {haltReason}
+                </div>
+              ) : null}
+
+              {activePanel === 'conversation' && (
+                <div
+                  ref={outputRef}
+                  className="card-body p-3 overflow-auto bg-base-100 flex-1"
+                >
+                  <MessageDisplay
+                    messages={messages}
+                    streamingSegments={streamingSegments}
+                    isStreaming={isStreaming}
+                  />
+                </div>
+              )}
+
+              {activePanel === 'oversight' && (
+                <div className="flex-1 overflow-auto p-3 bg-base-100">
+                  {enableAgentFocus && agentFocus.state === 'active' && (
+                    <AgentAttentionBar
+                      state={agentFocus.state}
+                      toolName={agentFocus.toolName}
+                      focusLabel={agentFocus.focusLabel}
+                      updatedAt={agentFocus.updatedAt}
+                    />
+                  )}
+                  {enableTaskGraph && (
+                    <TaskExecutionGraph
+                      nodes={taskNodes}
+                      contentGranularity={contentGranularity}
+                      informationDensity={informationDensity}
+                      colorEncoding={colorEncoding}
+                      monitoringContentScope={monitoringContentScope}
+                      explanationAvailability={explanationAvailability}
+                      explanationFormat={explanationFormat}
+                    />
+                  )}
+                  {!enableAgentFocus && !enableTaskGraph && (
+                    <div className="px-1 py-2 text-sm text-base-content/70">
+                      Oversight panel is empty for current mechanism settings.
+                    </div>
+                  )}
+                  {showPostHocPanel ? (
+                    <div className="mt-3 rounded border border-base-300 bg-base-200 p-3 text-xs">
+                      <div className="mb-1 font-semibold">Post-hoc Summary</div>
+                      <div>steps: {taskNodes.length}</div>
+                      <div>high impact steps: {highImpactCount}</div>
+                      <div>approved: {approvedCount}</div>
+                      <div>denied: {deniedCount}</div>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+
             </div>
           </div>
-          {/* Display approval requests */}
-          {approvalRequests.map(req => (
-            <ApprovalRequest
-              key={req.requestId}
-              requestId={req.requestId}
-              toolName={req.toolName}
-              toolInput={req.toolInput}
-              reason={req.reason}
-              onApprove={handleApprove}
-              onReject={handleReject}
-              onDismiss={handleDismissWarning}
-            />
-          ))}
+
+          {shouldShowBadge ? (
+            <button
+              className="fixed right-4 bottom-24 z-30 btn btn-warning btn-sm"
+              onClick={() => setShowApprovalOverlay((prev) => !prev)}
+            >
+              Approvals ({pendingApprovalCount})
+            </button>
+          ) : null}
+
+          {shouldShowOverlay ? (
+            <div className="pointer-events-none fixed inset-x-4 bottom-24 z-30">
+              <div className="pointer-events-auto max-h-72 overflow-y-auto">
+                {approvalRequests.map(req => (
+                  <ApprovalRequest
+                    key={req.requestId}
+                    requestId={req.requestId}
+                    toolName={req.toolName}
+                    toolInput={req.toolInput}
+                    reason={req.reason}
+                    onApprove={handleApprove}
+                    onReject={handleReject}
+                    onDismiss={handleDismissWarning}
+                    onEdit={userActionOptions === 'extended' ? handleEdit : undefined}
+                    onRetry={userActionOptions === 'extended' ? handleRetry : undefined}
+                    onRollback={userActionOptions === 'extended' ? handleRollback : undefined}
+                    compact={informationDensity === 'compact'}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <PromptForm
             onSubmit={handleSubmit}

@@ -1,13 +1,41 @@
 import type { Page } from 'playwright-crx';
+import type { TaskStepContext } from './types';
 import { getOversightSessionManager } from '../oversight/session/sessionManager';
 import { getOversightTelemetryLogger } from '../oversight/telemetry/logger';
 import type { OversightTelemetryEvent } from '../oversight/telemetry/types';
-import type { AgentThinkingSummary, OversightEvent } from '../oversight/types';
+import type { AgentThinkingSummary, OversightEvent, StepContextEvent } from '../oversight/types';
+import { inferRiskAssessment } from '../oversight/riskAssessment';
 import { clearAttentionOverlay, inferAttentionTarget, renderAttentionOverlay } from './attentionTracker';
 import { sendUIMessage, logWithTimestamp } from './utils';
 
 function emitOversightEvent(event: OversightEvent, tabId: number, windowId?: number): void {
   sendUIMessage('oversightEvent', { event }, tabId, windowId);
+}
+
+let activeStepContextByStepId: Record<string, TaskStepContext> = {};
+
+export function setActiveTaskStepContexts(steps: TaskStepContext[] = []): void {
+  activeStepContextByStepId = steps.reduce((acc, step) => {
+    acc[step.stepId] = step;
+    return acc;
+  }, {} as Record<string, TaskStepContext>);
+}
+
+export function clearActiveTaskStepContexts(): void {
+  activeStepContextByStepId = {};
+}
+
+function resolveStepContext(stepId: string, toolName: string, toolInput: string): StepContextEvent {
+  const configured = activeStepContextByStepId[stepId];
+  const inferred = inferRiskAssessment(toolName, toolInput);
+  return {
+    kind: 'step_context',
+    stepId,
+    impact: configured?.impact || inferred.impact,
+    reversible: configured?.reversible ?? inferred.reversible,
+    gold_risky: configured?.gold_risky ?? inferred.gold_risky,
+    category: configured?.category || inferred.category,
+  };
 }
 
 async function resolveSessionId(): Promise<string> {
@@ -45,6 +73,25 @@ export async function handleToolStarted(args: {
 }): Promise<void> {
   const { tabId, windowId, page, stepId, toolName, toolInput, enableAgentFocus } = args;
   const attentionTarget = inferAttentionTarget(toolName, toolInput);
+  const stepContext = resolveStepContext(stepId, toolName, toolInput);
+  const stepContextTimestamp = Date.now();
+
+  emitOversightEvent(
+    {
+      ...stepContext,
+    },
+    tabId,
+    windowId
+  );
+
+  void logTelemetry({
+    source: 'system',
+    eventType: 'oversight_signal',
+    timestamp: stepContextTimestamp,
+    payload: {
+      ...stepContext,
+    },
+  });
 
   emitOversightEvent(
     {
@@ -97,6 +144,19 @@ export async function handleToolCompleted(args: {
 }): Promise<void> {
   const { tabId, windowId, stepId, toolName, toolInput, result } = args;
   void logTelemetry({
+    source: 'system',
+    eventType: 'state_transition',
+    payload: {
+      kind: 'step_outcome',
+      stepId,
+      executed: true,
+      blockedByUser: false,
+      tabId,
+      windowId,
+    },
+  });
+
+  void logTelemetry({
     source: 'agent',
     eventType: 'agent_action',
     payload: {
@@ -121,6 +181,19 @@ export async function handleToolFailed(args: {
 }): Promise<void> {
   const { tabId, windowId, stepId, toolName, toolInput, error } = args;
   void logTelemetry({
+    source: 'system',
+    eventType: 'state_transition',
+    payload: {
+      kind: 'step_outcome',
+      stepId,
+      executed: false,
+      blockedByUser: false,
+      tabId,
+      windowId,
+    },
+  });
+
+  void logTelemetry({
     source: 'agent',
     eventType: 'agent_action',
     payload: {
@@ -143,6 +216,38 @@ export async function handleRiskSignal(args: {
   signal: Record<string, unknown>;
 }): Promise<void> {
   const { tabId, windowId, stepId, toolName, signal } = args;
+  const signalImpact = signal.impact;
+  const signalReversible = signal.reversible;
+  const signalGoldRisky = signal.gold_risky;
+  const signalCategory = signal.category;
+
+  if (signalImpact === 'low' || signalImpact === 'medium' || signalImpact === 'high') {
+    emitOversightEvent(
+      {
+        kind: 'step_context',
+        stepId,
+        impact: signalImpact,
+        reversible: typeof signalReversible === 'boolean' ? signalReversible : true,
+        gold_risky: Boolean(signalGoldRisky),
+        category: typeof signalCategory === 'string' ? signalCategory : undefined,
+      },
+      tabId,
+      windowId
+    );
+  }
+
+  emitOversightEvent(
+    {
+      kind: 'risk_signal',
+      timestamp: Date.now(),
+      stepId,
+      toolName,
+      signal,
+    },
+    tabId,
+    windowId
+  );
+
   void logTelemetry({
     source: 'system',
     eventType: 'oversight_signal',
@@ -171,6 +276,7 @@ export async function handleApprovalRequested(args: {
     source: 'system',
     eventType: 'oversight_signal',
     payload: {
+      kind: 'intervention_prompted',
       phase: 'approval_requested',
       stepId,
       requestId,
@@ -261,6 +367,7 @@ export async function handleRunCompleted(args: {
   }
 
   await getOversightSessionManager().endSession();
+  clearActiveTaskStepContexts();
 }
 
 export async function handleRunCancelled(args: {
@@ -304,6 +411,7 @@ export async function handleRunCancelled(args: {
   }
 
   await getOversightSessionManager().endSession();
+  clearActiveTaskStepContexts();
 }
 
 export async function handleRunFailed(args: {
@@ -350,4 +458,5 @@ export async function handleRunFailed(args: {
   }
 
   await getOversightSessionManager().endSession();
+  clearActiveTaskStepContexts();
 }

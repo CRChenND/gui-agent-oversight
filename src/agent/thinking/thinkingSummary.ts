@@ -38,8 +38,10 @@ export function buildThinkingSummary(args: {
   toolName?: string;
   toolInput?: string;
   accumulatedText?: string;
+  modelThinkingSummary?: string;
 }): AgentThinkingSummary {
-  const rationale = extractRationale(args.accumulatedText ?? '');
+  const fromModel = args.modelThinkingSummary?.trim();
+  const rationale = fromModel ? truncate(fromModel, 280) : extractRationale(args.accumulatedText ?? '');
   const plan = extractPlan(rationale);
   const riskFlags: string[] = [];
 
@@ -63,4 +65,3 @@ export function buildThinkingSummary(args: {
 export function createStepId(stepCounter: number): string {
   return `step_${stepCounter}_${Math.random().toString(36).slice(2, 8)}`;
 }
-

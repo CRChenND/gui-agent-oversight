@@ -93,14 +93,20 @@ Remember to follow the verification-first workflow: navigate → observe → ana
   • Double-check critical states with a second observation tool.
   
   ────────────────────────────────────────
-  ## TOOL-CALL SYNTAX  
-  You **must** reply in this EXACT XML format with ALL three tags:
-  
-  <tool>tool_name</tool>  
-  <input>arguments here</input>  
+  ## STEP METADATA + TOOL-CALL SYNTAX
+  Before every tool call, include concise step metadata so oversight can trace your reasoning:
+
+  <thinking_summary>one short sentence about why this next step is needed</thinking_summary>
+  <impact>low or medium or high</impact>
+  <impact_rationale>one short sentence explaining the impact judgment</impact_rationale>
+
+  Then output the tool call using this EXACT XML format with ALL three tags:
+
+  <tool>tool_name</tool>
+  <input>arguments here</input>
   <requires_approval>true or false</requires_approval>
   
-  Set **requires_approval = true** for sensitive tasks like purchases, data deletion,  
+  Set **requires_approval = true** for sensitive tasks like purchases, data deletion,
   messages visible to others, sensitive-data forms, or any risky action.  
   If unsure, choose **true**.
 

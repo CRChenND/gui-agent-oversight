@@ -15,7 +15,13 @@ interface UseChromeMessagingProps {
   onFallbackStarted: (message: string) => void;
   onUpdateScreenshot: (content: any) => void;
   onProcessingComplete: () => void;
-  onRequestApproval?: (request: { requestId: string, toolName: string, toolInput: string, reason: string }) => void;
+  onRequestApproval?: (request: {
+    requestId: string;
+    stepId?: string;
+    toolName: string;
+    toolInput: string;
+    reason: string;
+  }) => void;
   setTabTitle: (title: string) => void;
   onTabStatusChanged?: (status: 'attached' | 'detached' | 'running' | 'idle' | 'error', tabId: number) => void;
   onTargetCreated?: (tabId: number, targetInfo: any) => void;
@@ -152,6 +158,7 @@ export const useChromeMessaging = ({
           if (onRequestApproval) {
             onRequestApproval({
               requestId: message.requestId,
+              stepId: typeof message.stepId === 'string' ? message.stepId : undefined,
               toolName: message.toolName,
               toolInput: message.toolInput,
               reason: message.reason || 'This action requires approval.'

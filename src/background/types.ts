@@ -1,6 +1,19 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { BrowserAgent } from "../agent/AgentCore";
-import type { OversightEvent } from "../oversight/types";
+import type { OversightEvent, StepImpact } from "../oversight/types";
+
+export interface TaskStepContext {
+  stepId: string;
+  impact: StepImpact;
+  reversible?: boolean;
+  gold_risky: boolean;
+  category?: string;
+}
+
+export interface TaskExecutionContext {
+  taskId?: string;
+  steps?: TaskStepContext[];
+}
 
 // Provider types
 export type ProviderType = 'anthropic' | 'openai' | 'gemini' | 'ollama' | 'openai-compatible' | 'openrouter';
@@ -25,6 +38,7 @@ export interface ExecutePromptMessage {
   prompt: string;
   tabId?: number;
   windowId?: number;
+  taskContext?: TaskExecutionContext;
 }
 
 export interface CancelExecutionMessage {
@@ -179,6 +193,7 @@ export interface ForceResetPlaywrightMessage {
 export interface RequestApprovalMessage {
   action: 'requestApproval';
   requestId: string;
+  stepId?: string;
   toolName: string;
   toolInput: string;
   reason: string;

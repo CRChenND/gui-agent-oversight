@@ -56,6 +56,7 @@ export async function requestApproval(
       tabId,
       windowId, // Include window ID in the message
       requestId,
+      stepId,
       toolName,
       toolInput,
       reason

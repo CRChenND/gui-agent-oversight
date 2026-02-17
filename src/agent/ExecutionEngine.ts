@@ -6,10 +6,28 @@ import { ToolManager } from "./ToolManager";
 import { requestApproval } from "./approvalManager";
 import { emitAgentThinking } from "./thinking/thinkingEmitter";
 import { buildThinkingSummary, createStepId } from "./thinking/thinkingSummary";
+import {
+  getOversightStorageQueryDefaults,
+  getOversightParameterStorageKey,
+  INTERVENTION_GATE_MECHANISM_ID,
+  mapStorageToOversightSettings,
+} from "../oversight/registry";
+import {
+  inferRiskAssessment,
+  INITIAL_ADAPTIVE_GATE_STATE,
+  shouldPromptByGatePolicy,
+  updateAdaptiveStateFromDecision,
+  updateAdaptiveStateFromStep,
+  type AdaptiveGateState,
+  type InterventionGatePolicy,
+} from "../oversight/riskAssessment";
 
 // Constants
 const MAX_STEPS = 50;            // prevent infinite loops
 const MAX_OUTPUT_TOKENS = 1024;  // max tokens for LLM response
+type LlmImpact = 'low' | 'medium' | 'high';
+type ControlMode = 'approve_all' | 'risky_only' | 'step_through';
+type TimingPolicy = 'pre_action' | 'pre_navigation' | 'post_action';
 
 /**
  * Callback interface for execution
@@ -87,6 +105,7 @@ export class ExecutionEngine {
   private toolManager: ToolManager;
   private promptManager: PromptManager;
   private errorHandler: ErrorHandler;
+  private adaptiveGateState: AdaptiveGateState = INITIAL_ADAPTIVE_GATE_STATE;
 
   constructor(
     llmProvider: LLMProvider,
@@ -168,6 +187,71 @@ export class ExecutionEngine {
     }
 
     return messages;
+  }
+
+  private async getInterventionGateConfig(): Promise<{
+    enabled: boolean;
+    policy: InterventionGatePolicy;
+    controlMode: ControlMode;
+    timingPolicy: TimingPolicy;
+  }> {
+    const gatePolicyKey = getOversightParameterStorageKey(INTERVENTION_GATE_MECHANISM_ID, 'gatePolicy');
+    const controlModeKey = getOversightParameterStorageKey(INTERVENTION_GATE_MECHANISM_ID, 'controlMode');
+    const timingPolicyKey = getOversightParameterStorageKey(INTERVENTION_GATE_MECHANISM_ID, 'timingPolicy');
+    const storage = await chrome.storage.sync.get({
+      ...getOversightStorageQueryDefaults(),
+      [gatePolicyKey]: 'impact',
+      [controlModeKey]: 'risky_only',
+      [timingPolicyKey]: 'pre_action',
+    });
+    const settings = mapStorageToOversightSettings(storage as Record<string, unknown>);
+    const rawPolicy = storage[gatePolicyKey];
+    const policy =
+      rawPolicy === 'never' || rawPolicy === 'always' || rawPolicy === 'impact' || rawPolicy === 'adaptive'
+        ? rawPolicy
+        : 'impact';
+    const rawControlMode = storage[controlModeKey];
+    const controlMode =
+      rawControlMode === 'approve_all' || rawControlMode === 'risky_only' || rawControlMode === 'step_through'
+        ? rawControlMode
+        : 'risky_only';
+    const rawTimingPolicy = storage[timingPolicyKey];
+    const timingPolicy =
+      rawTimingPolicy === 'pre_action' || rawTimingPolicy === 'pre_navigation' || rawTimingPolicy === 'post_action'
+        ? rawTimingPolicy
+        : 'pre_action';
+
+    return {
+      enabled: settings[INTERVENTION_GATE_MECHANISM_ID],
+      policy,
+      controlMode,
+      timingPolicy,
+    };
+  }
+
+  private extractTag(text: string, tagName: string): string | undefined {
+    const pattern = new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, 'i');
+    const match = text.match(pattern);
+    if (!match) return undefined;
+    const value = match[1].trim();
+    return value.length > 0 ? value : undefined;
+  }
+
+  private parseModelStepMetadata(accumulatedText: string): {
+    thinkingSummary?: string;
+    impact?: LlmImpact;
+    impactRationale?: string;
+  } {
+    const thinkingSummary = this.extractTag(accumulatedText, 'thinking_summary');
+    const rawImpact = this.extractTag(accumulatedText, 'impact');
+    const impact =
+      rawImpact === 'low' || rawImpact === 'medium' || rawImpact === 'high' ? rawImpact : undefined;
+    const impactRationale = this.extractTag(accumulatedText, 'impact_rationale');
+    return {
+      thinkingSummary,
+      impact,
+      impactRationale,
+    };
   }
 
   // Token usage tracking removed
@@ -276,6 +360,7 @@ export class ExecutionEngine {
 
     // Reset cancel flag at the start of execution
     this.errorHandler.resetCancel();
+    this.adaptiveGateState = { ...INITIAL_ADAPTIVE_GATE_STATE };
     try {
       // Initialize messages with the prompt
       let messages = this.initializeMessages(prompt, initialMessages);
@@ -430,20 +515,70 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
           }
           const tool = this.toolManager.findTool(toolName);
           const stepId = createStepId(step);
+          const modelMetadata = this.parseModelStepMetadata(accumulatedText);
           const thinking = buildThinkingSummary({
             goal: prompt,
             toolName,
             toolInput,
             accumulatedText,
+            modelThinkingSummary: modelMetadata.thinkingSummary,
           });
           emitAgentThinking(stepId, toolName, thinking);
           if (adaptedCallbacks.onToolStart) {
             adaptedCallbacks.onToolStart(stepId, toolName, toolInput);
           }
 
-          // Check if the LLM has marked this as requiring approval
-          const requiresApproval = llmRequiresApproval;
-          const reason = llmRequiresApproval ? "The AI assistant has determined this action requires your approval." : "";
+          const baseRiskAssessment = inferRiskAssessment(toolName, toolInput);
+          const resolvedImpact = modelMetadata.impact ?? baseRiskAssessment.impact;
+          const impactSource: 'llm' | 'heuristic' = modelMetadata.impact ? 'llm' : 'heuristic';
+          const riskAssessment = {
+            ...baseRiskAssessment,
+            impact: resolvedImpact,
+            gold_risky: resolvedImpact === 'high' ? true : baseRiskAssessment.gold_risky,
+            reasons: modelMetadata.impact
+              ? [
+                  `LLM assessed impact as ${modelMetadata.impact}.`,
+                  ...(modelMetadata.impactRationale ? [modelMetadata.impactRationale] : []),
+                  ...baseRiskAssessment.reasons,
+                ]
+              : baseRiskAssessment.reasons,
+          };
+          const gateConfig = await this.getInterventionGateConfig();
+          const promptedByGate =
+            gateConfig.enabled &&
+            shouldPromptByGatePolicy(gateConfig.policy, riskAssessment, this.adaptiveGateState.currentLevel);
+          this.adaptiveGateState = updateAdaptiveStateFromStep(this.adaptiveGateState, riskAssessment, promptedByGate);
+
+          const llmReason = llmRequiresApproval
+            ? "The AI assistant has determined this action requires your approval."
+            : null;
+          const gateReason = promptedByGate
+            ? `Intervention Gate (${gateConfig.policy}) blocked this step because impact is ${riskAssessment.impact}.`
+            : null;
+          const reasonParts = [llmReason, gateReason, ...riskAssessment.reasons].filter(Boolean) as string[];
+
+          let requiresApproval = llmRequiresApproval || promptedByGate;
+          let postActionReviewRequired = false;
+
+          if (gateConfig.controlMode === 'step_through') {
+            requiresApproval = true;
+            reasonParts.push('Control mode step_through requires approval on each step.');
+          } else if (gateConfig.controlMode === 'approve_all') {
+            requiresApproval = false;
+            reasonParts.push('Control mode approve_all auto-approves this step.');
+          }
+
+          if (gateConfig.timingPolicy === 'pre_navigation' && requiresApproval && !toolName.includes('navigate')) {
+            requiresApproval = false;
+            reasonParts.push('Timing policy pre_navigation only prompts before navigation tools.');
+          }
+          if (gateConfig.timingPolicy === 'post_action' && requiresApproval) {
+            postActionReviewRequired = true;
+            requiresApproval = false;
+            reasonParts.push('Timing policy post_action requires review after execution.');
+          }
+
+          const reason = reasonParts.length > 0 ? reasonParts.join(' ') : 'Policy requires approval before execution.';
 
           if (!tool) {
             messages.push(
@@ -465,16 +600,31 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
           adaptedCallbacks.onToolOutput(`🕹️ tool: ${toolName} | args: ${toolInput}`);
 
           let result: string;
+          let haltAfterReviewDeny = false;
+
+          if (adaptedCallbacks.onRiskSignal) {
+            adaptedCallbacks.onRiskSignal(stepId, toolName, {
+              signal: requiresApproval ? 'approval_required' : 'risk_assessed',
+              requiresApproval,
+              postActionReviewRequired,
+              llmRequiresApproval,
+              promptedByGate,
+              gatePolicy: gateConfig.policy,
+              controlMode: gateConfig.controlMode,
+              timingPolicy: gateConfig.timingPolicy,
+              adaptiveGateLevel: this.adaptiveGateState.currentLevel,
+              impact: riskAssessment.impact,
+              impactSource,
+              impactRationale: modelMetadata.impactRationale,
+              gold_risky: riskAssessment.gold_risky,
+              reversible: riskAssessment.reversible,
+              category: riskAssessment.category,
+              reasons: riskAssessment.reasons,
+              reason,
+            });
+          }
 
           if (requiresApproval) {
-            if (adaptedCallbacks.onRiskSignal) {
-              adaptedCallbacks.onRiskSignal(stepId, toolName, {
-                signal: 'approval_required',
-                reason,
-                requiresApproval: true,
-              });
-            }
-
             // Notify the user that approval is required
             adaptedCallbacks.onToolOutput(`⚠️ This action requires approval: ${reason}`);
 
@@ -487,6 +637,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               const approved = await requestApproval(tabId, stepId, toolName, toolInput, reason);
 
               if (approved) {
+                this.adaptiveGateState = updateAdaptiveStateFromDecision(this.adaptiveGateState, 'approve');
                 // User approved, execute the tool
                 adaptedCallbacks.onToolOutput(`✅ Action approved by user. Executing...`);
 
@@ -511,6 +662,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
                   throw toolError;
                 }
               } else {
+                this.adaptiveGateState = updateAdaptiveStateFromDecision(this.adaptiveGateState, 'deny');
                 // User rejected, skip execution
                 result = "Action cancelled by user.";
                 adaptedCallbacks.onToolOutput(`❌ Action rejected by user.`);
@@ -545,6 +697,38 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             }
           }
 
+          if (postActionReviewRequired) {
+            adaptedCallbacks.onToolOutput(`⚠️ Post-action review required for: ${toolName}`);
+            try {
+              const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+              const tabId = tabs[0]?.id || 0;
+              const reviewReason = `${reason} Post-action review: confirm whether to continue with subsequent steps.`;
+              const approved = await requestApproval(tabId, stepId, toolName, toolInput, reviewReason);
+              if (approved) {
+                this.adaptiveGateState = updateAdaptiveStateFromDecision(this.adaptiveGateState, 'approve');
+                adaptedCallbacks.onToolOutput('✅ Post-action review approved.');
+              } else {
+                this.adaptiveGateState = updateAdaptiveStateFromDecision(this.adaptiveGateState, 'deny');
+                adaptedCallbacks.onToolOutput('❌ Post-action review denied. Follow-up actions halted by policy.');
+                result = `${result}\nPost-action review denied by user.`;
+                haltAfterReviewDeny = true;
+              }
+              if (adaptedCallbacks.onRiskSignal) {
+                adaptedCallbacks.onRiskSignal(stepId, toolName, {
+                  signal: 'post_action_review',
+                  reviewed: true,
+                  approved,
+                  reason: reviewReason,
+                });
+              }
+            } catch (reviewError) {
+              adaptedCallbacks.onToolOutput(
+                `❌ Post-action review failed: ${reviewError instanceof Error ? reviewError.message : String(reviewError)}`
+              );
+              result = `${result}\nPost-action review failed.`;
+            }
+          }
+
           // Signal that tool execution is complete
           if (adaptedCallbacks.onToolEnd) {
             adaptedCallbacks.onToolEnd(stepId, result);
@@ -552,6 +736,16 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
 
           // Check for cancellation after tool execution
           if (this.errorHandler.isExecutionCancelled()) break;
+
+          if (haltAfterReviewDeny) {
+            done = true;
+            messages.push(
+              { role: "assistant", content: accumulatedText },
+              { role: "user", content: `Tool result: ${result}\nExecution stopped by post-action review policy.` }
+            );
+            messages = trimHistory(messages);
+            continue;
+          }
 
           // ── 4. Record turn & prune history ───────────────────────────────────
           messages.push(

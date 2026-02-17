@@ -174,9 +174,9 @@ function handleExecutePrompt(
 ): void {
   // Use the tabId from the message if available
   if (message.tabId) {
-    executePrompt(message.prompt, message.tabId);
+    executePrompt(message.prompt, message.tabId, false, message.taskContext);
   } else {
-    executePrompt(message.prompt);
+    executePrompt(message.prompt, undefined, false, message.taskContext);
   }
   sendResponse({ success: true });
 }
