@@ -55,6 +55,12 @@ function decisionBadgeClass(decision: 'approve' | 'deny' | 'edit' | 'rollback'):
   return 'badge badge-info badge-xs';
 }
 
+function formatToolName(toolName: string): string {
+  if (!toolName) return toolName;
+  const withoutPrefix = toolName.startsWith('browser_') ? toolName.slice('browser_'.length) : toolName;
+  return withoutPrefix;
+}
+
 export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
   nodes,
   contentGranularity = 'step',
@@ -88,7 +94,7 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
   if (nodes.length === 0) return null;
 
   const maxHeightClass =
-    informationDensity === 'compact' ? 'max-h-56' : informationDensity === 'detailed' ? 'max-h-[24rem]' : 'max-h-72';
+    informationDensity === 'compact' ? 'max-h-72' : informationDensity === 'detailed' ? 'max-h-[36rem]' : 'max-h-[30rem]';
   const statusClasses: Record<TaskNodeStatus, string> =
     colorEncoding === 'monochrome'
       ? {
@@ -155,8 +161,6 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
 
     return (
       <>
-        <div>source: {source}</div>
-        <div>impact: {impact}</div>
         {node.intervention.impactRationale && explanationAvailability === 'full' ? (
           <div className="whitespace-pre-wrap">rationale: {node.intervention.impactRationale}</div>
         ) : null}
@@ -194,7 +198,7 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
-                    <div className="text-sm font-medium text-base-content">{node.toolName}</div>
+                    <div className="text-sm font-medium text-base-content">{formatToolName(node.toolName)}</div>
                     <div className="text-[11px] text-base-content/50">{isExpanded ? 'Hide' : 'Show'}</div>
                   </div>
                   <div className="truncate text-xs text-base-content/70">{node.focusLabel}</div>
@@ -227,7 +231,6 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                   {node.intervention && monitoringContentScope !== 'minimal' ? (
                     <div>
                       <div className="mb-1 font-semibold text-base-content/80">Impact Assessment</div>
-                      <div>format: {explanationFormat}</div>
                       {renderImpactExplanation(node)}
                     </div>
                   ) : null}

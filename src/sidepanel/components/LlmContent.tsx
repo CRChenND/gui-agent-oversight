@@ -4,9 +4,10 @@ import remarkGfm from 'remark-gfm';
 
 interface LlmContentProps {
   content: string;
+  stepStartIndex?: number;
 }
 
-export const LlmContent: React.FC<LlmContentProps> = ({ content }) => {
+export const LlmContent: React.FC<LlmContentProps> = ({ content, stepStartIndex = 1 }) => {
   // Extract structured step metadata tags for prettier rendering in conversation.
   const stepMetadata: Array<{ thinkingSummary: string; impact: 'low' | 'medium' | 'high'; impactRationale: string }> = [];
   const metadataTripletRegex =
@@ -69,12 +70,14 @@ export const LlmContent: React.FC<LlmContentProps> = ({ content }) => {
     });
   }
 
-  // If no tool calls were found, just return the whole content
+  // If no tool calls were found, keep only cleaned content (no raw metadata tags).
   if (parts.length === 0) {
-    parts.push({
-      type: 'text',
-      content: content
-    });
+    if (contentWithoutMetadata) {
+      parts.push({
+        type: 'text',
+        content: contentWithoutMetadata,
+      });
+    }
   }
   
   return (
@@ -89,7 +92,7 @@ export const LlmContent: React.FC<LlmContentProps> = ({ content }) => {
         return (
           <div key={`step-meta-${index}`} className="mb-2 rounded border border-base-300 bg-base-200 p-3 text-sm">
             <div className="mb-1 flex items-center justify-between">
-              <span className="font-semibold text-base-content/80">Step Metadata</span>
+              <span className="font-semibold text-base-content/80">Step {stepStartIndex + index}</span>
               <span className={impactClass}>impact: {item.impact}</span>
             </div>
             <div className="mb-1">
