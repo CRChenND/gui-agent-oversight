@@ -5,6 +5,3 @@ dist/
 
 # Temporary e2e bundles
 .tmp-e2e/
-
-# Temporary e2e bundles
-.tmp-e2e/
