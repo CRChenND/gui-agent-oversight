@@ -26,10 +26,10 @@ export const PromptForm: React.FC<PromptFormProps> = ({
   };
 
   return (
-    <form onSubmit={handleSubmit} className="mt-4 relative">
-      <div className="w-full">
+    <form onSubmit={handleSubmit} className="relative">
+      <div className="morph-composer w-full bg-base-100">
         <TextareaAutosize
-          className="textarea textarea-bordered w-full pr-12"
+          className="textarea textarea-ghost w-full pr-12 text-sm focus:outline-none"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {
@@ -49,8 +49,8 @@ export const PromptForm: React.FC<PromptFormProps> = ({
           maxRows={10}
           style={{ 
             resize: 'none',
-            minHeight: '40px',
-            maxHeight: '300px',
+            minHeight: '44px',
+            maxHeight: '220px',
             overflow: 'auto'
           } as any}
         />
@@ -59,7 +59,7 @@ export const PromptForm: React.FC<PromptFormProps> = ({
             type="button" 
             onClick={onCancel}
             className="btn btn-sm btn-circle btn-error absolute"
-            style={{ bottom: '5px', right: '5px' }}
+            style={{ bottom: '10px', right: '10px' }}
             title="Cancel"
           >
             <FontAwesomeIcon icon={faXmark} />
@@ -68,7 +68,7 @@ export const PromptForm: React.FC<PromptFormProps> = ({
           <button 
             type="submit" 
             className="btn btn-sm btn-circle btn-primary absolute"
-            style={{ bottom: '5px', right: '5px' }}
+            style={{ bottom: '10px', right: '10px' }}
             disabled={!prompt.trim() || tabStatus === 'detached'}
             title={tabStatus === 'detached' ? "Refresh tab to continue" : "Execute"}
           >

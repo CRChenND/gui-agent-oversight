@@ -28,6 +28,19 @@ export const LlmContent: React.FC<LlmContentProps> = ({ content, stepStartIndex 
     .replace(/<impact_rationale>[\s\S]*?<\/impact_rationale>/gi, '')
     .trim();
 
+  const actionChips = Array.from(
+    new Set(
+      Array.from(
+        contentWithoutMetadata.matchAll(
+          /<tool>(.*?)<\/tool>\s*<input>[\s\S]*?<\/input>(?:\s*<requires_approval>.*?<\/requires_approval>)?/gi
+        )
+      )
+        .map((m) => (m[1] || '').trim())
+        .filter(Boolean)
+        .map((toolName) => (toolName.startsWith('browser_') ? toolName.slice('browser_'.length) : toolName))
+    )
+  );
+
   // Split content into regular text and tool calls
   const parts: Array<{ type: 'text' | 'tool', content: string }> = [];
   
@@ -82,6 +95,15 @@ export const LlmContent: React.FC<LlmContentProps> = ({ content, stepStartIndex 
   
   return (
     <>
+      {actionChips.length > 0 ? (
+        <div className="mb-2 flex flex-wrap items-center gap-1.5">
+          {actionChips.map((chip) => (
+            <span key={`chip-${chip}`} className="badge badge-ghost badge-sm">
+              {chip}
+            </span>
+          ))}
+        </div>
+      ) : null}
       {stepMetadata.map((item, index) => {
         const impactClass =
           item.impact === 'high'

@@ -27,6 +27,7 @@ import { useTabManagement } from './hooks/useTabManagement';
 
 export function SidePanel() {
   const [activePanel, setActivePanel] = useState<'conversation' | 'oversight'>('conversation');
+  const [showRuntimeControls, setShowRuntimeControls] = useState(false);
   const [mechanismSettings, setMechanismSettings] = useState(createDefaultOversightMechanismSettings);
   const [mechanismParameterSettings, setMechanismParameterSettings] = useState(createDefaultOversightParameterSettings);
 
@@ -697,139 +698,150 @@ export function SidePanel() {
   const pendingApprovalCount = approvalRequests.length;
   const shouldShowBadge = pendingApprovalCount > 0 && (notificationModality === 'badge' || notificationModality === 'mixed');
   const shouldShowOverlay = pendingApprovalCount > 0 && (notificationModality === 'modal' || notificationModality === 'mixed' || showApprovalOverlay);
+  const canPause = runtimeStatus.executionState === 'running';
+  const canResume =
+    runtimeStatus.executionState === 'paused_by_user' || runtimeStatus.executionState === 'paused_by_system';
+  const canTakeover = runtimeStatus.authorityState !== 'human_control';
+  const canRelease = runtimeStatus.authorityState === 'human_control';
+  const formatRuntimeValue = (value: string) => value.replace(/_/g, ' ');
 
   return (
-    <div className="flex flex-col h-screen p-4 bg-base-200">
-      {/* <header className="mb-4">
-        <div className="flex justify-end items-center">
-          <TabStatusBar
-            tabId={tabId}
-            tabTitle={tabTitle}
-            tabStatus={tabStatus}
-          />
-        </div>
-      </header> */}
-
+    <div className="morph-shell flex h-screen flex-col bg-base-200/60">
       {hasConfiguredProviders ? (
         <>
-          <div className="flex flex-col flex-grow gap-4 overflow-hidden md:flex-row shadow-sm">
-            <div className="card bg-base-100 shadow-md flex-1 flex flex-col overflow-hidden">
-              <OutputHeader
-                onClearHistory={handleClearHistory}
-                onDownloadTaskGraph={handleDownloadTaskGraph}
-                canDownloadTaskGraph={taskNodes.length > 0}
-                isProcessing={isProcessing}
-              />
-              <div className="mx-3 mt-2 rounded-md border border-base-300 bg-base-200 px-3 py-2 text-xs">
-                <div className="grid grid-cols-3 gap-2">
-                  <div>
-                    <span className="font-semibold">Authority:</span> {runtimeStatus.authorityState}
-                  </div>
-                  <div>
-                    <span className="font-semibold">Phase:</span> {runtimeStatus.executionPhase}
-                  </div>
-                  <div>
-                    <span className="font-semibold">Execution:</span> {runtimeStatus.executionState}
-                  </div>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <button className="btn btn-xs btn-outline" onClick={pauseExecution} type="button">
-                    Pause
+          <div className="morph-surface flex min-h-0 flex-1 flex-col overflow-hidden bg-base-100">
+            <OutputHeader
+              onClearHistory={handleClearHistory}
+              onDownloadTaskGraph={handleDownloadTaskGraph}
+              canDownloadTaskGraph={taskNodes.length > 0}
+              isProcessing={isProcessing}
+            />
+            <div className="px-3 pt-2">
+              <div className="flex items-center justify-between gap-2">
+                <ProviderSelector isProcessing={isProcessing} />
+                {shouldShowBadge ? (
+                  <button
+                    className="btn btn-warning btn-xs"
+                    onClick={() => setShowApprovalOverlay((prev) => !prev)}
+                    type="button"
+                  >
+                    Approvals ({pendingApprovalCount})
                   </button>
-                  <button className="btn btn-xs btn-outline" onClick={resumeExecution} type="button">
-                    Resume
-                  </button>
-                  <button className="btn btn-xs btn-outline" onClick={takeoverAuthority} type="button">
-                    Takeover
-                  </button>
-                  <button className="btn btn-xs btn-outline" onClick={releaseControl} type="button">
-                    Release control
-                  </button>
-                </div>
-              </div>
-              <div className="mx-3 mt-3 mb-2 flex gap-2 rounded-md bg-base-200 p-1">
-                <button
-                  className={`btn btn-sm flex-1 ${activePanel === 'conversation' ? 'btn-primary' : 'btn-ghost'}`}
-                  onClick={() => setActivePanel('conversation')}
-                >
-                  Conversation
-                </button>
-                <button
-                  className={`btn btn-sm flex-1 ${activePanel === 'oversight' ? 'btn-primary' : 'btn-ghost'}`}
-                  onClick={() => setActivePanel('oversight')}
-                >
-                  Oversight
-                </button>
+                ) : null}
               </div>
 
-              {haltReason ? (
-                <div className="mx-3 mb-2 rounded-md border border-warning/40 bg-warning/15 px-3 py-2 text-xs text-warning-content">
-                  {haltReason}
+              <div className="morph-status-strip mt-2 bg-base-200/60 text-xs">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="badge badge-ghost badge-sm">authority: {formatRuntimeValue(runtimeStatus.authorityState)}</span>
+                  <span className="badge badge-ghost badge-sm">phase: {formatRuntimeValue(runtimeStatus.executionPhase)}</span>
+                  <span className="badge badge-ghost badge-sm">state: {formatRuntimeValue(runtimeStatus.executionState)}</span>
+                  <button
+                    className="btn btn-ghost btn-xs ml-auto"
+                    onClick={() => setShowRuntimeControls((prev) => !prev)}
+                    type="button"
+                  >
+                    {showRuntimeControls ? 'Hide Controls' : 'Controls'}
+                  </button>
                 </div>
-              ) : null}
-
-              {activePanel === 'conversation' && (
-                <div
-                  ref={outputRef}
-                  className="card-body p-3 overflow-auto bg-base-100 flex-1"
-                >
-                  <MessageDisplay
-                    messages={messages}
-                    streamingSegments={streamingSegments}
-                    isStreaming={isStreaming}
-                  />
-                </div>
-              )}
-
-              {activePanel === 'oversight' && (
-                <div className="flex-1 overflow-auto p-3 bg-base-100">
-                  {enableAgentFocus && agentFocus.state === 'active' && (
-                    <AgentAttentionBar
-                      state={agentFocus.state}
-                      toolName={agentFocus.toolName}
-                      focusLabel={agentFocus.focusLabel}
-                      updatedAt={agentFocus.updatedAt}
-                    />
-                  )}
-                  {enableTaskGraph && (
-                    <TaskExecutionGraph
-                      nodes={taskNodes}
-                      contentGranularity={contentGranularity}
-                      informationDensity={informationDensity}
-                      colorEncoding={colorEncoding}
-                      monitoringContentScope={monitoringContentScope}
-                      explanationAvailability={explanationAvailability}
-                      explanationFormat={explanationFormat}
-                    />
-                  )}
-                  {!enableAgentFocus && !enableTaskGraph && (
-                    <div className="px-1 py-2 text-sm text-base-content/70">
-                      Oversight panel is empty for current mechanism settings.
-                    </div>
-                  )}
-                  {showPostHocPanel ? (
-                    <div className="mt-3 rounded border border-base-300 bg-base-200 p-3 text-xs">
-                      <div className="mb-1 font-semibold">Post-hoc Summary</div>
-                      <div>steps: {taskNodes.length}</div>
-                      <div>high impact steps: {highImpactCount}</div>
-                      <div>approved: {approvedCount}</div>
-                      <div>denied: {deniedCount}</div>
-                    </div>
-                  ) : null}
-                </div>
-              )}
-
+                {showRuntimeControls ? (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {canPause ? (
+                      <button className="btn btn-xs btn-outline" onClick={pauseExecution} type="button">
+                        Pause
+                      </button>
+                    ) : null}
+                    {canResume ? (
+                      <button className="btn btn-xs btn-outline" onClick={resumeExecution} type="button">
+                        Resume
+                      </button>
+                    ) : null}
+                    {canTakeover ? (
+                      <button className="btn btn-xs btn-outline" onClick={takeoverAuthority} type="button">
+                        Takeover
+                      </button>
+                    ) : null}
+                    {canRelease ? (
+                      <button className="btn btn-xs btn-outline" onClick={releaseControl} type="button">
+                        Release
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
             </div>
-          </div>
 
-          {shouldShowBadge ? (
-            <button
-              className="fixed right-4 bottom-24 z-30 btn btn-warning btn-sm"
-              onClick={() => setShowApprovalOverlay((prev) => !prev)}
-            >
-              Approvals ({pendingApprovalCount})
-            </button>
-          ) : null}
+            <div className="morph-tabbar mx-3 mt-2 mb-2 flex gap-2 bg-base-200">
+              <button
+                className={`btn btn-sm flex-1 rounded-lg ${activePanel === 'conversation' ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => setActivePanel('conversation')}
+              >
+                Conversation
+              </button>
+              <button
+                className={`btn btn-sm flex-1 rounded-lg ${activePanel === 'oversight' ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => setActivePanel('oversight')}
+              >
+                Oversight
+              </button>
+            </div>
+
+            {haltReason ? (
+              <div className="mx-3 mb-2 rounded-md border border-warning/40 bg-warning/15 px-3 py-2 text-xs text-warning-content">
+                {haltReason}
+              </div>
+            ) : null}
+
+            {activePanel === 'conversation' && (
+              <div
+                ref={outputRef}
+                className="morph-scroll min-h-0 flex-1 overflow-auto"
+              >
+                <MessageDisplay
+                  messages={messages}
+                  streamingSegments={streamingSegments}
+                  isStreaming={isStreaming}
+                />
+              </div>
+            )}
+
+            {activePanel === 'oversight' && (
+              <div className="morph-scroll min-h-0 flex-1 overflow-auto">
+                {enableAgentFocus && agentFocus.state === 'active' && (
+                  <AgentAttentionBar
+                    state={agentFocus.state}
+                    toolName={agentFocus.toolName}
+                    focusLabel={agentFocus.focusLabel}
+                    updatedAt={agentFocus.updatedAt}
+                  />
+                )}
+                {enableTaskGraph && (
+                  <TaskExecutionGraph
+                    nodes={taskNodes}
+                    contentGranularity={contentGranularity}
+                    informationDensity={informationDensity}
+                    colorEncoding={colorEncoding}
+                    monitoringContentScope={monitoringContentScope}
+                    explanationAvailability={explanationAvailability}
+                    explanationFormat={explanationFormat}
+                  />
+                )}
+                {!enableAgentFocus && !enableTaskGraph && (
+                  <div className="px-1 py-2 text-sm text-base-content/70">
+                    Oversight panel is empty for current mechanism settings.
+                  </div>
+                )}
+                {showPostHocPanel ? (
+                  <div className="mt-3 rounded-xl border border-base-300 bg-base-200 p-3 text-xs">
+                    <div className="mb-1 font-semibold">Post-hoc Summary</div>
+                    <div>steps: {taskNodes.length}</div>
+                    <div>high impact steps: {highImpactCount}</div>
+                    <div>approved: {approvedCount}</div>
+                    <div>denied: {deniedCount}</div>
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </div>
 
           {shouldShowOverlay ? (
             <div className="pointer-events-none fixed inset-x-4 bottom-24 z-30">
@@ -881,13 +893,14 @@ export function SidePanel() {
             </div>
           ) : null}
 
-          <PromptForm
-            onSubmit={handleSubmit}
-            onCancel={handleCancel}
-            isProcessing={isProcessing}
-            tabStatus={tabStatus}
-          />
-          <ProviderSelector isProcessing={isProcessing} />
+          <div className="pb-1">
+            <PromptForm
+              onSubmit={handleSubmit}
+              onCancel={handleCancel}
+              isProcessing={isProcessing}
+              tabStatus={tabStatus}
+            />
+          </div>
         </>
       ) : (
         <div className="flex flex-col flex-grow items-center justify-center">

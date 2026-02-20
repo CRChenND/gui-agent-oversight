@@ -138,7 +138,7 @@ export function ProviderSelector({ isProcessing }: ProviderSelectorProps) {
   
 
   return (
-    <div className="flex items-center mb-2 px-0">
+    <div className="flex min-w-0 items-center gap-1">
       <button 
         className="btn btn-ghost btn-xs p-1" 
         onClick={openOptionsPage}
@@ -148,7 +148,7 @@ export function ProviderSelector({ isProcessing }: ProviderSelectorProps) {
         <FontAwesomeIcon icon={faCog} className="text-gray-500 hover:text-gray-700" />
       </button>
       <select 
-        className="select select-ghost select-xs select-bordered w-auto focus:outline-none focus:ring-0 pl-0"
+        className="select select-bordered select-xs h-7 min-h-7 max-w-[220px] focus:outline-none focus:ring-0"
         value={`${currentProvider}|${currentModel}`}
         onChange={handleChange}
         disabled={isProcessing}

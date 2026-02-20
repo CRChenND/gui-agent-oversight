@@ -11,12 +11,21 @@ export const browserClick: ToolFactory = (page: Page) =>
     func: async (input: string) => {
       try {
         return await withActivePage(page, async (activePage) => {
-          if (/[#.[]/.test(input)) {
-            await activePage.click(input);
-            return `Clicked selector: ${input}`;
+          const target = input.trim();
+          if (!target) {
+            return "Error: click target cannot be empty.";
           }
-          await activePage.getByText(input).click();
-          return `Clicked element containing text: ${input}`;
+
+          // Keep click attempts bounded so missing/unstable targets do not stall the run.
+          const CLICK_TIMEOUT_MS = 5000;
+
+          if (/[#.[\]>:=]/.test(target)) {
+            await activePage.locator(target).first().click({ timeout: CLICK_TIMEOUT_MS });
+            return `Clicked selector: ${target}`;
+          }
+
+          await activePage.getByText(target, { exact: false }).first().click({ timeout: CLICK_TIMEOUT_MS });
+          return `Clicked element containing text: ${target}`;
         });
       } catch (error) {
         return `Error clicking '${input}': ${

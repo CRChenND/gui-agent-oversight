@@ -11,8 +11,8 @@ export const browserNavigate: ToolFactory = (page: Page) =>
     func: async (url: string) => {
       try {
         return await withActivePage(page, async (activePage) => {
-          // Navigate to the URL
-          await activePage.goto(url);
+          // Use DOMContentLoaded as the default wait target to reduce long waits on heavy pages.
+          await activePage.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
           
           // Get the tab ID and title after navigation
           try {
@@ -104,7 +104,7 @@ export const browserNavigateBack: ToolFactory = (page: Page) =>
     func: async () => {
       try {
         return await withActivePage(page, async (activePage) => {
-          await activePage.goBack();
+          await activePage.goBack({ waitUntil: "domcontentloaded", timeout: 15000 });
           return "Navigated back.";
         });
       } catch (err) {
@@ -122,7 +122,7 @@ export const browserNavigateForward: ToolFactory = (page: Page) =>
     func: async () => {
       try {
         return await withActivePage(page, async (activePage) => {
-          await activePage.goForward();
+          await activePage.goForward({ waitUntil: "domcontentloaded", timeout: 15000 });
           return "Navigated forward.";
         });
       } catch (err) {

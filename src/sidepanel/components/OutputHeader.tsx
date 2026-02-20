@@ -16,15 +16,15 @@ export const OutputHeader: React.FC<OutputHeaderProps> = ({
   isProcessing
 }) => {
   return (
-    <div className="flex justify-between items-center bg-base-300 p-3">
-      <div className="card-title text-base-content text-lg">
-        Demo
+    <div className="flex items-center justify-between border-b border-base-300 px-3 py-2">
+      <div className="text-sm font-semibold tracking-wide text-base-content/80">
+        MORPH
       </div>
       <div className="flex items-center gap-2">
         <div className="tooltip tooltip-bottom" data-tip="Clear conversation history and LLM context">
           <button 
             onClick={onClearHistory}
-            className="btn btn-sm btn-outline"
+            className="btn btn-ghost btn-xs"
             disabled={isProcessing}
           >
             <FontAwesomeIcon icon={faTrash} />
@@ -33,7 +33,7 @@ export const OutputHeader: React.FC<OutputHeaderProps> = ({
         <div className="tooltip tooltip-bottom" data-tip="Download current task graph steps as JSON">
           <button
             onClick={onDownloadTaskGraph}
-            className="btn btn-sm btn-outline"
+            className="btn btn-ghost btn-xs"
             disabled={!canDownloadTaskGraph}
           >
             <FontAwesomeIcon icon={faDownload} />
