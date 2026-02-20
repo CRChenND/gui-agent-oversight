@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ConfigManager } from '../background/configManager';
+import type { AuthorityState, ExecutionPhase, ExecutionState } from '../oversight/runtime/types';
 import {
   AGENT_FOCUS_MECHANISM_ID,
   INTERVENTION_GATE_MECHANISM_ID,
@@ -41,6 +42,23 @@ export function SidePanel() {
     reason: string;
   }>>([]);
   const [haltReason, setHaltReason] = useState<string | null>(null);
+  const [runtimeStatus, setRuntimeStatus] = useState<{
+    authorityState: AuthorityState;
+    executionPhase: ExecutionPhase;
+    executionState: ExecutionState;
+    updatedAt?: number;
+  }>({
+    authorityState: 'agent_autonomous',
+    executionPhase: 'planning',
+    executionState: 'running',
+  });
+  const [planReviewRequest, setPlanReviewRequest] = useState<{
+    planSummary: string;
+    plan?: string[];
+    stepId?: string;
+    toolName?: string;
+    toolInput?: string;
+  } | null>(null);
   const [showApprovalOverlay, setShowApprovalOverlay] = useState(true);
   const lastApprovalPromptTsRef = useRef(0);
   const approvalPromptWindowRef = useRef<number[]>([]);
@@ -416,7 +434,12 @@ export function SidePanel() {
     cancelExecution,
     clearHistory,
     approveRequest,
-    rejectRequest
+    rejectRequest,
+    pauseExecution,
+    resumeExecution,
+    takeoverAuthority,
+    releaseControl,
+    submitPlanReviewDecision,
   } = useChromeMessaging({
     tabId,
     windowId,
@@ -563,8 +586,42 @@ export function SidePanel() {
     },
     onOversightEvent: (event) => {
       handleOversightEvent(event);
-    }
+    },
+    onRuntimeStateUpdate: (status) => {
+      setRuntimeStatus(status);
+      if (status.executionState === 'paused_by_user' || status.executionState === 'paused_by_system') {
+        setIsProcessing(true);
+      }
+      if (status.executionState === 'cancelled' || status.executionState === 'completed') {
+        setIsProcessing(false);
+      }
+    },
+    onPlanReviewRequired: (payload) => {
+      setPlanReviewRequest(payload);
+      setActivePanel('oversight');
+      addSystemMessage('🧭 Plan review required before execution.');
+    },
   });
+
+  const handlePlanReviewApprove = () => {
+    submitPlanReviewDecision('approve');
+    setPlanReviewRequest(null);
+    addSystemMessage('✅ Plan approved. Execution continues.');
+  };
+
+  const handlePlanReviewEdit = () => {
+    const editedPlan = window.prompt('Edit plan guidance:', planReviewRequest?.planSummary || '') || '';
+    submitPlanReviewDecision('edit', editedPlan);
+    setPlanReviewRequest(null);
+    addSystemMessage(`✏️ Plan edited${editedPlan ? ': ' + editedPlan : ''}`);
+  };
+
+  const handlePlanReviewReject = () => {
+    submitPlanReviewDecision('reject');
+    setPlanReviewRequest(null);
+    setIsProcessing(false);
+    addSystemMessage('❌ Plan rejected. Execution terminated.');
+  };
 
   // Handle form submission
   const handleSubmit = async (prompt: string) => {
@@ -663,6 +720,33 @@ export function SidePanel() {
                 canDownloadTaskGraph={taskNodes.length > 0}
                 isProcessing={isProcessing}
               />
+              <div className="mx-3 mt-2 rounded-md border border-base-300 bg-base-200 px-3 py-2 text-xs">
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <span className="font-semibold">Authority:</span> {runtimeStatus.authorityState}
+                  </div>
+                  <div>
+                    <span className="font-semibold">Phase:</span> {runtimeStatus.executionPhase}
+                  </div>
+                  <div>
+                    <span className="font-semibold">Execution:</span> {runtimeStatus.executionState}
+                  </div>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button className="btn btn-xs btn-outline" onClick={pauseExecution} type="button">
+                    Pause
+                  </button>
+                  <button className="btn btn-xs btn-outline" onClick={resumeExecution} type="button">
+                    Resume
+                  </button>
+                  <button className="btn btn-xs btn-outline" onClick={takeoverAuthority} type="button">
+                    Takeover
+                  </button>
+                  <button className="btn btn-xs btn-outline" onClick={releaseControl} type="button">
+                    Release control
+                  </button>
+                </div>
+              </div>
               <div className="mx-3 mt-3 mb-2 flex gap-2 rounded-md bg-base-200 p-1">
                 <button
                   className={`btn btn-sm flex-1 ${activePanel === 'conversation' ? 'btn-primary' : 'btn-ghost'}`}
@@ -766,6 +850,33 @@ export function SidePanel() {
                     compact={informationDensity === 'compact'}
                   />
                 ))}
+              </div>
+            </div>
+          ) : null}
+
+          {planReviewRequest ? (
+            <div className="pointer-events-none fixed inset-x-4 bottom-44 z-40">
+              <div className="pointer-events-auto rounded-lg border border-warning/40 bg-base-100 p-4 shadow-xl">
+                <div className="mb-2 text-sm font-semibold">Plan Review</div>
+                <div className="mb-2 text-xs text-base-content/80 whitespace-pre-wrap">{planReviewRequest.planSummary}</div>
+                {planReviewRequest.plan && planReviewRequest.plan.length > 0 ? (
+                  <ol className="mb-3 list-decimal pl-5 text-xs">
+                    {planReviewRequest.plan.map((line, idx) => (
+                      <li key={`plan-line-${idx}`}>{line}</li>
+                    ))}
+                  </ol>
+                ) : null}
+                <div className="flex gap-2">
+                  <button className="btn btn-xs btn-success" onClick={handlePlanReviewApprove} type="button">
+                    Approve Plan
+                  </button>
+                  <button className="btn btn-xs btn-warning" onClick={handlePlanReviewEdit} type="button">
+                    Edit Plan
+                  </button>
+                  <button className="btn btn-xs btn-error" onClick={handlePlanReviewReject} type="button">
+                    Reject Plan
+                  </button>
+                </div>
               </div>
             </div>
           ) : null}

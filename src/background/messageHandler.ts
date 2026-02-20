@@ -4,6 +4,7 @@ import { cancelExecution } from './agentController';
 import { clearMessageHistory } from './agentController';
 import { initializeAgent } from './agentController';
 import { attachToTab, getTabState, getWindowForTab, forceResetPlaywright } from './tabManager';
+import { getOversightRuntimeManager } from '../oversight/runtime/runtimeManager';
 import { BackgroundMessage } from './types';
 import { logWithTimestamp, handleError } from './utils';
 
@@ -110,6 +111,24 @@ export function handleMessage(
             sendResponse({ success: false, error: errorMessage });
           });
         return true; // Keep the message channel open for async response
+      case 'pauseExecution':
+        handlePauseExecution(message, sendResponse);
+        return true;
+      case 'resumeExecution':
+        handleResumeExecution(message, sendResponse);
+        return true;
+      case 'takeoverAuthority':
+        handleTakeoverAuthority(message, sendResponse);
+        return true;
+      case 'releaseControl':
+        handleReleaseControl(message, sendResponse);
+        return true;
+      case 'resolveEscalation':
+        handleResolveEscalation(message, sendResponse);
+        return true;
+      case 'planReviewDecision':
+        handlePlanReviewDecision(message, sendResponse);
+        return true;
 
       default:
         // This should never happen due to the type guard, but TypeScript requires it
@@ -158,9 +177,74 @@ function isBackgroundMessage(message: any): message is BackgroundMessage {
       message.action === 'pageError' ||
       message.action === 'forceResetPlaywright' ||
       message.action === 'requestApproval' ||  // Add support for request approval messages
-      message.action === 'checkAgentStatus'  // Add support for agent status check
+      message.action === 'checkAgentStatus' ||  // Add support for agent status check
+      message.action === 'pauseExecution' ||
+      message.action === 'resumeExecution' ||
+      message.action === 'takeoverAuthority' ||
+      message.action === 'releaseControl' ||
+      message.action === 'resolveEscalation' ||
+      message.action === 'planReviewDecision'
     )
   );
+}
+
+function handlePauseExecution(
+  message: { tabId?: number; windowId?: number },
+  sendResponse: (response?: any) => void
+): void {
+  const runtimeManager = getOversightRuntimeManager();
+  void runtimeManager.pauseByUser(message.windowId).then(() => sendResponse({ success: true }));
+}
+
+function handleResumeExecution(
+  message: { tabId?: number; windowId?: number },
+  sendResponse: (response?: any) => void
+): void {
+  const runtimeManager = getOversightRuntimeManager();
+  void runtimeManager.resumeByUser(message.windowId).then(() => sendResponse({ success: true }));
+}
+
+function handleTakeoverAuthority(
+  message: { tabId?: number; windowId?: number },
+  sendResponse: (response?: any) => void
+): void {
+  const runtimeManager = getOversightRuntimeManager();
+  void runtimeManager.takeover(message.windowId).then(() => sendResponse({ success: true }));
+}
+
+function handleReleaseControl(
+  message: { tabId?: number; windowId?: number },
+  sendResponse: (response?: any) => void
+): void {
+  const runtimeManager = getOversightRuntimeManager();
+  void runtimeManager.releaseControl(message.windowId).then(() => sendResponse({ success: true }));
+}
+
+function handleResolveEscalation(
+  message: { tabId?: number; windowId?: number },
+  sendResponse: (response?: any) => void
+): void {
+  const runtimeManager = getOversightRuntimeManager();
+  void runtimeManager.resolveEscalation(message.windowId).then(() => sendResponse({ success: true }));
+}
+
+function handlePlanReviewDecision(
+  message: { windowId?: number; decision?: 'approve' | 'edit' | 'reject'; editedPlan?: string },
+  sendResponse: (response?: any) => void
+): void {
+  if (!message.decision) {
+    sendResponse({ success: false, error: 'Missing plan review decision' });
+    return;
+  }
+  const runtimeManager = getOversightRuntimeManager();
+  void runtimeManager
+    .submitPlanReviewDecision({
+      windowId: message.windowId,
+      decision: message.decision,
+      editedPlan: message.editedPlan,
+    })
+    .then((resolved) => sendResponse({ success: resolved }))
+    .catch((error) => sendResponse({ success: false, error: String(error) }));
 }
 
 /**

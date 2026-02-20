@@ -6,9 +6,12 @@ import { contextTokenCount } from "../agent/TokenManager";
 import { registerThinkingDispatch } from "../agent/thinking/thinkingEmitter";
 import {
   AGENT_FOCUS_MECHANISM_ID,
+  INTERVENTION_GATE_MECHANISM_ID,
   getOversightStorageQueryDefaults,
+  getOversightParameterStorageKey,
   mapStorageToOversightSettings,
 } from "../oversight/registry";
+import { getOversightRuntimeManager } from "../oversight/runtime/runtimeManager";
 import { getOversightSessionManager } from "../oversight/session/sessionManager";
 import { ScreenshotManager } from "../tracking/screenshotManager";
 import { ConfigManager } from "./configManager";
@@ -460,6 +463,7 @@ export function cancelExecution(tabId?: number): void {
   }, tabId);
 
   const tabState = getTabState(tabId);
+  void getOversightRuntimeManager().markRunCancelled(windowId);
   void handleRunCancelled({
     tabId,
     windowId,
@@ -656,9 +660,35 @@ export async function executePrompt(
     
     // Always enable streaming
     const useStreaming = true;
-    const mechanismStorage = await chrome.storage.sync.get(getOversightStorageQueryDefaults());
+    const controlModeKey = getOversightParameterStorageKey(INTERVENTION_GATE_MECHANISM_ID, 'controlMode');
+    const gatePolicyKey = getOversightParameterStorageKey(INTERVENTION_GATE_MECHANISM_ID, 'gatePolicy');
+    const planReviewEnabledKey = 'oversight.runtime.planReviewEnabled';
+    const mechanismStorage = await chrome.storage.sync.get({
+      ...getOversightStorageQueryDefaults(),
+      [controlModeKey]: 'risky_only',
+      [gatePolicyKey]: 'impact',
+      [planReviewEnabledKey]: true,
+    });
     const mechanismSettings = mapStorageToOversightSettings(mechanismStorage as Record<string, unknown>);
     const enableAgentFocus = mechanismSettings[AGENT_FOCUS_MECHANISM_ID];
+    const rawControlMode = mechanismStorage[controlModeKey];
+    const rawGatePolicy = mechanismStorage[gatePolicyKey];
+    const controlMode =
+      rawControlMode === 'approve_all' || rawControlMode === 'risky_only' || rawControlMode === 'step_through'
+        ? rawControlMode
+        : 'risky_only';
+    const gatePolicy =
+      rawGatePolicy === 'never' || rawGatePolicy === 'always' || rawGatePolicy === 'impact' || rawGatePolicy === 'adaptive'
+        ? rawGatePolicy
+        : 'impact';
+    const planReviewEnabled = mechanismStorage[planReviewEnabledKey] !== false;
+    const runtimeManager = getOversightRuntimeManager();
+    runtimeManager.initializeRun({
+      tabId: targetTabId,
+      windowId: updatedTabState.windowId,
+      controlMode,
+      gatePolicy,
+    });
     
     // Reset streaming buffer and segment ID
     resetStreamingState();
@@ -819,6 +849,12 @@ export async function executePrompt(
       },
       onRiskSignal: (stepId, toolName, signal) => {
         const windowId = getWindowForTab(targetTabId);
+        void runtimeManager.handleAdaptiveRiskSignal({
+          windowId,
+          gatePolicy: typeof signal.gatePolicy === 'string' ? signal.gatePolicy : undefined,
+          promptedByGate: Boolean(signal.promptedByGate),
+          impact: typeof signal.impact === 'string' ? signal.impact : undefined,
+        });
         void handleRiskSignal({
           tabId: targetTabId,
           windowId,
@@ -891,6 +927,7 @@ export async function executePrompt(
       onComplete: () => {
         // Get the window ID for this tab
         const windowId = getWindowForTab(targetTabId);
+        void runtimeManager.markRunCompleted(windowId);
         void handleRunCompleted({
           tabId: targetTabId,
           windowId,
@@ -924,6 +961,18 @@ export async function executePrompt(
         }
         
         sendUIMessage('processingComplete', null, targetTabId, windowId);
+      },
+      onPlanReviewRequired: async (payload) => {
+        const windowId = getWindowForTab(targetTabId);
+        if (!planReviewEnabled) {
+          await runtimeManager.setExecutionPhase(windowId, 'execution', 'plan_review_disabled');
+          return { decision: 'approve' as const };
+        }
+        return runtimeManager.requestPlanReview(windowId, payload);
+      },
+      onWaitForExecutionPermission: async () => {
+        const windowId = getWindowForTab(targetTabId);
+        return runtimeManager.waitUntilExecutable(windowId);
       }
     };
 
@@ -971,6 +1020,7 @@ export async function executePrompt(
   } catch (error) {
     const errorMessage = handleError(error, 'executing prompt');
     if (tabId) {
+      void getOversightRuntimeManager().markRunFailed(getWindowForTab(tabId));
       const tabState = getTabState(tabId);
       void handleRunFailed({
         tabId,

@@ -77,8 +77,16 @@ export function useOversightMechanisms({
       const sessionId = (await sessionManager.getActiveSessionId()) ?? (await sessionManager.startSession());
 
       const eventType: OversightTelemetryEvent['eventType'] =
-        event.kind === 'oversight_level_changed' || event.kind === 'run_completed' || event.kind === 'run_cancelled' || event.kind === 'run_failed'
+        event.kind === 'oversight_level_changed' ||
+        event.kind === 'run_completed' ||
+        event.kind === 'run_cancelled' ||
+        event.kind === 'run_failed' ||
+        event.kind === 'authority_transition' ||
+        event.kind === 'execution_phase_changed' ||
+        event.kind === 'execution_state_changed'
           ? 'state_transition'
+          : event.kind === 'plan_review_decision'
+            ? 'human_intervention'
           : 'oversight_signal';
 
       logger.log({

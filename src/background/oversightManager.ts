@@ -5,12 +5,28 @@ import { getOversightTelemetryLogger } from '../oversight/telemetry/logger';
 import type { OversightTelemetryEvent } from '../oversight/telemetry/types';
 import type { AgentThinkingSummary, OversightEvent, StepContextEvent } from '../oversight/types';
 import { inferRiskAssessment } from '../oversight/riskAssessment';
+import { getOversightRuntimeManager } from '../oversight/runtime/runtimeManager';
 import { clearAttentionOverlay, inferAttentionTarget, renderAttentionOverlay } from './attentionTracker';
 import { sendUIMessage, logWithTimestamp } from './utils';
 
 function emitOversightEvent(event: OversightEvent, tabId: number, windowId?: number): void {
   sendUIMessage('oversightEvent', { event }, tabId, windowId);
 }
+
+let runtimeDispatcherRegistered = false;
+function ensureRuntimeDispatcherRegistered(): void {
+  if (runtimeDispatcherRegistered) return;
+  getOversightRuntimeManager().setDispatcher({
+    emitOversightEvent: (event, tabId, windowId) => {
+      sendUIMessage('oversightEvent', { event }, tabId, windowId);
+    },
+    emitRuntimeState: (status, tabId, windowId) => {
+      sendUIMessage('runtimeStateUpdate', status, tabId, windowId);
+    },
+  });
+  runtimeDispatcherRegistered = true;
+}
+ensureRuntimeDispatcherRegistered();
 
 let activeStepContextByStepId: Record<string, TaskStepContext> = {};
 

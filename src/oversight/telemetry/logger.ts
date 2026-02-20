@@ -1,4 +1,5 @@
 import type { AgentThinkingSummary } from '../types';
+import type { OversightRhythmMetrics } from '../runtime/types';
 import { enforceThinkingSizeLimit, redactThinking, type TelemetryRedactionLevel } from './redaction';
 import type { OversightTelemetryEvent } from './types';
 
@@ -157,6 +158,8 @@ export class OversightTelemetryLogger {
       groupedByStepId[stepId].push(event);
     }
 
+    const oversightRhythmMetrics = this.computeOversightRhythmMetrics(events);
+
     return JSON.stringify(
       {
         sessionId,
@@ -173,10 +176,41 @@ export class OversightTelemetryLogger {
           payload: event.payload,
         })),
         groupedByStepId,
+        oversightRhythmMetrics,
       },
       null,
       2
     );
+  }
+
+  private computeOversightRhythmMetrics(events: OversightTelemetryEvent[]): OversightRhythmMetrics {
+    const interruptionEvents = events
+      .filter((event) => {
+        const kind = event.payload?.kind;
+        return kind === 'intervention_prompted' || kind === 'execution_paused' || kind === 'authority_takeover';
+      })
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+    const intervals: number[] = [];
+    for (let i = 1; i < interruptionEvents.length; i++) {
+      intervals.push(Math.max(0, interruptionEvents[i].timestamp - interruptionEvents[i - 1].timestamp));
+    }
+
+    const enforcedInterruptions = events.filter((event) => event.payload?.kind === 'intervention_prompted').length;
+    const userInitiatedInterruptions = events.filter((event) => {
+      if (event.payload?.kind === 'authority_takeover') return true;
+      return event.payload?.kind === 'execution_paused' && event.payload?.by === 'user';
+    }).length;
+    const authorityTransitionCount = events.filter((event) => event.payload?.kind === 'authority_transition').length;
+
+    return {
+      totalInterruptions: interruptionEvents.length,
+      enforcedInterruptions,
+      userInitiatedInterruptions,
+      meanInterruptionIntervalMs:
+        intervals.length > 0 ? intervals.reduce((sum, value) => sum + value, 0) / intervals.length : 0,
+      authorityTransitionCount,
+    };
   }
 }
 

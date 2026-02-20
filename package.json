@@ -20,6 +20,7 @@
     "dev": "node scripts/copy-static.js && tsc && node scripts/dev-helper.js && vite build --watch",
     "dev:serve": "vite",
     "copy-static": "node scripts/copy-static.js",
+    "test:e2e:runtime": "node scripts/run-runtime-e2e.mjs",
     "lint": "eslint \"src/**/*.{ts,tsx,js,jsx}\"",
     "lint:fix": "eslint \"src/**/*.{ts,tsx,js,jsx}\" --fix"
   },

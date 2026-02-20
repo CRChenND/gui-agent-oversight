@@ -23,6 +23,13 @@ import {
   mapStorageToOversightSettings,
   type OversightMechanismId,
 } from '../oversight/registry';
+import {
+  getBuiltinArchetypes,
+  hydrateCustomArchetypes,
+  OVERSIGHT_ARCHETYPES_STORAGE_KEY,
+  toStoredArchetype,
+  type OversightArchetype,
+} from './archetypes';
 
 // Import components
 import { Model } from './components/ModelList';
@@ -81,6 +88,8 @@ export function Options() {
   // Oversight mechanism toggles
   const [oversightSettings, setOversightSettings] = useState(createDefaultOversightMechanismSettings);
   const [oversightParameterSettings, setOversightParameterSettings] = useState(createDefaultOversightParameterSettings);
+  const [builtinArchetypes] = useState<OversightArchetype[]>(getBuiltinArchetypes);
+  const [customArchetypes, setCustomArchetypes] = useState<OversightArchetype[]>([]);
 
   // Load saved settings when component mounts
   useEffect(() => {
@@ -109,6 +118,7 @@ export function Options() {
       openrouterBaseUrl: 'https://openrouter.ai/api/v1',
       openrouterModelId: '',
       globalKnowledgeText: '',
+      [OVERSIGHT_ARCHETYPES_STORAGE_KEY]: [],
       ...getOversightStorageQueryDefaults(),
       ...getOversightParameterStorageQueryDefaults(),
     }, (result) => {
@@ -139,6 +149,7 @@ export function Options() {
       setGlobalKnowledgeText(result.globalKnowledgeText || '');
       setOversightSettings(mapStorageToOversightSettings(result as Record<string, unknown>));
       setOversightParameterSettings(mapStorageToOversightParameterSettings(result as Record<string, unknown>));
+      setCustomArchetypes(hydrateCustomArchetypes((result as Record<string, unknown>)[OVERSIGHT_ARCHETYPES_STORAGE_KEY]));
     });
   }, []);
 
@@ -275,6 +286,46 @@ export function Options() {
     URL.revokeObjectURL(url);
   };
 
+  const persistCustomArchetypes = (archetypes: OversightArchetype[]) => {
+    const stored = archetypes.map(toStoredArchetype);
+    chrome.storage.sync.set({
+      [OVERSIGHT_ARCHETYPES_STORAGE_KEY]: stored,
+    });
+  };
+
+  const applyArchetype = (archetype: OversightArchetype) => {
+    setOversightSettings({ ...archetype.settings });
+    setOversightParameterSettings({ ...archetype.parameterSettings });
+    setSaveStatus(`Applied archetype: ${archetype.name}`);
+    setTimeout(() => setSaveStatus(''), 2000);
+  };
+
+  const saveCurrentAsArchetype = (name: string) => {
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+    const archetype: OversightArchetype = {
+      id: `custom-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      name: trimmedName,
+      description: 'User-defined archetype preset.',
+      scope: 'custom',
+      settings: { ...oversightSettings },
+      parameterSettings: { ...oversightParameterSettings },
+    };
+    const updated = [...customArchetypes, archetype];
+    setCustomArchetypes(updated);
+    persistCustomArchetypes(updated);
+    setSaveStatus(`Saved archetype: ${trimmedName}`);
+    setTimeout(() => setSaveStatus(''), 2000);
+  };
+
+  const deleteCustomArchetype = (archetypeId: string) => {
+    const updated = customArchetypes.filter((item) => item.id !== archetypeId);
+    setCustomArchetypes(updated);
+    persistCustomArchetypes(updated);
+    setSaveStatus('Deleted archetype preset');
+    setTimeout(() => setSaveStatus(''), 2000);
+  };
+
   return (
     <VerticalTabs
       // Provider selection
@@ -345,6 +396,11 @@ export function Options() {
       setOversightMechanismEnabled={setOversightMechanismEnabled}
       setOversightMechanismParameter={setOversightMechanismParameter}
       handleExportDesignMatrix={handleExportDesignMatrix}
+      builtinArchetypes={builtinArchetypes}
+      customArchetypes={customArchetypes}
+      applyArchetype={applyArchetype}
+      saveCurrentAsArchetype={saveCurrentAsArchetype}
+      deleteCustomArchetype={deleteCustomArchetype}
     />
   );
 }

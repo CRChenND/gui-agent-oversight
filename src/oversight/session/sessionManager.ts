@@ -2,6 +2,8 @@ const ACTIVE_SESSION_STORAGE_KEY = 'oversight.telemetry.activeSessionId';
 
 export class OversightSessionManager {
   private activeSessionId: string | null = null;
+  private sessionStartedAt: number | null = null;
+  private sessionEndedAt: number | null = null;
 
   generateSessionId(): string {
     return `oversight_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -10,11 +12,14 @@ export class OversightSessionManager {
   async startSession(): Promise<string> {
     const sessionId = this.generateSessionId();
     this.activeSessionId = sessionId;
+    this.sessionStartedAt = Date.now();
+    this.sessionEndedAt = null;
     await chrome.storage.local.set({ [ACTIVE_SESSION_STORAGE_KEY]: sessionId });
     return sessionId;
   }
 
   async endSession(): Promise<void> {
+    this.sessionEndedAt = Date.now();
     this.activeSessionId = null;
     await chrome.storage.local.remove(ACTIVE_SESSION_STORAGE_KEY);
   }
@@ -32,6 +37,13 @@ export class OversightSessionManager {
     }
 
     return null;
+  }
+
+  getSessionLifecycle(): { startedAt: number | null; endedAt: number | null } {
+    return {
+      startedAt: this.sessionStartedAt,
+      endedAt: this.sessionEndedAt,
+    };
   }
 }
 

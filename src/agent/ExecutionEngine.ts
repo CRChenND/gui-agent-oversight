@@ -44,6 +44,14 @@ export interface ExecutionCallbacks {
   onRiskSignal?: (stepId: string, toolName: string, payload: Record<string, unknown>) => void;
   onSegmentComplete?: (segment: string) => void;
   onFallbackStarted?: () => void;
+  onPlanReviewRequired?: (payload: {
+    stepId: string;
+    toolName: string;
+    toolInput: string;
+    planSummary: string;
+    plan?: string[];
+  }) => Promise<{ decision: 'approve' | 'edit' | 'reject'; editedPlan?: string }>;
+  onWaitForExecutionPermission?: () => Promise<{ allowed: boolean; reason?: string }>;
 }
 
 /**
@@ -71,7 +79,9 @@ class CallbackAdapter {
       onToolError: this.originalCallbacks.onToolError,
       onRiskSignal: this.originalCallbacks.onRiskSignal,
       onSegmentComplete: this.originalCallbacks.onSegmentComplete,
-      onFallbackStarted: this.originalCallbacks.onFallbackStarted
+      onFallbackStarted: this.originalCallbacks.onFallbackStarted,
+      onPlanReviewRequired: this.originalCallbacks.onPlanReviewRequired,
+      onWaitForExecutionPermission: this.originalCallbacks.onWaitForExecutionPermission,
     };
   }
 
@@ -367,6 +377,7 @@ export class ExecutionEngine {
 
       let done = false;
       let step = 0;
+      let planReviewed = false;
 
       while (!done && step++ < MAX_STEPS && !this.errorHandler.isExecutionCancelled()) {
         try {
@@ -523,10 +534,44 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             accumulatedText,
             modelThinkingSummary: modelMetadata.thinkingSummary,
           });
-          emitAgentThinking(stepId, toolName, thinking);
-          if (adaptedCallbacks.onToolStart) {
-            adaptedCallbacks.onToolStart(stepId, toolName, toolInput);
+
+          if (!planReviewed && adaptedCallbacks.onPlanReviewRequired) {
+            const planReview = await adaptedCallbacks.onPlanReviewRequired({
+              stepId,
+              toolName,
+              toolInput,
+              planSummary: thinking.rationale || modelMetadata.thinkingSummary || `Plan inferred for ${toolName}`,
+              plan: thinking.plan,
+            });
+            planReviewed = true;
+
+            if (planReview.decision === 'reject') {
+              adaptedCallbacks.onToolOutput('❌ Plan review rejected. Execution terminated before tool execution.');
+              done = true;
+              messages.push(
+                { role: 'assistant', content: accumulatedText },
+                { role: 'user', content: 'Plan review rejected by user. Do not execute further actions.' }
+              );
+              messages = trimHistory(messages);
+              continue;
+            }
+
+            if (planReview.decision === 'edit') {
+              const editText = planReview.editedPlan?.trim() || 'Plan edited by user.';
+              adaptedCallbacks.onToolOutput(`✏️ Plan edited by user. Regenerating next step with edits: ${editText}`);
+              messages.push(
+                { role: 'assistant', content: accumulatedText },
+                {
+                  role: 'user',
+                  content: `Plan review decision: edit. Updated plan guidance:\n${editText}\nRegenerate the next step and tool call accordingly.`,
+                }
+              );
+              messages = trimHistory(messages);
+              continue;
+            }
           }
+
+          emitAgentThinking(stepId, toolName, thinking);
 
           const baseRiskAssessment = inferRiskAssessment(toolName, toolInput);
           const resolvedImpact = modelMetadata.impact ?? baseRiskAssessment.impact;
@@ -595,6 +640,24 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
 
           // Check for cancellation before tool execution
           if (this.errorHandler.isExecutionCancelled()) break;
+
+          if (adaptedCallbacks.onWaitForExecutionPermission) {
+            const permission = await adaptedCallbacks.onWaitForExecutionPermission();
+            if (!permission.allowed) {
+              adaptedCallbacks.onToolOutput(`⏸️ Execution blocked: ${permission.reason || 'runtime policy block'}`);
+              done = true;
+              messages.push(
+                { role: "assistant", content: accumulatedText },
+                { role: "user", content: `Execution blocked by runtime state. ${permission.reason || ''}` }
+              );
+              messages = trimHistory(messages);
+              continue;
+            }
+          }
+
+          if (adaptedCallbacks.onToolStart) {
+            adaptedCallbacks.onToolStart(stepId, toolName, toolInput);
+          }
 
           // ── 3. Execute tool ──────────────────────────────────────────────────
           adaptedCallbacks.onToolOutput(`🕹️ tool: ${toolName} | args: ${toolInput}`);

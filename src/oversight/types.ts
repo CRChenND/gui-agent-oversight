@@ -1,5 +1,8 @@
 export type AttentionFocusType = 'selector' | 'coordinates' | 'url' | 'text' | 'none';
 export type StepImpact = 'low' | 'medium' | 'high';
+export type AuthorityState = 'agent_autonomous' | 'shared_supervision' | 'human_control';
+export type ExecutionPhase = 'planning' | 'plan_review' | 'execution' | 'posthoc_review' | 'terminated';
+export type ExecutionState = 'running' | 'paused_by_user' | 'paused_by_system' | 'cancelled' | 'completed';
 
 export type OversightLevel = 'observe' | 'impact_gated' | 'stepwise';
 
@@ -77,4 +80,41 @@ export type OversightEvent =
       timestamp: number;
       focusLabel: string;
       error?: string;
+    }
+  | {
+      kind: 'authority_transition';
+      from: AuthorityState;
+      to: AuthorityState;
+      reason: string;
+      timestamp: number;
+    }
+  | {
+      kind: 'execution_phase_changed';
+      from: ExecutionPhase;
+      to: ExecutionPhase;
+      reason: string;
+      timestamp: number;
+    }
+  | {
+      kind: 'execution_state_changed';
+      from: ExecutionState;
+      to: ExecutionState;
+      reason: string;
+      by: 'user' | 'system';
+      timestamp: number;
+    }
+  | {
+      kind: 'plan_review_requested';
+      timestamp: number;
+      planSummary: string;
+      plan?: string[];
+      stepId?: string;
+      toolName?: string;
+      toolInput?: string;
+    }
+  | {
+      kind: 'plan_review_decision';
+      decision: 'approve' | 'edit' | 'reject';
+      edited: boolean;
+      timestamp: number;
     };

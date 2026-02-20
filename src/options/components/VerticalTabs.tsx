@@ -6,6 +6,7 @@ import type {
   OversightParameterValue,
   OversightMechanismSettings,
 } from '../../oversight/registry';
+import type { OversightArchetype } from '../archetypes';
 import { Model } from './ModelList';
 import { OllamaModel } from './OllamaModelList';
 import { InteractionTab } from './tabs/InteractionTab';
@@ -94,6 +95,11 @@ interface VerticalTabsProps {
     value: OversightParameterValue
   ) => void;
   handleExportDesignMatrix: () => void;
+  builtinArchetypes: OversightArchetype[];
+  customArchetypes: OversightArchetype[];
+  applyArchetype: (archetype: OversightArchetype) => void;
+  saveCurrentAsArchetype: (name: string) => void;
+  deleteCustomArchetype: (archetypeId: string) => void;
 }
 
 export function VerticalTabs(props: VerticalTabsProps) {
@@ -176,6 +182,11 @@ export function VerticalTabs(props: VerticalTabsProps) {
       saveStatus={props.saveStatus}
       handleSave={props.handleSave}
       handleExportDesignMatrix={props.handleExportDesignMatrix}
+      builtinArchetypes={props.builtinArchetypes}
+      customArchetypes={props.customArchetypes}
+      applyArchetype={props.applyArchetype}
+      saveCurrentAsArchetype={props.saveCurrentAsArchetype}
+      deleteCustomArchetype={props.deleteCustomArchetype}
     />
   );
 

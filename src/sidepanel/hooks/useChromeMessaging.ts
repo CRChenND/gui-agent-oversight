@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import type { OversightEvent } from '../../oversight/types';
+import type { AuthorityState, ExecutionPhase, ExecutionState } from '../../oversight/runtime/types';
 import { ChromeMessage } from '../types';
 
 interface UseChromeMessagingProps {
@@ -34,6 +35,19 @@ interface UseChromeMessagingProps {
   onAgentStatusUpdate?: (status: string, lastHeartbeat: number) => void;
   onAttentionUpdate?: (content: any) => void;
   onOversightEvent?: (event: OversightEvent) => void;
+  onRuntimeStateUpdate?: (status: {
+    authorityState: AuthorityState;
+    executionPhase: ExecutionPhase;
+    executionState: ExecutionState;
+    updatedAt?: number;
+  }) => void;
+  onPlanReviewRequired?: (payload: {
+    planSummary: string;
+    plan?: string[];
+    stepId?: string;
+    toolName?: string;
+    toolInput?: string;
+  }) => void;
 }
 
 export const useChromeMessaging = ({
@@ -61,7 +75,9 @@ export const useChromeMessaging = ({
   onPageError,
   onAgentStatusUpdate,
   onAttentionUpdate,
-  onOversightEvent
+  onOversightEvent,
+  onRuntimeStateUpdate,
+  onPlanReviewRequired
 }: UseChromeMessagingProps) => {
 
   // Listen for updates from the background script
@@ -120,6 +136,39 @@ export const useChromeMessaging = ({
         onProcessingComplete();
       } else if (message.action === 'oversightEvent' && onOversightEvent && message.content?.event) {
         onOversightEvent(message.content.event);
+      } else if (message.action === 'runtimeStateUpdate' && onRuntimeStateUpdate && message.content) {
+        const payload = message.content;
+        if (
+          (payload.authorityState === 'agent_autonomous' ||
+            payload.authorityState === 'shared_supervision' ||
+            payload.authorityState === 'human_control') &&
+          (payload.executionPhase === 'planning' ||
+            payload.executionPhase === 'plan_review' ||
+            payload.executionPhase === 'execution' ||
+            payload.executionPhase === 'posthoc_review' ||
+            payload.executionPhase === 'terminated') &&
+          (payload.executionState === 'running' ||
+            payload.executionState === 'paused_by_user' ||
+            payload.executionState === 'paused_by_system' ||
+            payload.executionState === 'cancelled' ||
+            payload.executionState === 'completed')
+        ) {
+          onRuntimeStateUpdate({
+            authorityState: payload.authorityState,
+            executionPhase: payload.executionPhase,
+            executionState: payload.executionState,
+            updatedAt: typeof payload.updatedAt === 'number' ? payload.updatedAt : Date.now(),
+          });
+        }
+      } else if (message.action === 'planReviewRequired' && onPlanReviewRequired && message.content) {
+        const payload = message.content;
+        onPlanReviewRequired({
+          planSummary: typeof payload.planSummary === 'string' ? payload.planSummary : 'Plan generated.',
+          plan: Array.isArray(payload.plan) ? payload.plan.filter((v: unknown) => typeof v === 'string') : undefined,
+          stepId: typeof payload.stepId === 'string' ? payload.stepId : undefined,
+          toolName: typeof payload.toolName === 'string' ? payload.toolName : undefined,
+          toolInput: typeof payload.toolInput === 'string' ? payload.toolInput : undefined,
+        });
       } else if (message.action === 'attentionUpdate' && onAttentionUpdate) {
         onAttentionUpdate(message.content);
       } else if (message.action === 'attentionUpdate' && onOversightEvent && message.content) {
@@ -263,7 +312,9 @@ export const useChromeMessaging = ({
     onPageError,
     onAgentStatusUpdate,
     onAttentionUpdate,
-    onOversightEvent
+    onOversightEvent,
+    onRuntimeStateUpdate,
+    onPlanReviewRequired
   ]);
 
   const executePrompt = (prompt: string) => {
@@ -339,11 +390,42 @@ export const useChromeMessaging = ({
     });
   };
 
+  const pauseExecution = () => {
+    chrome.runtime.sendMessage({ action: 'pauseExecution', tabId, windowId });
+  };
+
+  const resumeExecution = () => {
+    chrome.runtime.sendMessage({ action: 'resumeExecution', tabId, windowId });
+  };
+
+  const takeoverAuthority = () => {
+    chrome.runtime.sendMessage({ action: 'takeoverAuthority', tabId, windowId });
+  };
+
+  const releaseControl = () => {
+    chrome.runtime.sendMessage({ action: 'releaseControl', tabId, windowId });
+  };
+
+  const submitPlanReviewDecision = (decision: 'approve' | 'edit' | 'reject', editedPlan?: string) => {
+    chrome.runtime.sendMessage({
+      action: 'planReviewDecision',
+      tabId,
+      windowId,
+      decision,
+      editedPlan,
+    });
+  };
+
   return {
     executePrompt,
     cancelExecution,
     clearHistory,
     approveRequest,
-    rejectRequest
+    rejectRequest,
+    pauseExecution,
+    resumeExecution,
+    takeoverAuthority,
+    releaseControl,
+    submitPlanReviewDecision,
   };
 };

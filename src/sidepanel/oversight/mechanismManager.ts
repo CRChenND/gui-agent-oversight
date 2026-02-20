@@ -51,6 +51,12 @@ export interface OversightUiState {
     decisions: Array<{ stepId: string; decision: 'approve' | 'deny' | 'edit' | 'rollback' }>;
   };
   adaptiveState: AdaptiveOversightRuntimeState;
+  runtime: {
+    authorityState: 'agent_autonomous' | 'shared_supervision' | 'human_control';
+    executionPhase: 'planning' | 'plan_review' | 'execution' | 'posthoc_review' | 'terminated';
+    executionState: 'running' | 'paused_by_user' | 'paused_by_system' | 'cancelled' | 'completed';
+    updatedAt: number;
+  };
 }
 
 interface OversightContextInput {
@@ -444,6 +450,12 @@ export function createInitialOversightState(): OversightUiState {
       consecutiveApprovals: 0,
       lowRiskNoInterventionStreak: 0,
     },
+    runtime: {
+      authorityState: 'agent_autonomous',
+      executionPhase: 'planning',
+      executionState: 'running',
+      updatedAt: Date.now(),
+    },
   };
 }
 
@@ -476,6 +488,35 @@ export class OversightMechanismManager {
     for (const mechanism of mechanisms) {
       if (!this.config.enabledMechanisms[mechanism.id]) continue;
       nextState = mechanism.reduce(nextState, event, context);
+    }
+
+    if (event.kind === 'authority_transition') {
+      nextState = {
+        ...nextState,
+        runtime: {
+          ...nextState.runtime,
+          authorityState: event.to,
+          updatedAt: event.timestamp,
+        },
+      };
+    } else if (event.kind === 'execution_phase_changed') {
+      nextState = {
+        ...nextState,
+        runtime: {
+          ...nextState.runtime,
+          executionPhase: event.to,
+          updatedAt: event.timestamp,
+        },
+      };
+    } else if (event.kind === 'execution_state_changed') {
+      nextState = {
+        ...nextState,
+        runtime: {
+          ...nextState.runtime,
+          executionState: event.to,
+          updatedAt: event.timestamp,
+        },
+      };
     }
 
     return nextState;

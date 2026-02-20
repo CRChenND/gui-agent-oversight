@@ -207,6 +207,44 @@ export interface CheckAgentStatusMessage {
   windowId?: number;
 }
 
+export interface PauseExecutionMessage {
+  action: 'pauseExecution';
+  tabId?: number;
+  windowId?: number;
+}
+
+export interface ResumeExecutionMessage {
+  action: 'resumeExecution';
+  tabId?: number;
+  windowId?: number;
+}
+
+export interface TakeoverAuthorityMessage {
+  action: 'takeoverAuthority';
+  tabId?: number;
+  windowId?: number;
+}
+
+export interface ReleaseControlMessage {
+  action: 'releaseControl';
+  tabId?: number;
+  windowId?: number;
+}
+
+export interface ResolveEscalationMessage {
+  action: 'resolveEscalation';
+  tabId?: number;
+  windowId?: number;
+}
+
+export interface PlanReviewDecisionMessage {
+  action: 'planReviewDecision';
+  tabId?: number;
+  windowId?: number;
+  decision: 'approve' | 'edit' | 'reject';
+  editedPlan?: string;
+}
+
 export interface AgentStatusUpdateMessage {
   action: 'agentStatusUpdate';
   status: AgentStatus;
@@ -239,7 +277,13 @@ export type BackgroundMessage =
   | OversightEventMessage
   | ForceResetPlaywrightMessage
   | RequestApprovalMessage
-  | CheckAgentStatusMessage;
+  | CheckAgentStatusMessage
+  | PauseExecutionMessage
+  | ResumeExecutionMessage
+  | TakeoverAuthorityMessage
+  | ReleaseControlMessage
+  | ResolveEscalationMessage
+  | PlanReviewDecisionMessage;
 
 // New message types for enhanced tab management
 export interface TabStatusChangedMessage {

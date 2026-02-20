@@ -22,9 +22,11 @@ The current extension name in `public/manifest.json` is `MORPH`.
 - Optional approval flow for risky actions
 - Interaction telemetry with session lifecycle and JSON export
 - Parameterized oversight policies (per-mechanism configurable parameters)
+- Runtime authority architecture (authority/phase/execution state)
 - Design-space metadata for mechanisms and design matrix export
 - Task graph step export (download current task steps as JSON)
 - Experiment configuration DSL and runner for batch studies
+- Runtime e2e verification script for Phase 3 blocking/transition guarantees
 - Multi-provider model support (Anthropic, OpenAI, Gemini, Ollama, OpenAI-compatible, OpenRouter)
 
 ## Research Platform Features
@@ -50,9 +52,56 @@ The current extension name in `public/manifest.json` is `MORPH`.
   - `ctx.getParameter(mechanismId, paramKey)`
 - Mechanism logic is parameter-driven (e.g. task graph node cap and auto-expand behavior).
 
+### Phase 3: Runtime Authority Architecture
+
+MORPH now has first-class runtime primitives for authority, phase, and execution state.
+
+- Runtime managers:
+  - `src/oversight/runtime/authorityManager.ts`
+  - `src/oversight/runtime/phaseManager.ts`
+  - `src/oversight/runtime/executionStateManager.ts`
+  - `src/oversight/runtime/runtimeManager.ts`
+- Authority state machine:
+  - `agent_autonomous | shared_supervision | human_control`
+- Execution phases:
+  - `planning | plan_review | execution | posthoc_review | terminated`
+- Execution states:
+  - `running | paused_by_user | paused_by_system | cancelled | completed`
+- Runtime-level guarantees:
+  - plan review can block execution before first action
+  - the execution engine is phase-aware and refuses tool invocation unless `ExecutionPhase === 'execution'` and `ExecutionState === 'running'`
+  - execution blocking is enforced at the runtime engine layer (not the UI layer), so authority/phase constraints cannot be bypassed via presentation-level manipulation
+  - pause/takeover freeze execution until explicit resume/release
+- Side panel controls:
+  - Pause / Resume / Takeover / Release control
+  - live display of AuthorityState / ExecutionPhase / ExecutionState
+- Runtime telemetry/events include:
+  - `authority_transition`
+  - `execution_phase_changed`
+  - `execution_state_changed`
+  - `plan_review_requested`
+  - `plan_review_decision`
+- Session export now appends `oversightRhythmMetrics`:
+  - `totalInterruptions`
+  - `enforcedInterruptions`
+  - `userInitiatedInterruptions`
+  - `meanInterruptionIntervalMs`
+  - `authorityTransitionCount`
+
+#### Oversight Rhythm Instrumentation
+
+The runtime architecture enables formal measurement of oversight rhythm.
+Oversight rhythm is defined as the temporal structure of enforced and user-initiated regulatory events across execution.
+Each session export includes derived metrics capturing interruption density, enforcement ratio, and authority transitions, enabling quantitative comparison of oversight archetypes.
+
 ### Interaction Features Reference
 
 `Options -> Interaction Features` now exposes policy parameters that directly affect runtime behavior in sidepanel and approval flow.
+
+It now includes an **Archetype Presets** block where you can:
+- load built-in archetypes
+- save current settings as a custom archetype
+- reload/delete custom archetypes (persisted in `chrome.storage.sync` under `oversight.interaction.archetypes`)
 
 #### 1) Task Graph (`task-graph`)
 
@@ -121,6 +170,121 @@ LLM step metadata tags are parsed and rendered as structured cards in conversati
 
 This avoids raw XML clutter and preserves readable step-level context.
 
+### Design Space Mapping (Implemented vs Partial)
+
+The following maps the research design space to currently configurable runtime/UI parameters.
+
+#### Strategy Dimensions
+
+- Signal Scope
+  - Current controls: `monitoring.monitoringContentScope` (`minimal | standard | full`)
+  - Coverage: partial approximation of `plan / step / substep / DOM / risk label / rationale`
+- Monitoring Granularity
+  - Current controls: `task-graph.contentGranularity` (`task | step | substep`)
+  - Coverage: task/step/substep supported; explicit DOM-level monitoring not first-class
+- Exposure Policy
+  - Current controls: `monitoring.monitoringContentScope`, `interventionGate.gatePolicy`
+  - Coverage: full/selective/risk-triggered patterns supported
+- Initiative Allocation
+  - Current controls: indirect via `notificationModality` + panel inspection
+  - Coverage: agent-triggered and user-triggered initiation supported (including pause/takeover and plan-review decisions); no pure user-invoked-only signaling suppression mode yet
+- Trigger Timing
+  - Current controls: `interventionGate.timingPolicy` (`pre_action | pre_navigation | post_action`)
+  - Coverage: pre/post supported; continuous approximated through persistent monitoring UI
+- Intervention Frequency
+  - Current controls: `interventionGate.gatePolicy`, `controlMode`, `interruptCooldownMs`, `interruptTopK`
+  - Coverage: per-step/per-action/risk-triggered patterns configurable
+- Escalation Policy
+  - Current controls: `interventionGate.gatePolicy=adaptive`, `adaptiveController` mechanism
+  - Coverage: static and adaptive supported; adaptive risk signals can trigger authority state transitions (escalate/resolve)
+- Authority Model
+  - Current controls: `interventionGate.controlMode`
+  - Coverage: fully supported as a runtime-level authority state machine with explicit transitions and telemetry
+- Intervention Mechanism
+  - Current controls: `interventionGate.userActionOptions` (`basic | extended`)
+  - Coverage: approve/deny + optional edit/retry/rollback, plus first-class runtime controls for pause/resume and takeover/release
+- Plan-Level Control
+  - Current controls: runtime plan-review gate before execution (`plan_review` phase)
+  - Coverage: plan-level preview + approval is supported; plan editing capability remains limited
+
+#### Presentation Dimensions
+
+- Representation Format
+  - Current controls: `monitoring.explanationFormat` (`text | snippet | diff`), oversight tabs, approval overlay
+  - Coverage: text/snippet/diff supported; rich DOM overlay comparison is limited
+- Reasoning Transparency
+  - Current controls: `monitoring.explanationAvailability` (`none | summary | full`)
+  - Coverage: none/partial/full supported
+- Uncertainty Disclosure
+  - Current controls: impact labels (`low | medium | high`) in oversight/task graph
+  - Coverage: partial; explicit calibrated confidence score is not exposed
+- Visual Encoding
+  - Current controls: `task-graph.colorEncoding` (`semantic | monochrome | high_contrast`)
+  - Coverage: color/badge style encoding supported
+- Risk Tiering
+  - Current controls: `impact` tiers from runtime (`low | medium | high`)
+  - Coverage: 3-tier supported; binary-only mode not a dedicated toggle
+- Confirmation Gating
+  - Current controls: `interventionGate.gatePolicy`, `controlMode`, approval popup/badge modality
+  - Coverage: explicit gating supported (high-risk-only or every action)
+- Alert Latency
+  - Current controls: `monitoring.feedbackLatencyMs`
+  - Coverage: immediate/delayed supported
+- Cue Persistence
+  - Current controls: `monitoring.persistenceMs`, persistent oversight/task graph panels
+  - Coverage: ephemeral/episodic/persistent approximations supported
+- Status Feedback
+  - Current controls: task graph + oversight trace + post-hoc panel (`monitoring.showPostHocPanel`)
+  - Coverage: progress/trace feedback supported
+
+### Built-in Archetype Presets
+
+`Interaction Features -> Archetype Presets` includes 3 built-in presets:
+
+Each preset also initializes runtime state at run start through its policy profile:
+- initial `ExecutionPhase` starts at `planning` and moves through `plan_review` into `execution`
+- initial `AuthorityState` mapping:
+  - `Risk-Gated Oversight` -> `agent_autonomous`
+  - `Supervisory Co-Execution` -> `shared_supervision`
+  - `Action-Confirmation Oversight` -> `shared_supervision` (with step-through style gating behavior)
+- `AuthorityState` can transition during runtime via pause/takeover/release/escalation flows
+
+1. `Risk-Gated Oversight`
+- Autonomous-by-default with selective risk-triggered intervention
+- Core mapping:
+  - `gatePolicy=impact`
+  - `controlMode=risky_only`
+  - `timingPolicy=pre_action`
+  - `monitoringContentScope=standard`
+  - `explanationAvailability=summary`
+
+2. `Supervisory Co-Execution`
+- Continuous visibility and collaborative control with adaptive escalation
+- Core mapping:
+  - `gatePolicy=adaptive`
+  - `controlMode=step_through`
+  - `monitoringContentScope=full`
+  - `explanationAvailability=full`
+  - `contentGranularity=substep`
+  - `adaptiveController=true`
+
+3. `Action-Confirmation Oversight`
+- Human-veto-by-default with minimal disclosure and per-action confirmation
+- Core mapping:
+  - `gatePolicy=always`
+  - `controlMode=step_through`
+  - `timingPolicy=pre_action`
+  - `monitoringContentScope=minimal`
+  - `explanationAvailability=none`
+  - `notificationModality=modal`
+
+### Not Fully Implemented Yet
+
+- Explicit plan-level preview/edit before execution (dedicated plan gate)
+- Native confidence score / uncertainty calibration output in UI
+- First-class initiative policy switch (`agent-triggered` vs `user-invoked` vs `mixed`)
+- DOM-level diff/snippet explanation pipeline with robust snapshot alignment
+
 #### Example Configurations
 
 Use these as starting presets in `Interaction Features`:
@@ -166,7 +330,7 @@ informationDensity=detailed
 colorEncoding=high_contrast
 ```
 
-### Phase 3: Oversight Design Metadata
+### Phase 4: Oversight Design Metadata
 
 - Registry descriptors include `interactionProperties`:
   - `interruptionLevel`
@@ -178,7 +342,7 @@ colorEncoding=high_contrast
   - supports JSON and CSV export formats
 - Options page includes an `Export Design Matrix` button.
 
-### Phase 4: Experiment Configuration DSL
+### Phase 5: Experiment Configuration DSL
 
 - Experiment schema and validation:
   - `src/experiments/schema.ts`
@@ -308,6 +472,21 @@ This runs TypeScript compile + Vite build and copies static assets to `dist/`.
 npm run lint
 npm run lint:fix
 ```
+
+## Runtime E2E Verification
+
+Run minimal Phase 3 runtime checks:
+
+```bash
+npm run test:e2e:runtime
+```
+
+Coverage includes:
+- plan review blocking before execution
+- pause/resume blocking behavior
+- takeover/release blocking behavior
+- adaptive escalation authority transitions
+- `oversightRhythmMetrics` export assertions
 
 ## Add a New Oversight Mechanism
 
