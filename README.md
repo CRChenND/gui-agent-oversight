@@ -103,6 +103,20 @@ It now includes an **Archetype Presets** block where you can:
 - save current settings as a custom archetype
 - reload/delete custom archetypes (persisted in `chrome.storage.sync` under `oversight.interaction.archetypes`)
 
+#### 0) Sidepanel Interaction Surface (Runtime UI)
+
+- Layout mode:
+  - two primary tabs: `Conversation` and `Oversight`
+  - approvals remain popup-style overlays (independent from active tab)
+- Runtime status strip:
+  - always shows `AuthorityState`, `ExecutionPhase`, `ExecutionState`
+  - runtime control buttons are progressive disclosure (`Controls` toggle)
+  - action availability is state-aware (only valid actions are shown)
+- Conversation rendering:
+  - timeline-style step flow (dot/line rhythm)
+  - tool/action chips inferred from tool call tags
+  - XML metadata tags are rendered as structured cards, not raw text
+
 #### 1) Task Graph (`task-graph`)
 
 - `maxNodes` (`number`)
@@ -169,6 +183,32 @@ LLM step metadata tags are parsed and rendered as structured cards in conversati
 - `<impact_rationale>...</impact_rationale>`
 
 This avoids raw XML clutter and preserves readable step-level context.
+
+#### 5) Interaction Feature Snapshot (Paper Alignment)
+
+Use this as a quick implementation audit against the Strategy/Presentation design space.
+
+- Strategy layer:
+  - `Signal Scope`: partial (plan/step/substep/risk/rationale available; DOM-level signal not first-class)
+  - `Monitoring Granularity`: supported (`task | step | substep`)
+  - `Exposure Policy`: supported (`full/selective/risk-triggered` via monitoring scope + gate policy)
+  - `Initiative Allocation`: partial (agent-triggered + user-triggered supported; no strict user-invoked-only suppression mode)
+  - `Trigger Timing`: supported (`pre_action | pre_navigation | post_action`; continuous approximated via persistent trace UI)
+  - `Intervention Frequency`: supported (`step_through`, risk-gated, cooldown, top-k budget)
+  - `Escalation Policy`: supported (`adaptive` gating can transition authority state)
+  - `Authority Model`: fully supported (runtime authority state machine, explicit transitions, telemetry)
+  - `Intervention Mechanism`: supported (approve/deny + optional edit/retry/rollback + runtime pause/takeover/release)
+  - `Plan-Level Control`: partial (plan review + approve/reject gate implemented; plan editing remains limited)
+- Presentation layer:
+  - `Representation Format`: partial (`text/snippet/diff`, timeline cards, overlays; DOM diff overlay pipeline limited)
+  - `Reasoning Transparency`: supported (`none | summary | full`)
+  - `Uncertainty Disclosure`: partial (`low|medium|high` tiers; no calibrated confidence score)
+  - `Visual Encoding`: supported (badge/color encoding + density controls)
+  - `Risk Tiering`: supported (`low|medium|high`; no dedicated binary-only mode switch)
+  - `Confirmation Gating`: supported (high-risk-only vs every-step vs policy-off)
+  - `Alert Latency`: supported (`feedbackLatencyMs`)
+  - `Cue Persistence`: supported (`persistenceMs` + persistent trace panels)
+  - `Status Feedback`: supported (task graph, oversight trace, post-hoc summary)
 
 ### Design Space Mapping (Implemented vs Partial)
 
@@ -252,6 +292,7 @@ Each preset also initializes runtime state at run start through its policy profi
 1. `Risk-Gated Oversight`
 - Autonomous-by-default with selective risk-triggered intervention
 - Core mapping:
+  - mechanisms: `agent-focus=true`, `task-graph=true`, `monitoring=true`, `interventionGate=true`, `adaptiveController=false`
   - `gatePolicy=impact`
   - `controlMode=risky_only`
   - `timingPolicy=pre_action`
@@ -261,16 +302,23 @@ Each preset also initializes runtime state at run start through its policy profi
 2. `Supervisory Co-Execution`
 - Continuous visibility and collaborative control with adaptive escalation
 - Core mapping:
+  - mechanisms: `agent-focus=true`, `task-graph=true`, `monitoring=true`, `interventionGate=true`, `adaptiveController=true`
   - `gatePolicy=adaptive`
   - `controlMode=step_through`
   - `monitoringContentScope=full`
   - `explanationAvailability=full`
+  - `explanationFormat=snippet`
   - `contentGranularity=substep`
+  - `informationDensity=detailed`
+  - `colorEncoding=high_contrast`
+  - `persistenceMs=300000`
+  - `userActionOptions=extended`
   - `adaptiveController=true`
 
 3. `Action-Confirmation Oversight`
 - Human-veto-by-default with minimal disclosure and per-action confirmation
 - Core mapping:
+  - mechanisms: `agent-focus=false`, `task-graph=false`, `monitoring=true`, `interventionGate=true`, `adaptiveController=false`
   - `gatePolicy=always`
   - `controlMode=step_through`
   - `timingPolicy=pre_action`
@@ -280,7 +328,7 @@ Each preset also initializes runtime state at run start through its policy profi
 
 ### Not Fully Implemented Yet
 
-- Explicit plan-level preview/edit before execution (dedicated plan gate)
+- Explicit plan-level editing workflow before execution (dedicated rich plan editor)
 - Native confidence score / uncertainty calibration output in UI
 - First-class initiative policy switch (`agent-triggered` vs `user-invoked` vs `mixed`)
 - DOM-level diff/snippet explanation pipeline with robust snapshot alignment
