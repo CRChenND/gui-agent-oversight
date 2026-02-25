@@ -1,5 +1,5 @@
 import type { AgentThinkingSummary } from '../types';
-import type { OversightRhythmMetrics } from '../runtime/types';
+import type { OversightEscalationMetrics, OversightRhythmMetrics } from '../runtime/types';
 import { enforceThinkingSizeLimit, redactThinking, type TelemetryRedactionLevel } from './redaction';
 import type { OversightTelemetryEvent } from './types';
 
@@ -159,6 +159,7 @@ export class OversightTelemetryLogger {
     }
 
     const oversightRhythmMetrics = this.computeOversightRhythmMetrics(events);
+    const oversightEscalationMetrics = this.computeOversightEscalationMetrics(events);
 
     return JSON.stringify(
       {
@@ -177,6 +178,7 @@ export class OversightTelemetryLogger {
         })),
         groupedByStepId,
         oversightRhythmMetrics,
+        oversightEscalationMetrics,
       },
       null,
       2
@@ -210,6 +212,50 @@ export class OversightTelemetryLogger {
       meanInterruptionIntervalMs:
         intervals.length > 0 ? intervals.reduce((sum, value) => sum + value, 0) / intervals.length : 0,
       authorityTransitionCount,
+    };
+  }
+
+  private computeOversightEscalationMetrics(events: OversightTelemetryEvent[]): OversightEscalationMetrics {
+    const transitions = events
+      .filter((event) => event.payload?.kind === 'regime_transition' && event.payload?.trigger === 'behavioral')
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+    const entered = transitions.filter((event) => event.payload?.to === 'deliberative_escalated');
+    const resolved = transitions.filter((event) => event.payload?.from === 'deliberative_escalated' && event.payload?.to === 'baseline');
+
+    const durations: number[] = [];
+    let resolutionLatencySum = 0;
+    let resolutionLatencyCount = 0;
+    for (const entry of entered) {
+      const resolvedEvent = resolved.find((item) => item.timestamp >= entry.timestamp);
+      if (!resolvedEvent) continue;
+      const duration = Math.max(0, resolvedEvent.timestamp - entry.timestamp);
+      durations.push(duration);
+      resolutionLatencySum += duration;
+      resolutionLatencyCount += 1;
+    }
+
+    const triggerDistribution = events.reduce(
+      (acc, event) => {
+        if (event.payload?.kind !== 'behavioral_signal_captured') return acc;
+        if (event.payload?.signal === 'pause_by_user') acc.pause += 1;
+        if (event.payload?.signal === 'expand_trace_node' || event.payload?.signal === 'repeated_trace_expansion') {
+          acc.trace_expand += 1;
+        }
+        if (event.payload?.signal === 'hover_risk_label') acc.hover += 1;
+        if (event.payload?.signal === 'edit_intermediate_output') acc.edit += 1;
+        return acc;
+      },
+      { pause: 0, trace_expand: 0, hover: 0, edit: 0 }
+    );
+
+    return {
+      totalEscalations: entered.length,
+      meanEscalationDurationMs:
+        durations.length > 0 ? durations.reduce((sum, value) => sum + value, 0) / durations.length : 0,
+      maxEscalationDurationMs: durations.length > 0 ? Math.max(...durations) : 0,
+      escalationTriggerDistribution: triggerDistribution,
+      resolutionLatencyMs: resolutionLatencyCount > 0 ? resolutionLatencySum / resolutionLatencyCount : 0,
     };
   }
 }

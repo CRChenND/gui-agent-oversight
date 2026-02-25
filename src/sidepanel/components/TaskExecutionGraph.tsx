@@ -33,6 +33,10 @@ interface TaskExecutionGraphProps {
   monitoringContentScope?: 'minimal' | 'standard' | 'full';
   explanationAvailability?: 'none' | 'summary' | 'full';
   explanationFormat?: 'text' | 'snippet' | 'diff';
+  onTraceNodeExpanded?: (stepId: string) => void;
+  onRepeatedTraceExpansion?: () => void;
+  onRepeatedScrollBackward?: () => void;
+  onRiskLabelHover?: (durationMs: number) => void;
 }
 
 const statusColorMap: Record<TaskNodeStatus, string> = {
@@ -69,8 +73,16 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
   monitoringContentScope = 'full',
   explanationAvailability = 'summary',
   explanationFormat = 'text',
+  onTraceNodeExpanded,
+  onRepeatedTraceExpansion,
+  onRepeatedScrollBackward,
+  onRiskLabelHover,
 }) => {
   const listRef = useRef<HTMLDivElement>(null);
+  const lastScrollTopRef = useRef(0);
+  const backwardScrollRef = useRef<number[]>([]);
+  const expansionRef = useRef<number[]>([]);
+  const hoverStartByStepRef = useRef<Record<string, number>>({});
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const [expandedSteps, setExpandedSteps] = useState<Record<string, boolean>>({});
 
@@ -88,6 +100,18 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
   const handleScroll = () => {
     const list = listRef.current;
     if (!list) return;
+    const previous = lastScrollTopRef.current;
+    const current = list.scrollTop;
+    if (current + 24 < previous) {
+      const now = Date.now();
+      backwardScrollRef.current = backwardScrollRef.current.filter((ts) => now - ts <= 10000);
+      backwardScrollRef.current.push(now);
+      if (backwardScrollRef.current.length >= 3) {
+        onRepeatedScrollBackward?.();
+        backwardScrollRef.current = [];
+      }
+    }
+    lastScrollTopRef.current = current;
     setAutoScrollEnabled(isNearBottom(list));
   };
 
@@ -126,10 +150,23 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
   }
 
   const toggleStep = (stepId: string) => {
-    setExpandedSteps((prev) => ({
-      ...prev,
-      [stepId]: !prev[stepId],
-    }));
+    setExpandedSteps((prev) => {
+      const nextExpanded = !prev[stepId];
+      if (nextExpanded) {
+        onTraceNodeExpanded?.(stepId);
+        const now = Date.now();
+        expansionRef.current = expansionRef.current.filter((ts) => now - ts <= 10000);
+        expansionRef.current.push(now);
+        if (expansionRef.current.length >= 3) {
+          onRepeatedTraceExpansion?.();
+          expansionRef.current = [];
+        }
+      }
+      return {
+        ...prev,
+        [stepId]: nextExpanded,
+      };
+    });
   };
 
   const renderImpactExplanation = (node: TaskNode) => {
@@ -204,7 +241,23 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                   <div className="truncate text-xs text-base-content/70">{node.focusLabel}</div>
                   {node.intervention && monitoringContentScope !== 'minimal' ? (
                     <div className="mt-1 flex flex-wrap items-center gap-1">
-                      <span className={impactBadgeMap[node.intervention.impact]}>impact: {node.intervention.impact}</span>
+                      <span
+                        className={impactBadgeMap[node.intervention.impact]}
+                        onMouseEnter={() => {
+                          hoverStartByStepRef.current[node.stepId] = Date.now();
+                        }}
+                        onMouseLeave={() => {
+                          const startedAt = hoverStartByStepRef.current[node.stepId];
+                          if (!startedAt) return;
+                          delete hoverStartByStepRef.current[node.stepId];
+                          const durationMs = Date.now() - startedAt;
+                          if (durationMs > 0) {
+                            onRiskLabelHover?.(durationMs);
+                          }
+                        }}
+                      >
+                        impact: {node.intervention.impact}
+                      </span>
                       {node.intervention.promptedByGate && monitoringContentScope === 'full' ? (
                         <span className="badge badge-xs badge-info">gate:{node.intervention.gatePolicy}</span>
                       ) : null}

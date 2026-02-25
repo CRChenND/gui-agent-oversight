@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import type { OversightEvent } from '../../oversight/types';
-import type { AuthorityState, ExecutionPhase, ExecutionState } from '../../oversight/runtime/types';
+import type { AuthorityState, ExecutionPhase, ExecutionState, OversightRegime } from '../../oversight/runtime/types';
 import { ChromeMessage } from '../types';
 
 interface UseChromeMessagingProps {
@@ -39,6 +39,20 @@ interface UseChromeMessagingProps {
     authorityState: AuthorityState;
     executionPhase: ExecutionPhase;
     executionState: ExecutionState;
+    regime: OversightRegime;
+    deliberation?: {
+      score: number;
+      lastSignalTimestamp: number;
+      sustainedDurationMs: number;
+      isDeliberative: boolean;
+    };
+    runtimePolicy?: {
+      monitoringContentScope: 'minimal' | 'standard' | 'full';
+      explanationAvailability: 'none' | 'summary' | 'full';
+      userActionOptions: 'basic' | 'extended';
+      persistenceMs: number;
+      tightenHighImpactAuthority: boolean;
+    };
     updatedAt?: number;
   }) => void;
   onPlanReviewRequired?: (payload: {
@@ -151,12 +165,43 @@ export const useChromeMessaging = ({
             payload.executionState === 'paused_by_user' ||
             payload.executionState === 'paused_by_system' ||
             payload.executionState === 'cancelled' ||
-            payload.executionState === 'completed')
+            payload.executionState === 'completed') &&
+          (payload.regime === 'baseline' || payload.regime === 'deliberative_escalated')
         ) {
           onRuntimeStateUpdate({
             authorityState: payload.authorityState,
             executionPhase: payload.executionPhase,
             executionState: payload.executionState,
+            regime: payload.regime,
+            deliberation:
+              payload.deliberation && typeof payload.deliberation === 'object'
+                ? {
+                    score: Number(payload.deliberation.score || 0),
+                    lastSignalTimestamp: Number(payload.deliberation.lastSignalTimestamp || 0),
+                    sustainedDurationMs: Number(payload.deliberation.sustainedDurationMs || 0),
+                    isDeliberative: Boolean(payload.deliberation.isDeliberative),
+                  }
+                : undefined,
+            runtimePolicy:
+              payload.runtimePolicy && typeof payload.runtimePolicy === 'object'
+                ? {
+                    monitoringContentScope:
+                      payload.runtimePolicy.monitoringContentScope === 'minimal' ||
+                      payload.runtimePolicy.monitoringContentScope === 'standard' ||
+                      payload.runtimePolicy.monitoringContentScope === 'full'
+                        ? payload.runtimePolicy.monitoringContentScope
+                        : 'standard',
+                    explanationAvailability:
+                      payload.runtimePolicy.explanationAvailability === 'none' ||
+                      payload.runtimePolicy.explanationAvailability === 'summary' ||
+                      payload.runtimePolicy.explanationAvailability === 'full'
+                        ? payload.runtimePolicy.explanationAvailability
+                        : 'summary',
+                    userActionOptions: payload.runtimePolicy.userActionOptions === 'extended' ? 'extended' : 'basic',
+                    persistenceMs: Math.max(0, Number(payload.runtimePolicy.persistenceMs || 0)),
+                    tightenHighImpactAuthority: Boolean(payload.runtimePolicy.tightenHighImpactAuthority),
+                  }
+                : undefined,
             updatedAt: typeof payload.updatedAt === 'number' ? payload.updatedAt : Date.now(),
           });
         }
@@ -406,6 +451,10 @@ export const useChromeMessaging = ({
     chrome.runtime.sendMessage({ action: 'releaseControl', tabId, windowId });
   };
 
+  const resolveEscalation = () => {
+    chrome.runtime.sendMessage({ action: 'resolveEscalation', tabId, windowId });
+  };
+
   const submitPlanReviewDecision = (decision: 'approve' | 'edit' | 'reject', editedPlan?: string) => {
     chrome.runtime.sendMessage({
       action: 'planReviewDecision',
@@ -413,6 +462,27 @@ export const useChromeMessaging = ({
       windowId,
       decision,
       editedPlan,
+    });
+  };
+
+  const runtimeInteractionSignal = (
+    signal:
+      | 'pause_by_user'
+      | 'takeover'
+      | 'expand_trace_node'
+      | 'hover_risk_label'
+      | 'open_oversight_tab'
+      | 'edit_intermediate_output'
+      | 'repeated_scroll_backward'
+      | 'repeated_trace_expansion',
+    durationMs?: number
+  ) => {
+    chrome.runtime.sendMessage({
+      action: 'runtimeInteractionSignal',
+      tabId,
+      windowId,
+      signal,
+      durationMs,
     });
   };
 
@@ -426,6 +496,8 @@ export const useChromeMessaging = ({
     resumeExecution,
     takeoverAuthority,
     releaseControl,
+    resolveEscalation,
     submitPlanReviewDecision,
+    runtimeInteractionSignal,
   };
 };

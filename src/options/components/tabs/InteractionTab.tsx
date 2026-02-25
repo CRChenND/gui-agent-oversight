@@ -58,7 +58,7 @@ export function InteractionTab({
         <div className="card-body">
           <h2 className="card-title text-xl">Archetype Presets</h2>
           <p className="text-sm text-base-content/80">
-            Load one of the three built-in oversight archetypes, or save current settings as a custom archetype.
+            Load one of the built-in oversight archetypes, or save current settings as a custom archetype.
           </p>
 
           <div className="grid gap-3 md:grid-cols-[1fr_auto]">

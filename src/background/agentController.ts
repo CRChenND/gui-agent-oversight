@@ -7,8 +7,12 @@ import { registerThinkingDispatch } from "../agent/thinking/thinkingEmitter";
 import {
   AGENT_FOCUS_MECHANISM_ID,
   INTERVENTION_GATE_MECHANISM_ID,
+  MONITORING_MECHANISM_ID,
+  STRUCTURAL_AMPLIFICATION_MECHANISM_ID,
+  getOversightParameterStorageQueryDefaults,
   getOversightStorageQueryDefaults,
   getOversightParameterStorageKey,
+  mapStorageToOversightParameterSettings,
   mapStorageToOversightSettings,
 } from "../oversight/registry";
 import { getOversightRuntimeManager } from "../oversight/runtime/runtimeManager";
@@ -665,12 +669,17 @@ export async function executePrompt(
     const planReviewEnabledKey = 'oversight.runtime.planReviewEnabled';
     const mechanismStorage = await chrome.storage.sync.get({
       ...getOversightStorageQueryDefaults(),
+      ...getOversightParameterStorageQueryDefaults(),
       [controlModeKey]: 'risky_only',
       [gatePolicyKey]: 'impact',
       [planReviewEnabledKey]: true,
     });
     const mechanismSettings = mapStorageToOversightSettings(mechanismStorage as Record<string, unknown>);
+    const parameterSettings = mapStorageToOversightParameterSettings(mechanismStorage as Record<string, unknown>);
     const enableAgentFocus = mechanismSettings[AGENT_FOCUS_MECHANISM_ID];
+    const monitoringParameters = parameterSettings[MONITORING_MECHANISM_ID] || {};
+    const interventionParameters = parameterSettings[INTERVENTION_GATE_MECHANISM_ID] || {};
+    const structuralParameters = parameterSettings[STRUCTURAL_AMPLIFICATION_MECHANISM_ID] || {};
     const rawControlMode = mechanismStorage[controlModeKey];
     const rawGatePolicy = mechanismStorage[gatePolicyKey];
     const controlMode =
@@ -688,6 +697,33 @@ export async function executePrompt(
       windowId: updatedTabState.windowId,
       controlMode,
       gatePolicy,
+      runtimePolicyBaseline: {
+        monitoringContentScope:
+          monitoringParameters.monitoringContentScope === 'minimal' ||
+          monitoringParameters.monitoringContentScope === 'standard' ||
+          monitoringParameters.monitoringContentScope === 'full'
+            ? monitoringParameters.monitoringContentScope
+            : 'standard',
+        explanationAvailability:
+          monitoringParameters.explanationAvailability === 'none' ||
+          monitoringParameters.explanationAvailability === 'summary' ||
+          monitoringParameters.explanationAvailability === 'full'
+            ? monitoringParameters.explanationAvailability
+            : 'summary',
+        userActionOptions: interventionParameters.userActionOptions === 'extended' ? 'extended' : 'basic',
+        persistenceMs: Math.max(0, Number(monitoringParameters.persistenceMs ?? 0)),
+        tightenHighImpactAuthority: false,
+      },
+      structuralAmplification: {
+        enabled:
+          mechanismSettings[STRUCTURAL_AMPLIFICATION_MECHANISM_ID] &&
+          structuralParameters.enableStructuralAmplification !== false,
+        deliberationThreshold: Number(structuralParameters.deliberationThreshold ?? 3),
+        signalDecayMs: Number(structuralParameters.signalDecayMs ?? 10000),
+        sustainedWindowMs: Number(structuralParameters.sustainedWindowMs ?? 10000),
+        resolutionWindowMs: Number(structuralParameters.resolutionWindowMs ?? 15000),
+        escalationPersistenceMs: 300000,
+      },
     });
     
     // Reset streaming buffer and segment ID

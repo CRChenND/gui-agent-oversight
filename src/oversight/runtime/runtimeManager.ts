@@ -2,13 +2,22 @@ import { getOversightSessionManager } from '../session/sessionManager';
 import { getOversightTelemetryLogger } from '../telemetry/logger';
 import type { OversightTelemetryEvent } from '../telemetry/types';
 import { AuthorityManager } from './authorityManager';
+import {
+  DeliberationManager,
+  type BehavioralSignalType,
+  type DeliberationConfig,
+} from './deliberationManager';
 import { ExecutionStateManager } from './executionStateManager';
 import { PhaseManager } from './phaseManager';
+import { RegimePolicyAdapter } from './regimePolicyAdapter';
+import { RegimeManager, type RegimeConfig, type RegimeTransitionEvent } from './regimeManager';
 import type {
   AuthorityState,
   ExecutionPhase,
   ExecutionState,
+  OversightRegime,
   PlanReviewDecision,
+  RuntimePolicyState,
   RuntimeStatusSnapshot,
 } from './types';
 
@@ -30,11 +39,25 @@ interface PlanReviewPayload {
   toolInput?: string;
 }
 
+interface StructuralAmplificationRuntimeConfig {
+  enabled: boolean;
+  deliberationThreshold: number;
+  signalDecayMs: number;
+  sustainedWindowMs: number;
+  resolutionWindowMs: number;
+  escalationPersistenceMs: number;
+}
+
 class OversightRuntimeManager {
   private authorityManager = new AuthorityManager();
   private phaseManager = new PhaseManager();
   private executionStateManager = new ExecutionStateManager();
+  private deliberationManager = new DeliberationManager();
+  private regimeManager = new RegimeManager();
+  private regimePolicyAdapter = new RegimePolicyAdapter();
   private bindings = new Map<string, RuntimeBinding>();
+  private structuralAmplificationConfig = new Map<string, StructuralAmplificationRuntimeConfig>();
+  private regimeResolutionTimers = new Map<string, ReturnType<typeof setInterval>>();
   private dispatcher: RuntimeEventDispatcher | null = null;
 
   setDispatcher(dispatcher: RuntimeEventDispatcher): void {
@@ -133,11 +156,109 @@ class OversightRuntimeManager {
     });
   }
 
+  private async emitBehavioralEvent(
+    runtimeKey: string,
+    event: Record<string, any>,
+    telemetryType: OversightTelemetryEvent['eventType']
+  ): Promise<void> {
+    const binding = this.bindings.get(runtimeKey);
+    if (binding && this.dispatcher) {
+      this.dispatcher.emitOversightEvent(event, binding.tabId, binding.windowId);
+    }
+    await this.logTelemetry(telemetryType, {
+      ...event,
+      escalationPath: 'behavioral',
+    });
+  }
+
+  private normalizeDeliberationConfig(config: StructuralAmplificationRuntimeConfig): DeliberationConfig {
+    return {
+      enabled: config.enabled,
+      deliberationThreshold: Math.max(1, config.deliberationThreshold),
+      signalDecayMs: Math.max(1, config.signalDecayMs),
+      sustainedWindowMs: Math.max(1, config.sustainedWindowMs),
+    };
+  }
+
+  private normalizeRegimeConfig(config: StructuralAmplificationRuntimeConfig): RegimeConfig {
+    return {
+      enabled: config.enabled,
+      resolutionWindowMs: Math.max(0, config.resolutionWindowMs),
+    };
+  }
+
+  private getRegime(runtimeKey: string): OversightRegime {
+    return this.regimeManager.getRegime(runtimeKey);
+  }
+
+  private applyRuntimePolicy(runtimeKey: string): void {
+    const config = this.structuralAmplificationConfig.get(runtimeKey);
+    const escalationPersistenceMs = Math.max(0, config?.escalationPersistenceMs ?? 300000);
+    this.regimePolicyAdapter.apply(runtimeKey, this.getRegime(runtimeKey), { escalationPersistenceMs });
+  }
+
+  private async handleRegimeTransition(runtimeKey: string, transition: RegimeTransitionEvent): Promise<void> {
+    const telemetryType: OversightTelemetryEvent['eventType'] = 'state_transition';
+    await this.emitBehavioralEvent(runtimeKey, transition, telemetryType);
+
+    if (transition.to === 'baseline') {
+      const resolvedEvents = this.deliberationManager.resolveForInactivity(runtimeKey, transition.timestamp);
+      for (const event of resolvedEvents) {
+        await this.emitBehavioralEvent(runtimeKey, event, 'oversight_signal');
+      }
+    }
+
+    this.applyRuntimePolicy(runtimeKey);
+    this.notifyRuntimeState(runtimeKey);
+  }
+
+  private async reconcileRegime(runtimeKey: string, timestamp: number): Promise<void> {
+    const config = this.structuralAmplificationConfig.get(runtimeKey);
+    if (!config) return;
+
+    const transition = this.regimeManager.update(
+      runtimeKey,
+      this.deliberationManager.getState(runtimeKey),
+      this.normalizeRegimeConfig(config),
+      timestamp
+    );
+
+    if (transition) {
+      await this.handleRegimeTransition(runtimeKey, transition);
+      return;
+    }
+
+    this.applyRuntimePolicy(runtimeKey);
+    this.notifyRuntimeState(runtimeKey);
+  }
+
+  private startRegimeResolutionMonitor(runtimeKey: string): void {
+    this.stopRegimeResolutionMonitor(runtimeKey);
+    const timer = setInterval(() => {
+      const config = this.structuralAmplificationConfig.get(runtimeKey);
+      if (!config?.enabled) return;
+      if (this.regimeManager.getRegime(runtimeKey) !== 'deliberative_escalated') return;
+      void this.reconcileRegime(runtimeKey, Date.now());
+    }, 1000);
+    this.regimeResolutionTimers.set(runtimeKey, timer);
+  }
+
+  private stopRegimeResolutionMonitor(runtimeKey: string): void {
+    const timer = this.regimeResolutionTimers.get(runtimeKey);
+    if (timer) {
+      clearInterval(timer);
+      this.regimeResolutionTimers.delete(runtimeKey);
+    }
+  }
+
   getSnapshot(runtimeKey: string): RuntimeStatusSnapshot {
     return {
       authorityState: this.authorityManager.getContext(runtimeKey).authorityState,
       executionPhase: this.phaseManager.getPhase(runtimeKey),
       executionState: this.executionStateManager.getState(runtimeKey),
+      regime: this.regimeManager.getRegime(runtimeKey),
+      deliberation: this.deliberationManager.getState(runtimeKey),
+      runtimePolicy: this.regimePolicyAdapter.getEffectivePolicy(runtimeKey),
       updatedAt: Date.now(),
     };
   }
@@ -147,23 +268,100 @@ class OversightRuntimeManager {
     windowId?: number;
     controlMode: 'approve_all' | 'risky_only' | 'step_through';
     gatePolicy?: 'never' | 'always' | 'impact' | 'adaptive';
+    structuralAmplification?: {
+      enabled: boolean;
+      deliberationThreshold?: number;
+      signalDecayMs?: number;
+      sustainedWindowMs?: number;
+      resolutionWindowMs?: number;
+      escalationPersistenceMs?: number;
+    };
+    runtimePolicyBaseline?: RuntimePolicyState;
   }): void {
     const key = this.runtimeKey(args.windowId);
     this.bindings.set(key, { tabId: args.tabId, windowId: args.windowId });
     const initialAuthority: AuthorityState =
       args.controlMode === 'step_through' || args.gatePolicy === 'adaptive' ? 'shared_supervision' : 'agent_autonomous';
+
+    const structuralConfig: StructuralAmplificationRuntimeConfig = {
+      enabled: Boolean(args.structuralAmplification?.enabled),
+      deliberationThreshold: Math.max(1, Number(args.structuralAmplification?.deliberationThreshold ?? 3)),
+      signalDecayMs: Math.max(1, Number(args.structuralAmplification?.signalDecayMs ?? 10000)),
+      sustainedWindowMs: Math.max(1, Number(args.structuralAmplification?.sustainedWindowMs ?? 10000)),
+      resolutionWindowMs: Math.max(0, Number(args.structuralAmplification?.resolutionWindowMs ?? 15000)),
+      escalationPersistenceMs: Math.max(0, Number(args.structuralAmplification?.escalationPersistenceMs ?? 300000)),
+    };
+
+    this.structuralAmplificationConfig.set(key, structuralConfig);
+
     this.authorityManager.initialize(key, initialAuthority, `initialized_from_control_mode:${args.controlMode}`);
     this.phaseManager.setPhase(key, 'planning');
     this.executionStateManager.setState(key, 'running');
+    this.deliberationManager.initialize(key);
+    this.regimeManager.initialize(key);
+
+    this.regimePolicyAdapter.initialize(
+      key,
+      args.runtimePolicyBaseline ?? {
+        monitoringContentScope: 'standard',
+        explanationAvailability: 'summary',
+        userActionOptions: 'basic',
+        persistenceMs: 0,
+        tightenHighImpactAuthority: false,
+      }
+    );
+
+    this.applyRuntimePolicy(key);
+
+    if (structuralConfig.enabled) {
+      this.startRegimeResolutionMonitor(key);
+    }
+
     void this.logTelemetry('state_transition', {
       kind: 'runtime_initialized',
       controlMode: args.controlMode,
       authorityState: initialAuthority,
       executionPhase: 'planning',
       executionState: 'running',
+      regime: this.regimeManager.getRegime(key),
+      structuralAmplificationEnabled: structuralConfig.enabled,
       timestamp: Date.now(),
     });
     this.notifyRuntimeState(key);
+  }
+
+  async handleBehavioralSignal(args: {
+    windowId: number | undefined;
+    signal: BehavioralSignalType;
+    durationMs?: number;
+    source?: 'ui' | 'runtime';
+  }): Promise<void> {
+    const runtimeKey = this.runtimeKey(args.windowId);
+    const config = this.structuralAmplificationConfig.get(runtimeKey);
+    if (!config?.enabled) return;
+
+    const timestamp = Date.now();
+    const deliberation = this.deliberationManager.registerSignal(
+      runtimeKey,
+      args.signal,
+      this.normalizeDeliberationConfig(config),
+      timestamp
+    );
+
+    for (const event of deliberation.events) {
+      await this.emitBehavioralEvent(runtimeKey, event, 'oversight_signal');
+    }
+
+    await this.logTelemetry('oversight_signal', {
+      kind: 'behavioral_signal_captured',
+      signal: args.signal,
+      durationMs: typeof args.durationMs === 'number' ? Math.max(0, args.durationMs) : undefined,
+      source: args.source ?? 'ui',
+      timestamp,
+      escalationPath: 'behavioral',
+    });
+
+    await this.reconcileRegime(runtimeKey, timestamp);
   }
 
   async transitionAuthority(windowId: number | undefined, to: AuthorityState, reason: string): Promise<void> {
@@ -302,6 +500,7 @@ class OversightRuntimeManager {
     await this.setExecutionState(windowId, 'paused_by_user', 'user_pause', 'user');
     await this.transitionAuthority(windowId, 'human_control', 'user_pause');
     await this.logTelemetry('human_intervention', { kind: 'execution_paused', by: 'user', timestamp: Date.now() });
+    await this.handleBehavioralSignal({ windowId, signal: 'pause_by_user', source: 'runtime' });
   }
 
   async resumeByUser(windowId: number | undefined): Promise<void> {
@@ -320,6 +519,7 @@ class OversightRuntimeManager {
       previous,
       timestamp: Date.now(),
     });
+    await this.handleBehavioralSignal({ windowId, signal: 'takeover', source: 'runtime' });
   }
 
   async releaseControl(windowId: number | undefined): Promise<void> {
@@ -328,7 +528,19 @@ class OversightRuntimeManager {
   }
 
   async resolveEscalation(windowId: number | undefined): Promise<void> {
+    const key = this.runtimeKey(windowId);
     await this.transitionAuthority(windowId, 'agent_autonomous', 'escalation_resolved');
+
+    const forcedTransition = this.regimeManager.forceBaseline(key, Date.now());
+    if (forcedTransition) {
+      await this.emitBehavioralEvent(key, forcedTransition, 'state_transition');
+      const resolvedEvents = this.deliberationManager.resolveForManualExit(key, forcedTransition.timestamp);
+      for (const event of resolvedEvents) {
+        await this.emitBehavioralEvent(key, event, 'oversight_signal');
+      }
+      this.applyRuntimePolicy(key);
+      this.notifyRuntimeState(key);
+    }
   }
 
   async handleAdaptiveRiskSignal(args: {
@@ -366,9 +578,14 @@ class OversightRuntimeManager {
 
   clear(windowId: number | undefined): void {
     const key = this.runtimeKey(windowId);
+    this.stopRegimeResolutionMonitor(key);
     this.authorityManager.clear(key);
     this.phaseManager.clear(key);
     this.executionStateManager.clear(key);
+    this.deliberationManager.clear(key);
+    this.regimeManager.clear(key);
+    this.regimePolicyAdapter.clear(key);
+    this.structuralAmplificationConfig.delete(key);
     this.bindings.delete(key);
   }
 }

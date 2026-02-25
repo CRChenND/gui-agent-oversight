@@ -129,6 +129,9 @@ export function handleMessage(
       case 'planReviewDecision':
         handlePlanReviewDecision(message, sendResponse);
         return true;
+      case 'runtimeInteractionSignal':
+        handleRuntimeInteractionSignal(message, sendResponse);
+        return true;
 
       default:
         // This should never happen due to the type guard, but TypeScript requires it
@@ -183,7 +186,8 @@ function isBackgroundMessage(message: any): message is BackgroundMessage {
       message.action === 'takeoverAuthority' ||
       message.action === 'releaseControl' ||
       message.action === 'resolveEscalation' ||
-      message.action === 'planReviewDecision'
+      message.action === 'planReviewDecision' ||
+      message.action === 'runtimeInteractionSignal'
     )
   );
 }
@@ -244,6 +248,39 @@ function handlePlanReviewDecision(
       editedPlan: message.editedPlan,
     })
     .then((resolved) => sendResponse({ success: resolved }))
+    .catch((error) => sendResponse({ success: false, error: String(error) }));
+}
+
+function handleRuntimeInteractionSignal(
+  message: {
+    tabId?: number;
+    windowId?: number;
+    signal?:
+      | 'pause_by_user'
+      | 'takeover'
+      | 'expand_trace_node'
+      | 'hover_risk_label'
+      | 'open_oversight_tab'
+      | 'edit_intermediate_output'
+      | 'repeated_scroll_backward'
+      | 'repeated_trace_expansion';
+    durationMs?: number;
+  },
+  sendResponse: (response?: any) => void
+): void {
+  if (!message.signal) {
+    sendResponse({ success: false, error: 'Missing runtime interaction signal' });
+    return;
+  }
+  const runtimeManager = getOversightRuntimeManager();
+  void runtimeManager
+    .handleBehavioralSignal({
+      windowId: message.windowId,
+      signal: message.signal,
+      durationMs: typeof message.durationMs === 'number' ? message.durationMs : undefined,
+      source: 'ui',
+    })
+    .then(() => sendResponse({ success: true }))
     .catch((error) => sendResponse({ success: false, error: String(error) }));
 }
 

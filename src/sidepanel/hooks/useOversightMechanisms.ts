@@ -83,7 +83,8 @@ export function useOversightMechanisms({
         event.kind === 'run_failed' ||
         event.kind === 'authority_transition' ||
         event.kind === 'execution_phase_changed' ||
-        event.kind === 'execution_state_changed'
+        event.kind === 'execution_state_changed' ||
+        event.kind === 'regime_transition'
           ? 'state_transition'
           : event.kind === 'plan_review_decision'
             ? 'human_intervention'

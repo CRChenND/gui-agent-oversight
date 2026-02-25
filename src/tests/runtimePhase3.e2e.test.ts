@@ -220,6 +220,27 @@ async function testRhythmMetricsExport(): Promise<void> {
     eventType: 'state_transition',
     payload: { kind: 'authority_transition', from: 'human_control', to: 'agent_autonomous' },
   });
+  logger.log({
+    sessionId,
+    timestamp: 4500,
+    source: 'system',
+    eventType: 'oversight_signal',
+    payload: { kind: 'behavioral_signal_captured', signal: 'pause_by_user' },
+  });
+  logger.log({
+    sessionId,
+    timestamp: 5000,
+    source: 'system',
+    eventType: 'state_transition',
+    payload: { kind: 'regime_transition', from: 'baseline', to: 'deliberative_escalated', trigger: 'behavioral' },
+  });
+  logger.log({
+    sessionId,
+    timestamp: 8000,
+    source: 'system',
+    eventType: 'state_transition',
+    payload: { kind: 'regime_transition', from: 'deliberative_escalated', to: 'baseline', trigger: 'behavioral' },
+  });
 
   const exported = await logger.exportSessionLog(sessionId);
   const parsed = JSON.parse(exported) as {
@@ -229,6 +250,18 @@ async function testRhythmMetricsExport(): Promise<void> {
       userInitiatedInterruptions: number;
       meanInterruptionIntervalMs: number;
       authorityTransitionCount: number;
+    };
+    oversightEscalationMetrics?: {
+      totalEscalations: number;
+      meanEscalationDurationMs: number;
+      maxEscalationDurationMs: number;
+      escalationTriggerDistribution: {
+        pause: number;
+        trace_expand: number;
+        hover: number;
+        edit: number;
+      };
+      resolutionLatencyMs: number;
     };
   };
 
@@ -249,6 +282,23 @@ async function testRhythmMetricsExport(): Promise<void> {
     parsed.oversightRhythmMetrics?.authorityTransitionCount ?? -1,
     2,
     'authorityTransitionCount should match'
+  );
+  assert(parsed.oversightEscalationMetrics, 'Export should contain oversightEscalationMetrics');
+  assertEqual(parsed.oversightEscalationMetrics?.totalEscalations ?? -1, 1, 'totalEscalations should match');
+  assertEqual(
+    Math.round(parsed.oversightEscalationMetrics?.meanEscalationDurationMs ?? -1),
+    3000,
+    'meanEscalationDurationMs should match'
+  );
+  assertEqual(
+    parsed.oversightEscalationMetrics?.escalationTriggerDistribution.pause ?? -1,
+    1,
+    'pause trigger count should match'
+  );
+  assertEqual(
+    Math.round(parsed.oversightEscalationMetrics?.resolutionLatencyMs ?? -1),
+    3000,
+    'resolutionLatencyMs should match'
   );
 }
 
@@ -300,12 +350,72 @@ async function testAdaptiveEscalationAuthorityTransition(): Promise<void> {
   );
 }
 
+async function testBehavioralRegimeEscalationAndResolution(): Promise<void> {
+  installChromeMock();
+  const runtimeManager = getOversightRuntimeManager();
+  const windowId = 9105;
+  const tabId = 95;
+
+  runtimeManager.initializeRun({
+    tabId,
+    windowId,
+    controlMode: 'risky_only',
+    gatePolicy: 'impact',
+    runtimePolicyBaseline: {
+      monitoringContentScope: 'standard',
+      explanationAvailability: 'summary',
+      userActionOptions: 'basic',
+      persistenceMs: 0,
+      tightenHighImpactAuthority: false,
+    },
+    structuralAmplification: {
+      enabled: true,
+      deliberationThreshold: 3,
+      signalDecayMs: 10000,
+      sustainedWindowMs: 10000,
+      resolutionWindowMs: 100,
+      escalationPersistenceMs: 300000,
+    },
+  });
+
+  await runtimeManager.handleBehavioralSignal({ windowId, signal: 'open_oversight_tab', source: 'ui' });
+  await runtimeManager.handleBehavioralSignal({ windowId, signal: 'expand_trace_node', source: 'ui' });
+  await runtimeManager.handleBehavioralSignal({ windowId, signal: 'hover_risk_label', durationMs: 1200, source: 'ui' });
+
+  const escalated = runtimeManager.getSnapshot(runtimeManager.runtimeKey(windowId));
+  assertEqual(escalated.regime, 'deliberative_escalated', 'Behavioral threshold should escalate regime');
+  assertEqual(escalated.runtimePolicy.monitoringContentScope, 'full', 'Escalated policy should force full scope');
+  assertEqual(escalated.runtimePolicy.explanationAvailability, 'full', 'Escalated policy should force full explanation');
+  assertEqual(escalated.runtimePolicy.userActionOptions, 'extended', 'Escalated policy should extend user actions');
+
+  await runtimeManager.resolveEscalation(windowId);
+  const manualResolved = runtimeManager.getSnapshot(runtimeManager.runtimeKey(windowId));
+  assertEqual(manualResolved.regime, 'baseline', 'Manual exit should resolve regime to baseline immediately');
+  assertEqual(manualResolved.runtimePolicy.monitoringContentScope, 'standard', 'Manual exit should restore baseline policy');
+
+  await runtimeManager.handleBehavioralSignal({ windowId, signal: 'open_oversight_tab', source: 'ui' });
+  await runtimeManager.handleBehavioralSignal({ windowId, signal: 'expand_trace_node', source: 'ui' });
+  await runtimeManager.handleBehavioralSignal({ windowId, signal: 'hover_risk_label', durationMs: 1000, source: 'ui' });
+
+  const reEscalated = runtimeManager.getSnapshot(runtimeManager.runtimeKey(windowId));
+  assertEqual(reEscalated.regime, 'deliberative_escalated', 'Behavioral signals after manual exit should re-enter escalated regime');
+
+  await delay(1200);
+  const resolved = runtimeManager.getSnapshot(runtimeManager.runtimeKey(windowId));
+  assertEqual(resolved.regime, 'baseline', 'Inactivity should resolve regime to baseline');
+  assertEqual(resolved.runtimePolicy.monitoringContentScope, 'standard', 'Baseline policy should be restored');
+  assertEqual(resolved.runtimePolicy.userActionOptions, 'basic', 'Baseline user actions should be restored');
+
+  runtimeManager.clear(windowId);
+}
+
 export async function runRuntimePhase3E2ETests(): Promise<void> {
   await testPlanReviewBlocking();
   await testPauseResumeBlocking();
   await testTakeoverReleaseBlocking();
   await testRhythmMetricsExport();
   await testAdaptiveEscalationAuthorityTransition();
+  await testBehavioralRegimeEscalationAndResolution();
 }
 
 async function main(): Promise<void> {

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ConfigManager } from '../background/configManager';
-import type { AuthorityState, ExecutionPhase, ExecutionState } from '../oversight/runtime/types';
+import type { AuthorityState, ExecutionPhase, ExecutionState, OversightRegime } from '../oversight/runtime/types';
 import {
   AGENT_FOCUS_MECHANISM_ID,
   INTERVENTION_GATE_MECHANISM_ID,
@@ -47,11 +47,26 @@ export function SidePanel() {
     authorityState: AuthorityState;
     executionPhase: ExecutionPhase;
     executionState: ExecutionState;
+    regime: OversightRegime;
+    deliberation?: {
+      score: number;
+      lastSignalTimestamp: number;
+      sustainedDurationMs: number;
+      isDeliberative: boolean;
+    };
+    runtimePolicy?: {
+      monitoringContentScope: 'minimal' | 'standard' | 'full';
+      explanationAvailability: 'none' | 'summary' | 'full';
+      userActionOptions: 'basic' | 'extended';
+      persistenceMs: number;
+      tightenHighImpactAuthority: boolean;
+    };
     updatedAt?: number;
   }>({
     authorityState: 'agent_autonomous',
     executionPhase: 'planning',
     executionState: 'running',
+    regime: 'baseline',
   });
   const [planReviewRequest, setPlanReviewRequest] = useState<{
     planSummary: string;
@@ -164,18 +179,23 @@ export function SidePanel() {
   const monitoringParams = mechanismParameterSettings[MONITORING_MECHANISM_ID] || {};
   const interventionParams = mechanismParameterSettings[INTERVENTION_GATE_MECHANISM_ID] || {};
   const taskGraphParams = mechanismParameterSettings[TASK_GRAPH_MECHANISM_ID] || {};
-  const monitoringContentScope =
+  const runtimePolicy = runtimeStatus.runtimePolicy;
+  const storedMonitoringContentScope =
     monitoringParams.monitoringContentScope === 'minimal' ||
     monitoringParams.monitoringContentScope === 'standard' ||
     monitoringParams.monitoringContentScope === 'full'
       ? monitoringParams.monitoringContentScope
       : 'full';
-  const explanationAvailability =
+  const storedExplanationAvailability =
     monitoringParams.explanationAvailability === 'none' ||
     monitoringParams.explanationAvailability === 'summary' ||
     monitoringParams.explanationAvailability === 'full'
       ? monitoringParams.explanationAvailability
       : 'summary';
+  const monitoringContentScope =
+    runtimePolicy?.monitoringContentScope ?? storedMonitoringContentScope;
+  const explanationAvailability =
+    runtimePolicy?.explanationAvailability ?? storedExplanationAvailability;
   const explanationFormat =
     monitoringParams.explanationFormat === 'text' ||
     monitoringParams.explanationFormat === 'snippet' ||
@@ -189,7 +209,7 @@ export function SidePanel() {
       ? monitoringParams.notificationModality
       : 'mixed';
   const feedbackLatencyMs = Math.max(0, Number(monitoringParams.feedbackLatencyMs || 0));
-  const persistenceMs = Math.max(0, Number(monitoringParams.persistenceMs || 0));
+  const persistenceMs = Math.max(0, Number(runtimePolicy?.persistenceMs ?? monitoringParams.persistenceMs ?? 0));
   const showPostHocPanel = Boolean(monitoringParams.showPostHocPanel);
   const contentGranularity =
     taskGraphParams.contentGranularity === 'task' ||
@@ -211,7 +231,7 @@ export function SidePanel() {
       : 'semantic';
   const interruptCooldownMs = Math.max(0, Number(interventionParams.interruptCooldownMs || 0));
   const interruptTopK = Math.max(1, Number(interventionParams.interruptTopK || 999));
-  const userActionOptions = interventionParams.userActionOptions === 'extended' ? 'extended' : 'basic';
+  const userActionOptions = runtimePolicy?.userActionOptions ?? (interventionParams.userActionOptions === 'extended' ? 'extended' : 'basic');
   const approvedCount = taskNodes.filter((node) => node.intervention?.decision === 'approve').length;
   const deniedCount = taskNodes.filter((node) => node.intervention?.decision === 'deny').length;
   const highImpactCount = taskNodes.filter((node) => node.intervention?.impact === 'high').length;
@@ -382,6 +402,7 @@ export function SidePanel() {
     const request = approvalRequests.find((req) => req.requestId === requestId);
     const stepId = request?.stepId || requestId;
     const note = window.prompt('Edit instruction note (records intervention and rejects current step):', '') || '';
+    runtimeInteractionSignal('edit_intermediate_output');
     void logHumanTelemetry('human_intervention', {
       action: 'edit_submitted',
       requestId,
@@ -440,7 +461,9 @@ export function SidePanel() {
     resumeExecution,
     takeoverAuthority,
     releaseControl,
+    resolveEscalation,
     submitPlanReviewDecision,
+    runtimeInteractionSignal,
   } = useChromeMessaging({
     tabId,
     windowId,
@@ -604,6 +627,12 @@ export function SidePanel() {
     },
   });
 
+  useEffect(() => {
+    if (runtimeStatus.regime === 'deliberative_escalated') {
+      setActivePanel('oversight');
+    }
+  }, [runtimeStatus.regime]);
+
   const handlePlanReviewApprove = () => {
     submitPlanReviewDecision('approve');
     setPlanReviewRequest(null);
@@ -612,6 +641,7 @@ export function SidePanel() {
 
   const handlePlanReviewEdit = () => {
     const editedPlan = window.prompt('Edit plan guidance:', planReviewRequest?.planSummary || '') || '';
+    runtimeInteractionSignal('edit_intermediate_output');
     submitPlanReviewDecision('edit', editedPlan);
     setPlanReviewRequest(null);
     addSystemMessage(`✏️ Plan edited${editedPlan ? ': ' + editedPlan : ''}`);
@@ -735,6 +765,9 @@ export function SidePanel() {
                   <span className="badge badge-ghost badge-sm">authority: {formatRuntimeValue(runtimeStatus.authorityState)}</span>
                   <span className="badge badge-ghost badge-sm">phase: {formatRuntimeValue(runtimeStatus.executionPhase)}</span>
                   <span className="badge badge-ghost badge-sm">state: {formatRuntimeValue(runtimeStatus.executionState)}</span>
+                  {runtimeStatus.regime === 'deliberative_escalated' ? (
+                    <span className="badge badge-warning badge-sm">Deliberative Mode Active</span>
+                  ) : null}
                   <button
                     className="btn btn-ghost btn-xs ml-auto"
                     onClick={() => setShowRuntimeControls((prev) => !prev)}
@@ -765,6 +798,21 @@ export function SidePanel() {
                         Release
                       </button>
                     ) : null}
+                    {runtimeStatus.regime === 'deliberative_escalated' ? (
+                      <button
+                        className="btn btn-xs btn-warning"
+                        onClick={() => {
+                          resolveEscalation();
+                          void logHumanTelemetry('human_intervention', {
+                            action: 'deliberative_mode_exit',
+                            timestamp: Date.now(),
+                          });
+                        }}
+                        type="button"
+                      >
+                        Exit Deliberative
+                      </button>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
@@ -779,7 +827,10 @@ export function SidePanel() {
               </button>
               <button
                 className={`btn btn-sm flex-1 rounded-lg ${activePanel === 'oversight' ? 'btn-primary' : 'btn-ghost'}`}
-                onClick={() => setActivePanel('oversight')}
+                onClick={() => {
+                  setActivePanel('oversight');
+                  runtimeInteractionSignal('open_oversight_tab');
+                }}
               >
                 Oversight
               </button>
@@ -823,6 +874,10 @@ export function SidePanel() {
                     monitoringContentScope={monitoringContentScope}
                     explanationAvailability={explanationAvailability}
                     explanationFormat={explanationFormat}
+                    onTraceNodeExpanded={() => runtimeInteractionSignal('expand_trace_node')}
+                    onRepeatedTraceExpansion={() => runtimeInteractionSignal('repeated_trace_expansion')}
+                    onRepeatedScrollBackward={() => runtimeInteractionSignal('repeated_scroll_backward')}
+                    onRiskLabelHover={(durationMs) => runtimeInteractionSignal('hover_risk_label', durationMs)}
                   />
                 )}
                 {!enableAgentFocus && !enableTaskGraph && (

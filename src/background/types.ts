@@ -245,6 +245,22 @@ export interface PlanReviewDecisionMessage {
   editedPlan?: string;
 }
 
+export interface RuntimeInteractionSignalMessage {
+  action: 'runtimeInteractionSignal';
+  tabId?: number;
+  windowId?: number;
+  signal:
+    | 'pause_by_user'
+    | 'takeover'
+    | 'expand_trace_node'
+    | 'hover_risk_label'
+    | 'open_oversight_tab'
+    | 'edit_intermediate_output'
+    | 'repeated_scroll_backward'
+    | 'repeated_trace_expansion';
+  durationMs?: number;
+}
+
 export interface AgentStatusUpdateMessage {
   action: 'agentStatusUpdate';
   status: AgentStatus;
@@ -283,7 +299,8 @@ export type BackgroundMessage =
   | TakeoverAuthorityMessage
   | ReleaseControlMessage
   | ResolveEscalationMessage
-  | PlanReviewDecisionMessage;
+  | PlanReviewDecisionMessage
+  | RuntimeInteractionSignalMessage;
 
 // New message types for enhanced tab management
 export interface TabStatusChangedMessage {

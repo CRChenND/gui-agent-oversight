@@ -3,6 +3,7 @@ import {
   AGENT_FOCUS_MECHANISM_ID,
   INTERVENTION_GATE_MECHANISM_ID,
   MONITORING_MECHANISM_ID,
+  STRUCTURAL_AMPLIFICATION_MECHANISM_ID,
   TASK_GRAPH_MECHANISM_ID,
   createDefaultOversightMechanismSettings,
   createDefaultOversightParameterSettings,
@@ -108,6 +109,35 @@ export function getBuiltinArchetypes(): OversightArchetype[] {
   actionConfirmation.parameterSettings[INTERVENTION_GATE_MECHANISM_ID].interruptTopK = 999;
   actionConfirmation.parameterSettings[INTERVENTION_GATE_MECHANISM_ID].userActionOptions = 'basic';
 
+  const structuralAmplification = baseArchetypeState();
+  structuralAmplification.settings[AGENT_FOCUS_MECHANISM_ID] = true;
+  structuralAmplification.settings[TASK_GRAPH_MECHANISM_ID] = true;
+  structuralAmplification.settings[MONITORING_MECHANISM_ID] = true;
+  structuralAmplification.settings[INTERVENTION_GATE_MECHANISM_ID] = true;
+  structuralAmplification.settings[ADAPTIVE_CONTROLLER_MECHANISM_ID] = false;
+  structuralAmplification.settings[STRUCTURAL_AMPLIFICATION_MECHANISM_ID] = true;
+  structuralAmplification.parameterSettings[TASK_GRAPH_MECHANISM_ID].contentGranularity = 'step';
+  structuralAmplification.parameterSettings[TASK_GRAPH_MECHANISM_ID].informationDensity = 'detailed';
+  structuralAmplification.parameterSettings[TASK_GRAPH_MECHANISM_ID].colorEncoding = 'semantic';
+  structuralAmplification.parameterSettings[MONITORING_MECHANISM_ID].monitoringContentScope = 'standard';
+  structuralAmplification.parameterSettings[MONITORING_MECHANISM_ID].explanationAvailability = 'summary';
+  structuralAmplification.parameterSettings[MONITORING_MECHANISM_ID].explanationFormat = 'text';
+  structuralAmplification.parameterSettings[MONITORING_MECHANISM_ID].notificationModality = 'mixed';
+  structuralAmplification.parameterSettings[MONITORING_MECHANISM_ID].feedbackLatencyMs = 0;
+  structuralAmplification.parameterSettings[MONITORING_MECHANISM_ID].persistenceMs = 0;
+  structuralAmplification.parameterSettings[MONITORING_MECHANISM_ID].showPostHocPanel = true;
+  structuralAmplification.parameterSettings[INTERVENTION_GATE_MECHANISM_ID].gatePolicy = 'impact';
+  structuralAmplification.parameterSettings[INTERVENTION_GATE_MECHANISM_ID].controlMode = 'risky_only';
+  structuralAmplification.parameterSettings[INTERVENTION_GATE_MECHANISM_ID].timingPolicy = 'pre_action';
+  structuralAmplification.parameterSettings[INTERVENTION_GATE_MECHANISM_ID].interruptCooldownMs = 0;
+  structuralAmplification.parameterSettings[INTERVENTION_GATE_MECHANISM_ID].interruptTopK = 999;
+  structuralAmplification.parameterSettings[INTERVENTION_GATE_MECHANISM_ID].userActionOptions = 'basic';
+  structuralAmplification.parameterSettings[STRUCTURAL_AMPLIFICATION_MECHANISM_ID].enableStructuralAmplification = true;
+  structuralAmplification.parameterSettings[STRUCTURAL_AMPLIFICATION_MECHANISM_ID].deliberationThreshold = 3;
+  structuralAmplification.parameterSettings[STRUCTURAL_AMPLIFICATION_MECHANISM_ID].signalDecayMs = 10000;
+  structuralAmplification.parameterSettings[STRUCTURAL_AMPLIFICATION_MECHANISM_ID].sustainedWindowMs = 10000;
+  structuralAmplification.parameterSettings[STRUCTURAL_AMPLIFICATION_MECHANISM_ID].resolutionWindowMs = 15000;
+
   return [
     {
       id: 'builtin-risk-gated',
@@ -132,6 +162,14 @@ export function getBuiltinArchetypes(): OversightArchetype[] {
       scope: 'builtin',
       settings: actionConfirmation.settings,
       parameterSettings: actionConfirmation.parameterSettings,
+    },
+    {
+      id: 'builtin-structural-amplification',
+      name: 'Structural Amplification Oversight',
+      description: 'Risk-gated baseline with behavior-driven deliberative escalation.',
+      scope: 'builtin',
+      settings: structuralAmplification.settings,
+      parameterSettings: structuralAmplification.parameterSettings,
     },
   ];
 }

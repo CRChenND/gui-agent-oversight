@@ -82,6 +82,51 @@ export type OversightEvent =
       error?: string;
     }
   | {
+      kind: 'deliberation_score_updated';
+      score: number;
+      lastSignalTimestamp: number;
+      sustainedDurationMs: number;
+      isDeliberative: boolean;
+      signal:
+        | 'pause_by_user'
+        | 'takeover'
+        | 'expand_trace_node'
+        | 'hover_risk_label'
+        | 'open_oversight_tab'
+        | 'edit_intermediate_output'
+        | 'repeated_scroll_backward'
+        | 'repeated_trace_expansion';
+      timestamp: number;
+    }
+  | {
+      kind: 'deliberation_entered';
+      score: number;
+      sustainedDurationMs: number;
+      signal:
+        | 'pause_by_user'
+        | 'takeover'
+        | 'expand_trace_node'
+        | 'hover_risk_label'
+        | 'open_oversight_tab'
+        | 'edit_intermediate_output'
+        | 'repeated_scroll_backward'
+        | 'repeated_trace_expansion';
+      timestamp: number;
+    }
+  | {
+      kind: 'deliberation_resolved';
+      score: number;
+      reason: 'disabled' | 'inactivity' | 'manual_exit';
+      timestamp: number;
+    }
+  | {
+      kind: 'regime_transition';
+      from: 'baseline' | 'deliberative_escalated';
+      to: 'baseline' | 'deliberative_escalated';
+      trigger: 'behavioral';
+      timestamp: number;
+    }
+  | {
       kind: 'authority_transition';
       from: AuthorityState;
       to: AuthorityState;

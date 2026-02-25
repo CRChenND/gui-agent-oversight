@@ -3,13 +3,15 @@ export const TASK_GRAPH_MECHANISM_ID = 'task-graph' as const;
 export const MONITORING_MECHANISM_ID = 'monitoring' as const;
 export const INTERVENTION_GATE_MECHANISM_ID = 'interventionGate' as const;
 export const ADAPTIVE_CONTROLLER_MECHANISM_ID = 'adaptiveController' as const;
+export const STRUCTURAL_AMPLIFICATION_MECHANISM_ID = 'structuralAmplification' as const;
 
 export type OversightMechanismId =
   | typeof AGENT_FOCUS_MECHANISM_ID
   | typeof TASK_GRAPH_MECHANISM_ID
   | typeof MONITORING_MECHANISM_ID
   | typeof INTERVENTION_GATE_MECHANISM_ID
-  | typeof ADAPTIVE_CONTROLLER_MECHANISM_ID;
+  | typeof ADAPTIVE_CONTROLLER_MECHANISM_ID
+  | typeof STRUCTURAL_AMPLIFICATION_MECHANISM_ID;
 
 export type OversightParameterType = 'number' | 'boolean' | 'enum';
 export type OversightParameterValue = number | boolean | string;
@@ -241,6 +243,46 @@ export const OVERSIGHT_MECHANISM_REGISTRY: OversightMechanismDescriptor[] = [
       feedbackLatency: 'instant',
       agencyModel: 'prediction',
     },
+  },
+  {
+    id: STRUCTURAL_AMPLIFICATION_MECHANISM_ID,
+    title: 'Structural Amplification',
+    description: 'Behavior-driven deliberative escalation and runtime policy amplification.',
+    storageKey: 'oversight.structuralAmplification.enabled',
+    defaultEnabled: false,
+    interactionProperties: {
+      interruptionLevel: 'medium',
+      oversightGranularity: 'task',
+      feedbackLatency: 'instant',
+      agencyModel: 'prediction',
+    },
+    parameters: [
+      {
+        key: 'enableStructuralAmplification',
+        type: 'boolean',
+        default: true,
+      },
+      {
+        key: 'deliberationThreshold',
+        type: 'number',
+        default: 3,
+      },
+      {
+        key: 'signalDecayMs',
+        type: 'number',
+        default: 10000,
+      },
+      {
+        key: 'sustainedWindowMs',
+        type: 'number',
+        default: 10000,
+      },
+      {
+        key: 'resolutionWindowMs',
+        type: 'number',
+        default: 15000,
+      },
+    ],
   },
 ];
 
