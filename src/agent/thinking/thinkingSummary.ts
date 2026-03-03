@@ -14,7 +14,46 @@ function extractRationale(accumulatedText: string): string | undefined {
   return truncate(withoutToolCall.replace(/\s+/g, ' '), 280);
 }
 
-function extractPlan(rationale: string | undefined): string[] | undefined {
+function sanitizeForPlan(accumulatedText: string): string {
+  return accumulatedText
+    .replace(/<tool>[\s\S]*?<\/requires_approval>/g, '')
+    .replace(/<\/?(thinking_summary|impact|impact_rationale|assumptions|uncertainties|checkpoints)>/gi, '')
+    .replace(/<\/?[^>]+>/g, '')
+    .replace(/```(?:xml|bash)/g, '')
+    .replace(/```/g, '')
+    .trim();
+}
+
+function extractPlanFromText(accumulatedText: string): string[] | undefined {
+  const sanitized = sanitizeForPlan(accumulatedText);
+  if (!sanitized) return undefined;
+
+  const numberedOrBulleted = sanitized
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^(?:step\s*\d+[:.)-]?\s*|\d+[.)-]\s*|[-*]\s+)/i, '').trim())
+    .filter((line) => line.length > 12)
+    .filter((line) => !/^(low|medium|high)$/i.test(line));
+
+  const uniqueSteps = Array.from(new Set(numberedOrBulleted)).slice(0, 5).map((line) => truncate(line, 160));
+  if (uniqueSteps.length >= 2) return uniqueSteps;
+
+  const sentenceParts = sanitized
+    .split(/(?:\.\s+|\n+)/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 12)
+    .filter((part) => !/^(low|medium|high)$/i.test(part))
+    .slice(0, 5)
+    .map((part) => truncate(part, 160));
+
+  if (sentenceParts.length > 0) return sentenceParts;
+  return undefined;
+}
+
+function extractPlan(rationale: string | undefined, accumulatedText?: string): string[] | undefined {
+  const fromText = extractPlanFromText(accumulatedText ?? '');
+  if (fromText && fromText.length > 0) return fromText;
   if (!rationale) return undefined;
   const parts = rationale
     .split(/(?:\.\s+|\n+)/)
@@ -42,7 +81,7 @@ export function buildThinkingSummary(args: {
 }): AgentThinkingSummary {
   const fromModel = args.modelThinkingSummary?.trim();
   const rationale = fromModel ? truncate(fromModel, 280) : extractRationale(args.accumulatedText ?? '');
-  const plan = extractPlan(rationale);
+  const plan = extractPlan(rationale, args.accumulatedText);
   const riskFlags: string[] = [];
 
   const normalizedInput = (args.toolInput ?? '').toLowerCase();

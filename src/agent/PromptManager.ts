@@ -8,6 +8,7 @@ export class PromptManager {
   private globalKnowledgeText: string = "";
   private amplificationState: 'normal' | 'amplified' = 'normal';
   private amplificationEnteredReason?: string;
+  private approvedPlanGuidanceText: string = "";
   
   constructor(tools: BrowserTool[]) {
     this.tools = tools;
@@ -45,6 +46,9 @@ Remember to follow the verification-first workflow: navigate → observe → ana
     const globalKnowledgeSection = this.globalKnowledgeText?.trim()
       ? `\n\n## USER GLOBAL KNOWLEDGE\n${this.globalKnowledgeText}\n`
       : "";
+    const approvedPlanSection = this.approvedPlanGuidanceText?.trim()
+      ? `\n\n## APPROVED EXECUTION PLAN (MUST FOLLOW)\n${this.approvedPlanGuidanceText}\n`
+      : "";
     const amplificationSection =
       this.amplificationState === 'amplified'
         ? `\n\n## STRUCTURAL AMPLIFICATION (REQUIRED)\n` +
@@ -65,7 +69,7 @@ Remember to follow the verification-first workflow: navigate → observe → ana
   
   You have access to these tools:
   
-  ${toolDescriptions}${pageContextSection}${globalKnowledgeSection}${amplificationSection}
+  ${toolDescriptions}${pageContextSection}${globalKnowledgeSection}${approvedPlanSection}${amplificationSection}
   
   ────────────────────────────────────────
   ## MULTI-TAB OPERATION INSTRUCTIONS
@@ -133,6 +137,37 @@ Remember to follow the verification-first workflow: navigate → observe → ana
   Always wait for each tool result before the next step.  
   Think step-by-step and finish with a concise summary.`;
   }
+
+  /**
+   * Build a dedicated planning prompt for full-task plan generation.
+   * This prompt is intentionally separated from tool-call formatting instructions.
+   */
+  getPlanningPrompt(): string {
+    const pageContextSection = this.currentPageContext
+      ? `\n\n## CURRENT PAGE CONTEXT\n${this.currentPageContext}\n`
+      : "";
+    const globalKnowledgeSection = this.globalKnowledgeText?.trim()
+      ? `\n\n## USER GLOBAL KNOWLEDGE\n${this.globalKnowledgeText}\n`
+      : "";
+
+    return `You are a planning assistant for a browser agent.
+
+Generate a complete, task-level execution plan from start to finish based on the user's request${pageContextSection}${globalKnowledgeSection}
+
+Requirements:
+1. Return a practical end-to-end plan, not just the next action.
+2. Use 3-6 concrete execution steps in plain language.
+3. Each step must describe an observable action or decision.
+4. Do not output tool-call XML tags.
+5. Do not output metadata tags like <thinking_summary>, <impact>, <impact_rationale>.
+
+Output format (strict):
+Plan Summary: <one concise sentence>
+Step 1: <text>
+Step 2: <text>
+Step 3: <text>
+(add more steps as needed)`;
+  }
   
   /**
    * Update the tools used by the PromptManager
@@ -155,5 +190,9 @@ Remember to follow the verification-first workflow: navigate → observe → ana
 
   getAmplificationState(): 'normal' | 'amplified' {
     return this.amplificationState;
+  }
+
+  setApprovedPlanGuidance(text: string): void {
+    this.approvedPlanGuidanceText = text || "";
   }
 }

@@ -293,6 +293,87 @@ export class ExecutionEngine {
     );
   }
 
+  private async collectModelText(systemPrompt: string, messages: any[]): Promise<string> {
+    let accumulated = '';
+    const stream = this.llmProvider.createMessage(systemPrompt, messages);
+    for await (const chunk of stream) {
+      if (chunk.type === 'text' && chunk.text) {
+        accumulated += chunk.text;
+      }
+    }
+    return this.decodeHtmlEntities(accumulated).trim();
+  }
+
+  private cleanPlanStepText(text: string): string {
+    return text
+      .replace(/<\/?(thinking_summary|impact|impact_rationale|assumptions|uncertainties|checkpoints)>/gi, '')
+      .replace(/<\/?[^>]+>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private isDescriptivePlanStep(text: string): boolean {
+    if (!text || text.length < 16) return false;
+    if (/^(low|medium|high)$/i.test(text)) return false;
+    if (/^(thinking_summary|impact|impact_rationale|assumptions|uncertainties|checkpoints)$/i.test(text)) return false;
+    return /[a-zA-Z]/.test(text) && text.includes(' ');
+  }
+
+  private extractPlanFromPlannerOutput(text: string): { summary: string; steps: string[] } {
+    const lines = text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    let summary = '';
+    const summaryLine = lines.find((line) => /^plan summary:/i.test(line));
+    if (summaryLine) {
+      summary = this.cleanPlanStepText(summaryLine.replace(/^plan summary:\s*/i, ''));
+    }
+
+    const stepLines = lines
+      .filter((line) => /^step\s*\d+\s*:/i.test(line) || /^\d+[.)]\s+/.test(line) || /^[-*]\s+/.test(line))
+      .map((line) => line.replace(/^step\s*\d+\s*:\s*/i, ''))
+      .map((line) => line.replace(/^\d+[.)]\s+/, ''))
+      .map((line) => line.replace(/^[-*]\s+/, ''))
+      .map((line) => this.cleanPlanStepText(line))
+      .filter((line) => this.isDescriptivePlanStep(line));
+
+    if (!summary) {
+      const fallback = lines.find((line) => this.isDescriptivePlanStep(this.cleanPlanStepText(line)));
+      summary = fallback ? this.cleanPlanStepText(fallback) : 'Plan generated for this task.';
+    }
+
+    return {
+      summary,
+      steps: Array.from(new Set(stepLines)).slice(0, 6),
+    };
+  }
+
+  private async generateTaskPlan(prompt: string, messages: any[]): Promise<{ summary: string; steps: string[] }> {
+    const plannerSystemPrompt = this.promptManager.getPlanningPrompt();
+    const planningMessages = [...messages, { role: 'user', content: `Generate a full plan for:\n${prompt}` }];
+    const planningText = await this.collectModelText(plannerSystemPrompt, planningMessages);
+    const parsed = this.extractPlanFromPlannerOutput(planningText);
+    const steps =
+      parsed.steps.length >= 2
+        ? parsed.steps
+        : this.buildFallbackPlan(prompt, '').map((step) => this.cleanPlanStepText(step));
+    return {
+      summary: parsed.summary,
+      steps,
+    };
+  }
+
+  private buildFallbackPlan(goal: string, toolName: string): string[] {
+    const normalizedGoal = goal.trim() || 'the current user request';
+    return [
+      `Understand the user goal and constraints for: ${normalizedGoal}.`,
+      `Collect and evaluate relevant options using safe, minimal browser actions${toolName ? ` (starting with ${toolName})` : ''}.`,
+      'Summarize findings and produce a concise recommendation before moving to execution-critical actions.',
+    ];
+  }
+
   // Token usage tracking removed
 
   /**
@@ -403,10 +484,51 @@ export class ExecutionEngine {
     try {
       // Initialize messages with the prompt
       let messages = this.initializeMessages(prompt, initialMessages);
+      this.promptManager.setApprovedPlanGuidance('');
 
       let done = false;
       let step = 0;
       let planReviewed = false;
+
+      if (!planReviewed && adaptedCallbacks.onPlanReviewRequired) {
+        const generatedPlan = await this.generateTaskPlan(prompt, messages);
+        const planReview = await adaptedCallbacks.onPlanReviewRequired({
+          stepId: `plan_${Date.now()}`,
+          toolName: 'planning',
+          toolInput: prompt,
+          planSummary: generatedPlan.summary,
+          plan: generatedPlan.steps,
+        });
+        planReviewed = true;
+
+        if (planReview.decision === 'reject') {
+          adaptedCallbacks.onToolOutput('❌ Plan review rejected. Execution terminated before tool execution.');
+          messages.push({ role: 'user', content: 'Plan review rejected by user. Do not execute further actions.' });
+          done = true;
+        } else if (planReview.decision === 'edit') {
+          const editText = planReview.editedPlan?.trim() || 'Plan edited by user.';
+          this.promptManager.setApprovedPlanGuidance(editText);
+          adaptedCallbacks.onToolOutput(`✏️ Plan edited by user. Applying guidance: ${editText}`);
+          messages.push({
+            role: 'user',
+            content: `Follow this approved plan guidance for the full task:\n${editText}`,
+          });
+          messages = trimHistory(messages);
+        } else {
+          const approvedPlanText = [
+            `Plan Summary: ${generatedPlan.summary}`,
+            ...generatedPlan.steps.map((step, index) => `Step ${index + 1}: ${step}`),
+          ].join('\n');
+          this.promptManager.setApprovedPlanGuidance(approvedPlanText);
+          messages.push({
+            role: 'user',
+            content:
+              `Plan approved. Follow this plan throughout the task unless new observations require explicit correction:\n` +
+              approvedPlanText,
+          });
+          messages = trimHistory(messages);
+        }
+      }
 
       while (!done && step++ < MAX_STEPS && !this.errorHandler.isExecutionCancelled()) {
         try {
@@ -592,42 +714,6 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             accumulatedText,
             modelThinkingSummary: modelMetadata.thinkingSummary,
           });
-
-          if (!planReviewed && adaptedCallbacks.onPlanReviewRequired) {
-            const planReview = await adaptedCallbacks.onPlanReviewRequired({
-              stepId,
-              toolName,
-              toolInput,
-              planSummary: thinking.rationale || modelMetadata.thinkingSummary || `Plan inferred for ${toolName}`,
-              plan: thinking.plan,
-            });
-            planReviewed = true;
-
-            if (planReview.decision === 'reject') {
-              adaptedCallbacks.onToolOutput('❌ Plan review rejected. Execution terminated before tool execution.');
-              done = true;
-              messages.push(
-                { role: 'assistant', content: accumulatedText },
-                { role: 'user', content: 'Plan review rejected by user. Do not execute further actions.' }
-              );
-              messages = trimHistory(messages);
-              continue;
-            }
-
-            if (planReview.decision === 'edit') {
-              const editText = planReview.editedPlan?.trim() || 'Plan edited by user.';
-              adaptedCallbacks.onToolOutput(`✏️ Plan edited by user. Regenerating next step with edits: ${editText}`);
-              messages.push(
-                { role: 'assistant', content: accumulatedText },
-                {
-                  role: 'user',
-                  content: `Plan review decision: edit. Updated plan guidance:\n${editText}\nRegenerate the next step and tool call accordingly.`,
-                }
-              );
-              messages = trimHistory(messages);
-              continue;
-            }
-          }
 
           emitAgentThinking(stepId, toolName, thinking);
 

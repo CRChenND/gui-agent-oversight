@@ -6,14 +6,22 @@ import TextareaAutosize from 'react-textarea-autosize';
 interface PromptFormProps {
   onSubmit: (prompt: string) => void;
   onCancel: () => void;
+  onPause?: () => void;
+  onResume?: () => void;
   isProcessing: boolean;
+  canPause?: boolean;
+  canResume?: boolean;
   tabStatus: 'attached' | 'detached' | 'unknown' | 'running' | 'idle' | 'error';
 }
 
 export const PromptForm: React.FC<PromptFormProps> = ({
   onSubmit,
   onCancel,
+  onPause,
+  onResume,
   isProcessing,
+  canPause = false,
+  canResume = false,
   tabStatus
 }) => {
   const [prompt, setPrompt] = useState('');
@@ -29,7 +37,7 @@ export const PromptForm: React.FC<PromptFormProps> = ({
     <form onSubmit={handleSubmit} className="relative">
       <div className="morph-composer w-full bg-base-100">
         <TextareaAutosize
-          className="textarea textarea-ghost w-full pr-12 text-sm focus:outline-none"
+          className="textarea textarea-ghost w-full pr-40 text-sm focus:outline-none"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {
@@ -55,15 +63,26 @@ export const PromptForm: React.FC<PromptFormProps> = ({
           } as any}
         />
         {isProcessing ? (
-          <button 
-            type="button" 
-            onClick={onCancel}
-            className="btn btn-sm btn-circle btn-error absolute"
-            style={{ bottom: '10px', right: '10px' }}
-            title="Cancel"
-          >
-            <FontAwesomeIcon icon={faXmark} />
-          </button>
+          <div className="absolute flex gap-1" style={{ bottom: '8px', right: '8px' }}>
+            {canPause ? (
+              <button type="button" onClick={onPause} className="btn btn-xs btn-outline" title="Pause">
+                Pause
+              </button>
+            ) : null}
+            {canResume ? (
+              <button type="button" onClick={onResume} className="btn btn-xs btn-outline" title="Resume">
+                Resume
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={onCancel}
+              className="btn btn-sm btn-circle btn-error"
+              title="Cancel"
+            >
+              <FontAwesomeIcon icon={faXmark} />
+            </button>
+          </div>
         ) : (
           <button 
             type="submit" 

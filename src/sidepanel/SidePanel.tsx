@@ -93,6 +93,8 @@ export function SidePanel() {
     toolName?: string;
     toolInput?: string;
   } | null>(null);
+  const [isEditingPlan, setIsEditingPlan] = useState(false);
+  const [editedPlanSteps, setEditedPlanSteps] = useState<string[]>([]);
   const [showApprovalOverlay, setShowApprovalOverlay] = useState(true);
   const [softPauseNow, setSoftPauseNow] = useState(Date.now());
   const lastApprovalPromptTsRef = useRef(0);
@@ -653,6 +655,8 @@ export function SidePanel() {
     },
     onPlanReviewRequired: (payload) => {
       setPlanReviewRequest(payload);
+      setEditedPlanSteps((payload.plan || []).filter((step) => step.trim().length > 0));
+      setIsEditingPlan(false);
       setActivePanel('oversight');
       addSystemMessage('🧭 Plan review required before execution.');
     },
@@ -675,20 +679,50 @@ export function SidePanel() {
   const handlePlanReviewApprove = () => {
     submitPlanReviewDecision('approve');
     setPlanReviewRequest(null);
+    setIsEditingPlan(false);
+    setEditedPlanSteps([]);
     addSystemMessage('✅ Plan approved. Execution continues.');
   };
 
   const handlePlanReviewEdit = () => {
-    const editedPlan = window.prompt('Edit plan guidance:', planReviewRequest?.planSummary || '') || '';
+    if (editedPlanSteps.length === 0) {
+      setEditedPlanSteps(['']);
+    }
+    setIsEditingPlan(true);
+  };
+
+  const handlePlanStepChange = (index: number, value: string) => {
+    setEditedPlanSteps((prev) => prev.map((step, idx) => (idx === index ? value : step)));
+  };
+
+  const handlePlanStepAdd = () => {
+    setEditedPlanSteps((prev) => [...prev, '']);
+  };
+
+  const handlePlanStepRemove = (index: number) => {
+    setEditedPlanSteps((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
+  const handlePlanEditSubmit = () => {
+    const normalized = editedPlanSteps.map((step) => step.trim()).filter(Boolean);
+    if (normalized.length === 0) {
+      addSystemMessage('⚠️ Please keep at least one plan step before submitting edits.');
+      return;
+    }
+    const editedPlan = normalized.map((step, idx) => `${idx + 1}. ${step}`).join('\n');
     runtimeInteractionSignal('edit_intermediate_output');
     submitPlanReviewDecision('edit', editedPlan);
     setPlanReviewRequest(null);
-    addSystemMessage(`✏️ Plan edited${editedPlan ? ': ' + editedPlan : ''}`);
+    setIsEditingPlan(false);
+    setEditedPlanSteps([]);
+    addSystemMessage(`✏️ Plan edited with ${normalized.length} steps.`);
   };
 
   const handlePlanReviewReject = () => {
     submitPlanReviewDecision('reject');
     setPlanReviewRequest(null);
+    setIsEditingPlan(false);
+    setEditedPlanSteps([]);
     setIsProcessing(false);
     addSystemMessage('❌ Plan rejected. Execution terminated.');
   };
@@ -990,27 +1024,87 @@ export function SidePanel() {
                 <div className="mb-2 text-sm font-semibold">Plan Review</div>
                 <div className="mb-2 text-xs text-base-content/80 whitespace-pre-wrap">{planReviewRequest.planSummary}</div>
                 {planReviewRequest.plan && planReviewRequest.plan.length > 0 ? (
-                  <ol className="mb-3 list-decimal pl-5 text-xs">
-                    {planReviewRequest.plan.map((line, idx) => (
-                      <li key={`plan-line-${idx}`}>{line}</li>
+                  <div className="mb-3 space-y-2">
+                    {(isEditingPlan ? editedPlanSteps : planReviewRequest.plan).map((line, idx) => (
+                      <div key={`plan-line-${idx}`} className="grid grid-cols-[64px_1fr] items-start gap-2">
+                        <div className="pt-2 text-xs font-semibold text-base-content/80">Step {idx + 1}</div>
+                        {isEditingPlan ? (
+                          <div className="space-y-1">
+                            <textarea
+                              className="textarea textarea-bordered w-full text-xs"
+                              value={line}
+                              onChange={(e) => handlePlanStepChange(idx, e.target.value)}
+                              rows={2}
+                            />
+                            <div className="flex justify-end">
+                              <button
+                                className="btn btn-ghost btn-xs text-error"
+                                onClick={() => handlePlanStepRemove(idx)}
+                                type="button"
+                                disabled={editedPlanSteps.length <= 1}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="rounded-md bg-base-200 px-3 py-2 text-xs text-base-content/90 whitespace-pre-wrap">
+                            {line}
+                          </div>
+                        )}
+                      </div>
                     ))}
-                  </ol>
+                  </div>
                 ) : null}
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <button
-                    className="btn btn-xs btn-outline"
+                    className="btn btn-xs btn-outline min-w-[110px] flex-1"
                     onClick={() => runtimeInteractionSignal('inspect_plan')}
                     type="button"
                   >
                     Inspect Plan
                   </button>
-                  <button className="btn btn-xs btn-success" onClick={handlePlanReviewApprove} type="button">
-                    Approve Plan
-                  </button>
-                  <button className="btn btn-xs btn-warning" onClick={handlePlanReviewEdit} type="button">
-                    Edit Plan
-                  </button>
-                  <button className="btn btn-xs btn-error" onClick={handlePlanReviewReject} type="button">
+                  {!isEditingPlan ? (
+                    <button
+                      className="btn btn-xs btn-success min-w-[110px] flex-1"
+                      onClick={handlePlanReviewApprove}
+                      type="button"
+                    >
+                      Approve Plan
+                    </button>
+                  ) : null}
+                  {!isEditingPlan ? (
+                    <button
+                      className="btn btn-xs btn-warning min-w-[110px] flex-1"
+                      onClick={handlePlanReviewEdit}
+                      type="button"
+                    >
+                      Edit Plan
+                    </button>
+                  ) : null}
+                  {isEditingPlan ? (
+                    <button className="btn btn-xs btn-outline min-w-[110px] flex-1" onClick={handlePlanStepAdd} type="button">
+                      Add Step
+                    </button>
+                  ) : null}
+                  {isEditingPlan ? (
+                    <button className="btn btn-xs btn-warning min-w-[110px] flex-1" onClick={handlePlanEditSubmit} type="button">
+                      Save Edits
+                    </button>
+                  ) : null}
+                  {isEditingPlan ? (
+                    <button
+                      className="btn btn-xs btn-ghost min-w-[110px] flex-1"
+                      onClick={() => {
+                        setIsEditingPlan(false);
+                        setEditedPlanSteps((planReviewRequest.plan || []).filter((step) => step.trim().length > 0));
+                      }}
+                      type="button"
+                    >
+                      Cancel Edit
+                    </button>
+                  ) : null}
+                  <button className="btn btn-xs btn-error min-w-[110px] flex-1" onClick={handlePlanReviewReject} type="button">
                     Reject Plan
                   </button>
                 </div>
@@ -1049,7 +1143,11 @@ export function SidePanel() {
             <PromptForm
               onSubmit={handleSubmit}
               onCancel={handleCancel}
+              onPause={pauseExecution}
+              onResume={resumeExecution}
               isProcessing={isProcessing}
+              canPause={canPause}
+              canResume={canResume}
               tabStatus={tabStatus}
             />
           </div>

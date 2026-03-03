@@ -118,6 +118,18 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : [];
 }
 
+type AmplifiedRiskTag = NonNullable<NonNullable<TaskNode['intervention']>['amplifiedRisk']>;
+
+function asAmplifiedRiskTag(value: unknown): AmplifiedRiskTag | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const effect_type: AmplifiedRiskTag['effect_type'] =
+    raw.effect_type === 'irreversible' ? 'irreversible' : 'reversible';
+  const scope: AmplifiedRiskTag['scope'] = raw.scope === 'external' ? 'external' : 'local';
+  const data_flow: AmplifiedRiskTag['data_flow'] = raw.data_flow === 'disclosure' ? 'disclosure' : 'none';
+  return { effect_type, scope, data_flow };
+}
+
 function transitionOversightLevel(
   state: OversightUiState,
   to: OversightLevel,
@@ -293,25 +305,7 @@ const interventionGateMechanism: OversightMechanism = {
             assumptions: asString(payload.assumptions) || undefined,
             uncertainties: asString(payload.uncertainties) || undefined,
             checkpoints: asString(payload.checkpoints) || undefined,
-            amplifiedRisk:
-              payload.amplifiedRisk &&
-              typeof payload.amplifiedRisk === 'object' &&
-              (payload.amplifiedRisk as Record<string, unknown>).effect_type &&
-              (payload.amplifiedRisk as Record<string, unknown>).scope &&
-              (payload.amplifiedRisk as Record<string, unknown>).data_flow
-                ? {
-                    effect_type:
-                      (payload.amplifiedRisk as Record<string, unknown>).effect_type === 'irreversible'
-                        ? 'irreversible'
-                        : 'reversible',
-                    scope:
-                      (payload.amplifiedRisk as Record<string, unknown>).scope === 'external' ? 'external' : 'local',
-                    data_flow:
-                      (payload.amplifiedRisk as Record<string, unknown>).data_flow === 'disclosure'
-                        ? 'disclosure'
-                        : 'none',
-                  }
-                : null,
+            amplifiedRisk: asAmplifiedRiskTag(payload.amplifiedRisk),
           },
         };
       });
