@@ -276,6 +276,20 @@ export interface ExitAmplifiedModeMessage {
   windowId?: number;
 }
 
+export interface AssessPlanProgressMessage {
+  action: 'assessPlanProgress';
+  tabId?: number;
+  windowId?: number;
+  planSteps: string[];
+  agentSteps: Array<{
+    index: number;
+    status: 'active' | 'completed' | 'cancelled' | 'error';
+    toolName: string;
+    focusLabel: string;
+    thinking?: string;
+  }>;
+}
+
 export interface AgentStatusUpdateMessage {
   action: 'agentStatusUpdate';
   status: AgentStatus;
@@ -317,7 +331,8 @@ export type BackgroundMessage =
   | PlanReviewDecisionMessage
   | RuntimeInteractionSignalMessage
   | SoftPauseDecisionMessage
-  | ExitAmplifiedModeMessage;
+  | ExitAmplifiedModeMessage
+  | AssessPlanProgressMessage;
 
 // New message types for enhanced tab management
 export interface TabStatusChangedMessage {

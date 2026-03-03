@@ -3,6 +3,7 @@ import { executePrompt } from './agentController';
 import { cancelExecution } from './agentController';
 import { clearMessageHistory } from './agentController';
 import { initializeAgent } from './agentController';
+import { assessPlanProgress } from './agentController';
 import { attachToTab, getTabState, getWindowForTab, forceResetPlaywright } from './tabManager';
 import { getOversightRuntimeManager } from '../oversight/runtime/runtimeManager';
 import { BackgroundMessage } from './types';
@@ -138,6 +139,9 @@ export function handleMessage(
       case 'exitAmplifiedMode':
         handleExitAmplifiedMode(message, sendResponse);
         return true;
+      case 'assessPlanProgress':
+        handleAssessPlanProgress(message, sendResponse);
+        return true;
 
       default:
         // This should never happen due to the type guard, but TypeScript requires it
@@ -195,9 +199,37 @@ function isBackgroundMessage(message: any): message is BackgroundMessage {
       message.action === 'planReviewDecision' ||
       message.action === 'runtimeInteractionSignal' ||
       message.action === 'softPauseDecision' ||
-      message.action === 'exitAmplifiedMode'
+      message.action === 'exitAmplifiedMode' ||
+      message.action === 'assessPlanProgress'
     )
   );
+}
+
+function handleAssessPlanProgress(
+  message: {
+    tabId?: number;
+    windowId?: number;
+    planSteps?: string[];
+    agentSteps?: Array<{
+      index: number;
+      status: 'active' | 'completed' | 'cancelled' | 'error';
+      toolName: string;
+      focusLabel: string;
+      thinking?: string;
+    }>;
+  },
+  sendResponse: (response?: any) => void
+): void {
+  if (!Array.isArray(message.planSteps) || !Array.isArray(message.agentSteps)) {
+    sendResponse({ success: false, error: 'Missing planSteps or agentSteps' });
+    return;
+  }
+  void assessPlanProgress({
+    planSteps: message.planSteps,
+    agentSteps: message.agentSteps,
+  })
+    .then((assessment) => sendResponse({ success: true, assessment }))
+    .catch((error) => sendResponse({ success: false, error: String(error) }));
 }
 
 function handlePauseExecution(

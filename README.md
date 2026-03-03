@@ -71,11 +71,10 @@ MORPH now has first-class runtime primitives for authority, phase, and execution
   - plan review can block execution before first action
   - the execution engine is phase-aware and refuses tool invocation unless `ExecutionPhase === 'execution'` and `ExecutionState === 'running'`
   - execution blocking is enforced at the runtime engine layer (not the UI layer), so authority/phase constraints cannot be bypassed via presentation-level manipulation
-  - pause/takeover freeze execution until explicit resume/release
+  - pause freezes execution until explicit resume
   - when Structural Amplification is active, each tool invocation is held by a runtime-enforced soft window (`paused_by_system_soft`) for 2–3s before execution
 - Side panel controls:
-  - Pause / Resume / Takeover / Release control
-  - live display of AuthorityState / ExecutionPhase / ExecutionState
+  - Pause / Resume (icon buttons in composer area) + Cancel
   - amplified-mode indicator + explicit return-to-normal action
 - Runtime telemetry/events include:
   - `authority_transition`
@@ -121,9 +120,10 @@ It now includes an **Archetype Presets** block where you can:
   - two primary tabs: `Conversation` and `Oversight`
   - approvals remain popup-style overlays (independent from active tab)
 - Runtime status strip:
-  - always shows `AuthorityState`, `ExecutionPhase`, `ExecutionState`
-  - runtime control buttons are progressive disclosure (`Controls` toggle)
-  - action availability is state-aware (only valid actions are shown)
+  - compact status strip focused on amplification state
+  - when a plan is approved/edited, `Inspect Plan` is available during execution (not only at plan-review time)
+  - no persistent authority/phase/state text badges
+  - pause/resume are surfaced as direct icon actions in composer area
 - Conversation rendering:
   - timeline-style step flow (dot/line rhythm)
   - tool/action chips inferred from tool call tags
@@ -153,7 +153,7 @@ It now includes an **Archetype Presets** block where you can:
 - `explanationFormat` (`enum: text | snippet | diff`)
   - `text`: standard narrative explanation.
   - `snippet`: short clipped explanation.
-  - `diff`: heuristic-vs-LLM style impact explanation view.
+  - `diff`: heuristic-vs-LLM style risk explanation view.
 - `notificationModality` (`enum: badge | modal | mixed`)
   - `badge`: non-blocking badge entry point for approvals.
   - `modal`: approval popup overlay directly.
@@ -163,12 +163,13 @@ It now includes an **Archetype Presets** block where you can:
 - `persistenceMs` (`number`)
   - Auto-dismiss/timeout for approval prompts (auto-reject on expiry).
 - `showPostHocPanel` (`boolean`)
-  - Shows post-hoc session summary in oversight tab (step count, high-impact count, decisions).
+  - Shows post-hoc session summary in oversight tab (step count, high-risk count, decisions).
 
 #### 3) Intervention Gate (`interventionGate`)
 
 - `gatePolicy` (`enum: never | always | impact | adaptive`)
   - Core gate strategy for whether a step should be gated.
+  - Note: `impact` is a legacy key name; behavior is risk-based.
 - `controlMode` (`enum: approve_all | risky_only | step_through`)
   - `approve_all`: bypass pre-action approvals.
   - `risky_only`: only risky/gated actions request approval.
@@ -191,11 +192,9 @@ It now includes an **Archetype Presets** block where you can:
 LLM step metadata tags are parsed and rendered as structured cards in conversation:
 
 - `<thinking_summary>...</thinking_summary>`
-- `<impact>low|medium|high</impact>`
-- `<impact_rationale>...</impact_rationale>`
-- (amplified mode) `<assumptions>...</assumptions>`
-- (amplified mode) `<uncertainties>...</uncertainties>`
-- (amplified mode) `<checkpoints>...</checkpoints>`
+
+`<impact>`, `<impact_rationale>`, and amplified scaffold text are stripped from conversation rendering.
+Risk analysis and amplified deliberation details are surfaced in the Oversight panel instead.
 
 This avoids raw XML clutter and preserves readable step-level context.
 
@@ -214,25 +213,39 @@ This avoids raw XML clutter and preserves readable step-level context.
 - Micro-deliberation soft window (not approval gating):
   - independent from `interventionGate.gatePolicy`
   - before tool invocation, runtime may enter `paused_by_system_soft`
-  - sidepanel shows countdown overlay (`Next action will execute...`)
+  - sidepanel shows an inline countdown banner (`Next action will execute...`) to avoid obscuring oversight content
   - user options: `Continue now` or `Pause`; otherwise auto-resume on timeout
 - Amplified schema injection:
   - requires scaffold before action:
     - `Next Step I Plan To Do:`
     - `Alternative:`
     - `Why I choose A over B:`
-  - requires structured tags:
-    - `<assumptions>`, `<uncertainties>`, `<checkpoints>`
 - Lightweight risk surfacing in amplified mode:
   - heuristic metadata badge in timeline:
     - `effect_type: reversible | irreversible`
     - `scope: local | external`
     - `data_flow: disclosure | none`
+  - per-step `Planned Deliberation` is shown in Oversight node details:
+    - next step / alternative / why A over B
 - Intent refresh:
   - every N steps in amplified mode, runtime emits a non-blocking intent refresh prompt
   - auto-confirmation is logged if user does not intervene
 
-#### 6) Interaction Feature Snapshot (Paper Alignment)
+#### 6) Plan Generation + Review
+
+- Plan is generated via a dedicated planning prompt (separate from single-step thinking metadata).
+- Planner output is normalized into multi-step, text-only actionable steps.
+- Plan review supports:
+  - approve
+  - reject
+  - user-friendly multi-step editing UI (add/remove/edit step text)
+- Approved or edited plan is injected as persistent execution guidance and affects subsequent agent steps.
+- During execution, users can open `Inspect Plan` at any time from the runtime status strip to view:
+  - completed plan steps
+  - current step in progress
+  - pending steps
+
+#### 7) Interaction Feature Snapshot (Paper Alignment)
 
 Use this as a quick implementation audit against the Strategy/Presentation design space.
 
@@ -245,8 +258,8 @@ Use this as a quick implementation audit against the Strategy/Presentation desig
   - `Intervention Frequency`: supported (`step_through`, risk-gated, cooldown, top-k budget)
   - `Escalation Policy`: supported (`adaptive` gating can transition authority state)
   - `Authority Model`: fully supported (runtime authority state machine, explicit transitions, telemetry)
-  - `Intervention Mechanism`: supported (approve/deny + optional edit/retry/rollback + runtime pause/takeover/release)
-  - `Plan-Level Control`: partial (plan review + approve/reject gate implemented; plan editing remains limited)
+  - `Intervention Mechanism`: supported (approve/deny + optional edit/retry/rollback + runtime pause/resume)
+  - `Plan-Level Control`: supported (plan review + approve/reject + multi-step editing workflow)
 - Presentation layer:
   - `Representation Format`: partial (`text/snippet/diff`, timeline cards, overlays; DOM diff overlay pipeline limited)
   - `Reasoning Transparency`: supported (`none | summary | full`)
@@ -275,7 +288,7 @@ The following maps the research design space to currently configurable runtime/U
   - Coverage: full/selective/risk-triggered patterns supported
 - Initiative Allocation
   - Current controls: indirect via `notificationModality` + panel inspection
-  - Coverage: agent-triggered and user-triggered initiation supported (including pause/takeover and plan-review decisions); no pure user-invoked-only signaling suppression mode yet
+  - Coverage: agent-triggered and user-triggered initiation supported (including pause/resume and plan-review decisions); no pure user-invoked-only signaling suppression mode yet
 - Trigger Timing
   - Current controls: `interventionGate.timingPolicy` (`pre_action | pre_navigation | post_action`)
   - Coverage: pre/post supported; continuous approximated through persistent monitoring UI
@@ -290,10 +303,10 @@ The following maps the research design space to currently configurable runtime/U
   - Coverage: fully supported as a runtime-level authority state machine with explicit transitions and telemetry
 - Intervention Mechanism
   - Current controls: `interventionGate.userActionOptions` (`basic | extended`)
-  - Coverage: approve/deny + optional edit/retry/rollback, plus first-class runtime controls for pause/resume and takeover/release
+  - Coverage: approve/deny + optional edit/retry/rollback, plus first-class runtime controls for pause/resume
 - Plan-Level Control
   - Current controls: runtime plan-review gate before execution (`plan_review` phase)
-  - Coverage: plan-level preview + approval is supported; plan editing capability remains limited
+  - Coverage: plan-level preview/approval/editing is supported with runtime-time inspect + progress tracking
 
 #### Presentation Dimensions
 
@@ -304,13 +317,13 @@ The following maps the research design space to currently configurable runtime/U
   - Current controls: `monitoring.explanationAvailability` (`none | summary | full`)
   - Coverage: none/partial/full supported
 - Uncertainty Disclosure
-  - Current controls: impact labels (`low | medium | high`) in oversight/task graph
+  - Current controls: risk labels (`low | medium | high`) in oversight/task graph
   - Coverage: partial; explicit calibrated confidence score is not exposed
 - Visual Encoding
   - Current controls: `task-graph.colorEncoding` (`semantic | monochrome | high_contrast`)
   - Coverage: color/badge style encoding supported
 - Risk Tiering
-  - Current controls: `impact` tiers from runtime (`low | medium | high`)
+  - Current controls: runtime risk tiers (`low | medium | high`)
   - Coverage: 3-tier supported; binary-only mode not a dedicated toggle
 - Confirmation Gating
   - Current controls: `interventionGate.gatePolicy`, `controlMode`, approval popup/badge modality
@@ -335,7 +348,7 @@ Each preset also initializes runtime state at run start through its policy profi
   - `Risk-Gated Oversight` -> `agent_autonomous`
   - `Supervisory Co-Execution` -> `shared_supervision`
   - `Action-Confirmation Oversight` -> `shared_supervision` (with step-through style gating behavior)
-- `AuthorityState` can transition during runtime via pause/takeover/release/escalation flows
+- `AuthorityState` can transition during runtime via pause/resume and escalation flows
 
 1. `Risk-Gated Oversight`
 - Autonomous-by-default with selective risk-triggered intervention
@@ -376,7 +389,7 @@ Each preset also initializes runtime state at run start through its policy profi
 
 ### Not Fully Implemented Yet
 
-- Explicit plan-level editing workflow before execution (dedicated rich plan editor)
+- Semantic plan-progress alignment (current progress maps by step order, not semantic step matching)
 - Native confidence score / uncertainty calibration output in UI
 - First-class initiative policy switch (`agent-triggered` vs `user-invoked` vs `mixed`)
 - DOM-level diff/snippet explanation pipeline with robust snapshot alignment
@@ -580,7 +593,6 @@ npm run test:e2e:runtime
 Coverage includes:
 - plan review blocking before execution
 - pause/resume blocking behavior
-- takeover/release blocking behavior
 - adaptive escalation authority transitions
 - `oversightRhythmMetrics` export assertions
 

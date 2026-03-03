@@ -4,6 +4,7 @@ import { BrowserAgent, createBrowserAgent, executePromptWithFallback, needsReini
 import { ExecutionCallbacks } from "../agent/ExecutionEngine";
 import { contextTokenCount } from "../agent/TokenManager";
 import { registerThinkingDispatch } from "../agent/thinking/thinkingEmitter";
+import { createProvider } from "../models/providers/factory";
 import {
   AGENT_FOCUS_MECHANISM_ID,
   INTERVENTION_GATE_MECHANISM_ID,
@@ -66,6 +67,16 @@ interface MessageHistory {
   provider: ProviderType;
   originalRequest: GenericMessage | null;
   conversationHistory: GenericMessage[];
+}
+
+export interface PlanProgressAssessment {
+  completedCount: number;
+  currentStepNumber: number;
+  isFullyCompleted: boolean;
+  steps: Array<{
+    status: 'completed' | 'current' | 'pending';
+    reason: string;
+  }>;
 }
 
 // Define a maximum token budget for conversation history
@@ -132,6 +143,136 @@ async function getCurrentProvider(): Promise<ProviderType> {
   const configManager = ConfigManager.getInstance();
   const config = await configManager.getProviderConfig();
   return config.provider;
+}
+
+async function collectModelText(systemPrompt: string, messages: Array<{ role: string; content: string }>): Promise<string> {
+  const configManager = ConfigManager.getInstance();
+  const providerConfig = await configManager.getProviderConfig();
+  if (!providerConfig.apiKey && providerConfig.provider !== 'ollama') {
+    throw new Error(`Missing API key for provider: ${providerConfig.provider}`);
+  }
+  const provider = await createProvider(providerConfig.provider, {
+    apiKey: providerConfig.apiKey || (providerConfig.provider === 'ollama' ? 'dummy-key-for-ollama' : ''),
+    apiModelId: providerConfig.apiModelId,
+    baseUrl: providerConfig.baseUrl,
+    thinkingBudgetTokens: providerConfig.thinkingBudgetTokens,
+  });
+
+  let text = '';
+  const stream = provider.createMessage(systemPrompt, messages);
+  for await (const chunk of stream) {
+    if (chunk.type === 'text' && chunk.text) {
+      text += chunk.text;
+    }
+  }
+  return text.trim();
+}
+
+function parsePlanProgressAssessment(
+  rawText: string,
+  expectedStepCount: number
+): PlanProgressAssessment {
+  const defaultAssessment: PlanProgressAssessment = {
+    completedCount: 0,
+    currentStepNumber: 0,
+    isFullyCompleted: false,
+    steps: Array.from({ length: expectedStepCount }, () => ({
+      status: 'pending',
+      reason: 'Assessment unavailable.',
+    })),
+  };
+
+  const normalized = rawText.trim();
+  const jsonStart = normalized.indexOf('{');
+  const jsonEnd = normalized.lastIndexOf('}');
+  if (jsonStart < 0 || jsonEnd < jsonStart) {
+    return defaultAssessment;
+  }
+
+  try {
+    const parsed = JSON.parse(normalized.slice(jsonStart, jsonEnd + 1)) as {
+      steps?: Array<{ status?: string; reason?: string }>;
+      completedCount?: number;
+      currentStepNumber?: number;
+      isFullyCompleted?: boolean;
+    };
+    const steps: PlanProgressAssessment['steps'] = Array.from({ length: expectedStepCount }, (_, index) => {
+      const incoming = parsed.steps?.[index];
+      const status: 'completed' | 'current' | 'pending' =
+        incoming?.status === 'completed' || incoming?.status === 'current' || incoming?.status === 'pending'
+          ? incoming.status
+          : 'pending';
+      const reason = typeof incoming?.reason === 'string' && incoming.reason.trim().length > 0
+        ? incoming.reason.trim()
+        : 'No clear evidence found.';
+      return { status, reason };
+    });
+    const completedCount = steps.filter((step) => step.status === 'completed').length;
+    const currentStepNumber = Math.max(
+      0,
+      Math.min(
+        expectedStepCount,
+        steps.findIndex((step) => step.status === 'current') + 1
+      )
+    );
+    const isFullyCompleted = expectedStepCount > 0 && completedCount >= expectedStepCount;
+    return {
+      completedCount,
+      currentStepNumber,
+      isFullyCompleted,
+      steps,
+    };
+  } catch {
+    return defaultAssessment;
+  }
+}
+
+export async function assessPlanProgress(args: {
+  planSteps: string[];
+  agentSteps: Array<{
+    index: number;
+    status: 'active' | 'completed' | 'cancelled' | 'error';
+    toolName: string;
+    focusLabel: string;
+    thinking?: string;
+  }>;
+}): Promise<PlanProgressAssessment> {
+  const planSteps = args.planSteps.map((step) => step.trim()).filter(Boolean);
+  const agentSteps = args.agentSteps;
+  if (planSteps.length === 0) {
+    return { completedCount: 0, currentStepNumber: 0, isFullyCompleted: false, steps: [] };
+  }
+
+  const systemPrompt =
+    'You are an execution-progress evaluator.\n' +
+    'Given a plan and observed agent execution steps, determine plan progress.\n' +
+    'Rules:\n' +
+    '1) Use only provided evidence.\n' +
+    '2) For each plan step return exactly one status: completed | current | pending.\n' +
+    '3) "current" means actively being worked on now.\n' +
+    '4) Keep reasons concise and evidence-based.\n' +
+    '5) Return valid JSON only.';
+  const userPrompt = JSON.stringify(
+    {
+      task: 'Assess plan progress from execution evidence.',
+      requiredOutputShape: {
+        steps: 'Array<{status: "completed"|"current"|"pending", reason: string}>',
+      },
+      planSteps: planSteps.map((step, idx) => ({ stepNumber: idx + 1, text: step })),
+      agentSteps: agentSteps.map((step) => ({
+        index: step.index,
+        status: step.status,
+        toolName: step.toolName,
+        focusLabel: step.focusLabel,
+        thinking: step.thinking || '',
+      })),
+    },
+    null,
+    2
+  );
+
+  const raw = await collectModelText(systemPrompt, [{ role: 'user', content: userPrompt }]);
+  return parsePlanProgressAssessment(raw, planSteps.length);
 }
 
 /**

@@ -22,9 +22,11 @@ export interface TaskNode {
     adaptiveGateLevel: string;
     reasonText?: string;
     decision?: 'approve' | 'deny' | 'edit' | 'rollback';
-    assumptions?: string;
-    uncertainties?: string;
-    checkpoints?: string;
+    reversible?: boolean;
+    category?: string;
+    plannedNextStep?: string;
+    plannedAlternative?: string;
+    plannedRationale?: string;
     amplifiedRisk?: {
       effect_type: 'reversible' | 'irreversible';
       scope: 'local' | 'external';
@@ -54,7 +56,7 @@ const statusColorMap: Record<TaskNodeStatus, string> = {
   error: 'bg-red-500',
 };
 
-const impactBadgeMap: Record<StepImpact, string> = {
+const riskBadgeMap: Record<StepImpact, string> = {
   low: 'badge badge-success badge-xs',
   medium: 'badge badge-warning badge-xs',
   high: 'badge badge-error badge-xs',
@@ -177,18 +179,18 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
     });
   };
 
-  const renderImpactExplanation = (node: TaskNode) => {
+  const renderRiskExplanation = (node: TaskNode) => {
     if (!node.intervention) return null;
-    const impact = node.intervention.impact;
+    const risk = node.intervention.impact;
     const source = node.intervention.impactSource || 'heuristic';
     const rationale = node.intervention.impactRationale || node.intervention.reasonText || '';
 
     if (explanationFormat === 'diff') {
-      const heuristicLine = `- heuristic impact baseline: ${impact}`;
+      const heuristicLine = `- heuristic risk baseline: ${risk}`;
       const llmLine =
         source === 'llm'
-          ? `+ llm-adjusted impact: ${impact}`
-          : '+ llm-adjusted impact: (not provided)';
+          ? `+ llm-adjusted risk: ${risk}`
+          : '+ llm-adjusted risk: (not provided)';
       return (
         <div className="mt-1 whitespace-pre-wrap font-mono">
           {heuristicLine}
@@ -200,12 +202,17 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
     }
 
     if (explanationFormat === 'snippet') {
-      const snippet = rationale ? rationale.slice(0, 140) : `impact=${impact} source=${source}`;
+      const snippet = rationale ? rationale.slice(0, 140) : `risk=${risk} source=${source}`;
       return <div className="mt-1 whitespace-pre-wrap">{snippet}</div>;
     }
 
     return (
       <>
+        <div>risk level: {risk}</div>
+        {node.intervention.category ? <div>category: {node.intervention.category}</div> : null}
+        {typeof node.intervention.reversible === 'boolean' ? (
+          <div>reversibility: {node.intervention.reversible ? 'reversible' : 'irreversible'}</div>
+        ) : null}
         {node.intervention.impactRationale && explanationAvailability === 'full' ? (
           <div className="whitespace-pre-wrap">rationale: {node.intervention.impactRationale}</div>
         ) : null}
@@ -250,7 +257,7 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                   {node.intervention && monitoringContentScope !== 'minimal' ? (
                     <div className="mt-1 flex flex-wrap items-center gap-1">
                       <span
-                        className={impactBadgeMap[node.intervention.impact]}
+                        className={riskBadgeMap[node.intervention.impact]}
                         onMouseEnter={() => {
                           hoverStartByStepRef.current[node.stepId] = Date.now();
                         }}
@@ -264,7 +271,7 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                           }
                         }}
                       >
-                        impact: {node.intervention.impact}
+                        risk: {node.intervention.impact}
                       </span>
                       {node.intervention.promptedByGate && monitoringContentScope === 'full' ? (
                         <span className="badge badge-xs badge-info">gate:{node.intervention.gatePolicy}</span>
@@ -296,8 +303,8 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                   ) : null}
                   {node.intervention && monitoringContentScope !== 'minimal' ? (
                     <div>
-                      <div className="mb-1 font-semibold text-base-content/80">Impact Assessment</div>
-                      {renderImpactExplanation(node)}
+                      <div className="mb-1 font-semibold text-base-content/80">Risk Analysis</div>
+                      {renderRiskExplanation(node)}
                       {node.intervention.amplifiedRisk ? (
                         <div className="mt-2">
                           <div>effect: {node.intervention.amplifiedRisk.effect_type}</div>
@@ -305,21 +312,27 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                           <div>data flow: {node.intervention.amplifiedRisk.data_flow}</div>
                         </div>
                       ) : null}
-                      {node.intervention.assumptions ||
-                      node.intervention.uncertainties ||
-                      node.intervention.checkpoints ? (
-                        <details className="mt-2">
-                          <summary className="cursor-pointer font-semibold text-base-content/80">
-                            Assumptions
-                          </summary>
-                          {node.intervention.assumptions ? <div className="mt-1">assumptions: {node.intervention.assumptions}</div> : null}
-                          {node.intervention.uncertainties ? (
-                            <div className="mt-1">uncertainties: {node.intervention.uncertainties}</div>
+                      {node.intervention.plannedNextStep ||
+                      node.intervention.plannedAlternative ||
+                      node.intervention.plannedRationale ? (
+                        <div className="mt-2 rounded border border-base-300 bg-base-100 p-2">
+                          <div className="mb-1 font-semibold text-base-content/80">Planned Deliberation</div>
+                          {node.intervention.plannedNextStep ? (
+                            <div className="mb-1">
+                              <span className="font-semibold">Next:</span> {node.intervention.plannedNextStep}
+                            </div>
                           ) : null}
-                          {node.intervention.checkpoints ? (
-                            <div className="mt-1">checkpoints: {node.intervention.checkpoints}</div>
+                          {node.intervention.plannedAlternative ? (
+                            <div className="mb-1">
+                              <span className="font-semibold">Alternative:</span> {node.intervention.plannedAlternative}
+                            </div>
                           ) : null}
-                        </details>
+                          {node.intervention.plannedRationale ? (
+                            <div>
+                              <span className="font-semibold">Why A over B:</span> {node.intervention.plannedRationale}
+                            </div>
+                          ) : null}
+                        </div>
                       ) : null}
                     </div>
                   ) : null}

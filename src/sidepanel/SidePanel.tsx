@@ -92,6 +92,19 @@ export function SidePanel() {
     toolName?: string;
     toolInput?: string;
   } | null>(null);
+  const [approvedPlan, setApprovedPlan] = useState<{
+    summary: string;
+    steps: string[];
+  } | null>(null);
+  const [inspectPlanProgress, setInspectPlanProgress] = useState<{
+    completedCount: number;
+    currentStepNumber: number;
+    isFullyCompleted: boolean;
+    steps: Array<{ status: 'completed' | 'current' | 'pending'; reason: string }>;
+  } | null>(null);
+  const [inspectPlanLoading, setInspectPlanLoading] = useState(false);
+  const [inspectPlanError, setInspectPlanError] = useState<string | null>(null);
+  const [showInspectPlanModal, setShowInspectPlanModal] = useState(false);
   const [isEditingPlan, setIsEditingPlan] = useState(false);
   const [editedPlanSteps, setEditedPlanSteps] = useState<string[]>([]);
   const [showApprovalOverlay, setShowApprovalOverlay] = useState(true);
@@ -230,7 +243,6 @@ export function SidePanel() {
       : 'mixed';
   const feedbackLatencyMs = Math.max(0, Number(monitoringParams.feedbackLatencyMs || 0));
   const persistenceMs = Math.max(0, Number(runtimePolicy?.persistenceMs ?? monitoringParams.persistenceMs ?? 0));
-  const showPostHocPanel = Boolean(monitoringParams.showPostHocPanel);
   const contentGranularity =
     taskGraphParams.contentGranularity === 'task' ||
     taskGraphParams.contentGranularity === 'step' ||
@@ -251,10 +263,7 @@ export function SidePanel() {
       : 'semantic';
   const interruptCooldownMs = Math.max(0, Number(interventionParams.interruptCooldownMs || 0));
   const interruptTopK = Math.max(1, Number(interventionParams.interruptTopK || 999));
-  const userActionOptions = runtimePolicy?.userActionOptions ?? (interventionParams.userActionOptions === 'extended' ? 'extended' : 'basic');
-  const approvedCount = taskNodes.filter((node) => node.intervention?.decision === 'approve').length;
-  const deniedCount = taskNodes.filter((node) => node.intervention?.decision === 'deny').length;
-  const highImpactCount = taskNodes.filter((node) => node.intervention?.impact === 'high').length;
+  const approvedPlanSteps = approvedPlan?.steps || [];
 
   const handleDownloadTaskGraph = useCallback(() => {
     if (taskNodes.length === 0) return;
@@ -418,58 +427,6 @@ export function SidePanel() {
     addSystemMessage(`⚠️ Dismissed warning: ${requestId} (auto-rejected)`);
   };
 
-  const handleEdit = (requestId: string) => {
-    const request = approvalRequests.find((req) => req.requestId === requestId);
-    const stepId = request?.stepId || requestId;
-    const note = window.prompt('Edit instruction note (records intervention and rejects current step):', '') || '';
-    runtimeInteractionSignal('edit_intermediate_output');
-    void logHumanTelemetry('human_intervention', {
-      action: 'edit_submitted',
-      requestId,
-      stepId,
-      note,
-    });
-    handleOversightEvent({
-      kind: 'intervention_decision',
-      stepId,
-      decision: 'edit',
-    });
-    sendApprovalDecision(requestId, false);
-    setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
-    addSystemMessage(`✏️ Edit requested for ${requestId}${note ? `: ${note}` : ''}`);
-  };
-
-  const handleRetry = (requestId: string) => {
-    const request = approvalRequests.find((req) => req.requestId === requestId);
-    const stepId = request?.stepId || requestId;
-    void logHumanTelemetry('human_intervention', {
-      action: 'retry_requested',
-      requestId,
-      stepId,
-    });
-    sendApprovalDecision(requestId, false);
-    setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
-    addSystemMessage(`🔁 Retry requested for ${requestId}. Re-run after adjusting context.`);
-  };
-
-  const handleRollback = (requestId: string) => {
-    const request = approvalRequests.find((req) => req.requestId === requestId);
-    const stepId = request?.stepId || requestId;
-    void logHumanTelemetry('human_intervention', {
-      action: 'rollback_requested',
-      requestId,
-      stepId,
-    });
-    handleOversightEvent({
-      kind: 'intervention_decision',
-      stepId,
-      decision: 'rollback',
-    });
-    sendApprovalDecision(requestId, false);
-    setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
-    addSystemMessage(`↩️ Rollback requested for ${requestId}. Manual rollback may be required.`);
-  };
-
   // Set up Chrome messaging with callbacks
   const {
     executePrompt,
@@ -483,6 +440,7 @@ export function SidePanel() {
     exitAmplifiedMode,
     submitPlanReviewDecision,
     runtimeInteractionSignal,
+    assessPlanProgress,
   } = useChromeMessaging({
     tabId,
     windowId,
@@ -672,7 +630,64 @@ export function SidePanel() {
     return () => window.clearInterval(timer);
   }, [runtimeStatus.softPause?.active]);
 
+  useEffect(() => {
+    if (!showInspectPlanModal) {
+      setInspectPlanLoading(false);
+    }
+  }, [showInspectPlanModal]);
+
+  useEffect(() => {
+    if (!showInspectPlanModal || !approvedPlan || approvedPlan.steps.length === 0) return;
+    let cancelled = false;
+    setInspectPlanLoading(true);
+    setInspectPlanError(null);
+
+    void assessPlanProgress({
+      planSteps: approvedPlan.steps,
+      agentSteps: taskNodes.map((node, index) => ({
+        index: index + 1,
+        status: node.status,
+        toolName: node.toolName,
+        focusLabel: node.focusLabel,
+        thinking: node.thinking,
+      })),
+    })
+      .then((assessment) => {
+        if (cancelled) return;
+        setInspectPlanProgress(assessment);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setInspectPlanError(error instanceof Error ? error.message : String(error));
+        setInspectPlanProgress({
+          completedCount: 0,
+          currentStepNumber: 0,
+          isFullyCompleted: false,
+          steps: approvedPlan.steps.map(() => ({
+            status: 'pending',
+            reason: 'LLM progress assessment unavailable.',
+          })),
+        });
+      })
+      .finally(() => {
+        if (!cancelled) setInspectPlanLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [showInspectPlanModal, approvedPlan, taskNodes]);
+
   const handlePlanReviewApprove = () => {
+    const steps = (planReviewRequest?.plan || []).map((step) => step.trim()).filter(Boolean);
+    if (steps.length > 0) {
+      setApprovedPlan({
+        summary: planReviewRequest?.planSummary || 'Approved plan.',
+        steps,
+      });
+      setInspectPlanProgress(null);
+      setInspectPlanError(null);
+    }
     submitPlanReviewDecision('approve');
     setPlanReviewRequest(null);
     setIsEditingPlan(false);
@@ -708,6 +723,12 @@ export function SidePanel() {
     const editedPlan = normalized.map((step, idx) => `${idx + 1}. ${step}`).join('\n');
     runtimeInteractionSignal('edit_intermediate_output');
     submitPlanReviewDecision('edit', editedPlan);
+    setApprovedPlan({
+      summary: planReviewRequest?.planSummary || 'Edited plan.',
+      steps: normalized,
+    });
+    setInspectPlanProgress(null);
+    setInspectPlanError(null);
     setPlanReviewRequest(null);
     setIsEditingPlan(false);
     setEditedPlanSteps([]);
@@ -716,6 +737,10 @@ export function SidePanel() {
 
   const handlePlanReviewReject = () => {
     submitPlanReviewDecision('reject');
+    setApprovedPlan(null);
+    setShowInspectPlanModal(false);
+    setInspectPlanProgress(null);
+    setInspectPlanError(null);
     setPlanReviewRequest(null);
     setIsEditingPlan(false);
     setEditedPlanSteps([]);
@@ -727,6 +752,10 @@ export function SidePanel() {
   const handleSubmit = async (prompt: string) => {
     setIsProcessing(true);
     setHaltReason(null);
+    setApprovedPlan(null);
+    setShowInspectPlanModal(false);
+    setInspectPlanProgress(null);
+    setInspectPlanError(null);
     // Update the tab status to running
     setTabStatus('running');
     resetRunState();
@@ -786,6 +815,10 @@ export function SidePanel() {
     clearHistory();
     clearOversightState();
     setHaltReason(null);
+    setApprovedPlan(null);
+    setShowInspectPlanModal(false);
+    setInspectPlanProgress(null);
+    setInspectPlanError(null);
   };
 
 
@@ -810,6 +843,20 @@ export function SidePanel() {
         : runtimeStatus.amplification?.enteredReason === 'pause_resume_rapid'
           ? 'Rapid Pause/Resume'
           : 'Unknown';
+  const isAmplified = runtimeStatus.amplification?.state === 'amplified';
+  const handleAmplifiedToggle = (checked: boolean) => {
+    if (checked) {
+      runtimeInteractionSignal('inspect_plan');
+      return;
+    }
+    exitAmplifiedMode();
+  };
+  const inspectPlanView = inspectPlanProgress ?? {
+    completedCount: 0,
+    currentStepNumber: 0,
+    isFullyCompleted: false,
+    steps: approvedPlanSteps.map(() => ({ status: 'pending' as const, reason: 'Awaiting LLM assessment.' })),
+  };
 
   return (
     <div className="morph-shell flex h-screen flex-col bg-base-200/60">
@@ -838,15 +885,30 @@ export function SidePanel() {
 
               <div className="morph-status-strip mt-2 bg-base-200/60 text-xs">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  {runtimeStatus.amplification?.state === 'amplified' ? (
-                    <span className="badge badge-warning badge-sm">
-                      Amplified Mode ON ({amplificationReasonText})
-                    </span>
-                  ) : null}
-                  {runtimeStatus.amplification?.state === 'amplified' ? (
-                    <button className="btn btn-xs btn-warning ml-auto" onClick={exitAmplifiedMode} type="button">
-                      Return to Normal Mode
+                  {approvedPlanSteps.length > 0 ? (
+                    <button
+                      className="btn btn-xs btn-outline"
+                      onClick={() => {
+                        runtimeInteractionSignal('inspect_plan');
+                        setShowInspectPlanModal(true);
+                      }}
+                      type="button"
+                    >
+                      Inspect Plan
                     </button>
+                  ) : null}
+                  <label className="ml-auto flex items-center gap-2 rounded-md border border-base-300 px-2 py-1">
+                    <span className="text-xs font-medium text-base-content/80">Amplified Mode</span>
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-warning toggle-xs"
+                      checked={isAmplified}
+                      onChange={(e) => handleAmplifiedToggle(e.target.checked)}
+                    />
+                    <span className="text-[11px] text-base-content/60">{isAmplified ? 'ON' : 'OFF'}</span>
+                  </label>
+                  {isAmplified ? (
+                    <span className="text-[11px] text-base-content/70">Entered because: {amplificationReasonText}</span>
                   ) : null}
                 </div>
               </div>
@@ -873,6 +935,31 @@ export function SidePanel() {
             {haltReason ? (
               <div className="mx-3 mb-2 rounded-md border border-warning/40 bg-warning/15 px-3 py-2 text-xs text-warning-content">
                 {haltReason}
+              </div>
+            ) : null}
+
+            {runtimeStatus.softPause?.active ? (
+              <div className="mx-3 mb-2 rounded-md border border-info/40 bg-info/10 px-3 py-2 text-xs">
+                <div className="font-semibold text-base-content">Next action will execute...</div>
+                <div className="mt-1 text-base-content/80">
+                  Countdown active ({Math.max(0, Math.ceil((runtimeStatus.softPause.endsAt - softPauseNow) / 1000))}s)
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    className="btn btn-xs btn-primary"
+                    onClick={() => submitSoftPauseDecision('continue_now')}
+                    type="button"
+                  >
+                    Continue now
+                  </button>
+                  <button
+                    className="btn btn-xs btn-outline"
+                    onClick={() => submitSoftPauseDecision('pause')}
+                    type="button"
+                  >
+                    Pause
+                  </button>
+                </div>
               </div>
             ) : null}
 
@@ -919,15 +1006,6 @@ export function SidePanel() {
                     Oversight panel is empty for current mechanism settings.
                   </div>
                 )}
-                {showPostHocPanel ? (
-                  <div className="mt-3 rounded-xl border border-base-300 bg-base-200 p-3 text-xs">
-                    <div className="mb-1 font-semibold">Post-hoc Summary</div>
-                    <div>steps: {taskNodes.length}</div>
-                    <div>high impact steps: {highImpactCount}</div>
-                    <div>approved: {approvedCount}</div>
-                    <div>denied: {deniedCount}</div>
-                  </div>
-                ) : null}
               </div>
             )}
           </div>
@@ -945,9 +1023,9 @@ export function SidePanel() {
                     onApprove={handleApprove}
                     onReject={handleReject}
                     onDismiss={handleDismissWarning}
-                    onEdit={userActionOptions === 'extended' ? handleEdit : undefined}
-                    onRetry={userActionOptions === 'extended' ? handleRetry : undefined}
-                    onRollback={userActionOptions === 'extended' ? handleRollback : undefined}
+                    onEdit={undefined}
+                    onRetry={undefined}
+                    onRollback={undefined}
                     compact={informationDensity === 'compact'}
                   />
                 ))}
@@ -994,13 +1072,6 @@ export function SidePanel() {
                   </div>
                 ) : null}
                 <div className="shrink-0 border-t border-base-300 pt-3 flex flex-wrap gap-2">
-                  <button
-                    className="btn btn-xs btn-outline min-w-[110px] flex-1"
-                    onClick={() => runtimeInteractionSignal('inspect_plan')}
-                    type="button"
-                  >
-                    Inspect Plan
-                  </button>
                   {!isEditingPlan ? (
                     <button
                       className="btn btn-xs btn-success min-w-[110px] flex-1"
@@ -1008,6 +1079,11 @@ export function SidePanel() {
                       type="button"
                     >
                       Approve Plan
+                    </button>
+                  ) : null}
+                  {!isEditingPlan ? (
+                    <button className="btn btn-xs btn-error min-w-[110px] flex-1" onClick={handlePlanReviewReject} type="button">
+                      Reject Plan
                     </button>
                   ) : null}
                   {!isEditingPlan ? (
@@ -1041,36 +1117,68 @@ export function SidePanel() {
                       Cancel Edit
                     </button>
                   ) : null}
-                  <button className="btn btn-xs btn-error min-w-[110px] flex-1" onClick={handlePlanReviewReject} type="button">
-                    Reject Plan
-                  </button>
                 </div>
               </div>
             </div>
           ) : null}
 
-          {runtimeStatus.softPause?.active ? (
-            <div className="pointer-events-none fixed inset-x-4 bottom-60 z-50">
-              <div className="pointer-events-auto rounded-lg border border-info/40 bg-base-100 p-4 shadow-xl">
-                <div className="mb-2 text-sm font-semibold">Next action will execute...</div>
-                <div className="mb-3 text-xs text-base-content/80">
-                  Countdown active ({Math.max(0, Math.ceil((runtimeStatus.softPause.endsAt - softPauseNow) / 1000))}s)
+          {showInspectPlanModal && approvedPlan ? (
+            <div className="pointer-events-none fixed inset-x-4 bottom-44 z-40">
+              <div className="pointer-events-auto flex max-h-[62vh] flex-col rounded-lg border border-primary/40 bg-base-100 p-4 shadow-xl">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <div className="text-sm font-semibold">Inspect Plan</div>
+                  <button
+                    className="btn btn-xs btn-ghost"
+                    onClick={() => setShowInspectPlanModal(false)}
+                    type="button"
+                  >
+                    Close
+                  </button>
                 </div>
-                <div className="flex gap-2">
-                  <button
-                    className="btn btn-xs btn-primary"
-                    onClick={() => submitSoftPauseDecision('continue_now')}
-                    type="button"
-                  >
-                    Continue now
-                  </button>
-                  <button
-                    className="btn btn-xs btn-outline"
-                    onClick={() => submitSoftPauseDecision('pause')}
-                    type="button"
-                  >
-                    Pause
-                  </button>
+                <div className="mb-2 text-xs text-base-content/80 whitespace-pre-wrap">{approvedPlan.summary}</div>
+                {inspectPlanLoading ? (
+                  <div className="mb-2 text-xs text-base-content/70">Assessing progress with model...</div>
+                ) : null}
+                {inspectPlanError ? (
+                  <div className="mb-2 text-xs text-warning">LLM assessment error: {inspectPlanError}</div>
+                ) : null}
+                <div className="mb-3 rounded-md border border-base-300 bg-base-200 px-3 py-2 text-xs text-base-content/80">
+                  <div>Completed: {inspectPlanView.completedCount}/{approvedPlan.steps.length}</div>
+                  <div>
+                    Current:{' '}
+                    {inspectPlanView.isFullyCompleted
+                      ? 'Done'
+                      : inspectPlanView.currentStepNumber > 0
+                        ? `Step ${inspectPlanView.currentStepNumber}`
+                        : 'Unclear'}
+                  </div>
+                </div>
+                <div className="mb-3 flex-1 space-y-2 overflow-y-auto pr-1">
+                  {approvedPlan.steps.map((line, idx) => {
+                    const progress = inspectPlanView.steps[idx];
+                    const statusLabel = progress?.status || 'pending';
+                    const statusClass = statusLabel === 'completed'
+                      ? 'badge badge-success badge-xs'
+                      : statusLabel === 'current'
+                        ? 'badge badge-info badge-xs'
+                        : 'badge badge-ghost badge-xs';
+                    return (
+                      <div key={`inspect-plan-${idx}`} className="grid grid-cols-[64px_1fr] items-start gap-2">
+                        <div className="pt-1 text-xs font-semibold text-base-content/80">Step {idx + 1}</div>
+                        <div className="rounded-md bg-base-200 px-3 py-2 text-xs text-base-content/90">
+                          <div className="mb-1">
+                            <span className={statusClass}>{statusLabel}</span>
+                          </div>
+                          <div className="whitespace-pre-wrap">{line}</div>
+                          {progress?.reason ? (
+                            <div className="mt-1 text-[11px] text-base-content/70 whitespace-pre-wrap">
+                              reason: {progress.reason}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>

@@ -546,6 +546,45 @@ export const useChromeMessaging = ({
     });
   };
 
+  const assessPlanProgress = async (payload: {
+    planSteps: string[];
+    agentSteps: Array<{
+      index: number;
+      status: 'active' | 'completed' | 'cancelled' | 'error';
+      toolName: string;
+      focusLabel: string;
+      thinking?: string;
+    }>;
+  }): Promise<{
+    completedCount: number;
+    currentStepNumber: number;
+    isFullyCompleted: boolean;
+    steps: Array<{ status: 'completed' | 'current' | 'pending'; reason: string }>;
+  }> => {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        {
+          action: 'assessPlanProgress',
+          tabId,
+          windowId,
+          planSteps: payload.planSteps,
+          agentSteps: payload.agentSteps,
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          if (!response?.success || !response.assessment) {
+            reject(new Error(response?.error || 'Failed to assess plan progress'));
+            return;
+          }
+          resolve(response.assessment);
+        }
+      );
+    });
+  };
+
   return {
     executePrompt,
     cancelExecution,
@@ -561,5 +600,6 @@ export const useChromeMessaging = ({
     exitAmplifiedMode,
     submitPlanReviewDecision,
     runtimeInteractionSignal,
+    assessPlanProgress,
   };
 };

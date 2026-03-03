@@ -263,26 +263,50 @@ export class ExecutionEngine {
     thinkingSummary?: string;
     impact?: LlmImpact;
     impactRationale?: string;
-    assumptions?: string;
-    uncertainties?: string;
-    checkpoints?: string;
+    plannedNextStep?: string;
+    plannedAlternative?: string;
+    plannedRationale?: string;
   } {
     const thinkingSummary = this.extractTag(accumulatedText, 'thinking_summary');
     const rawImpact = this.extractTag(accumulatedText, 'impact');
     const impact =
       rawImpact === 'low' || rawImpact === 'medium' || rawImpact === 'high' ? rawImpact : undefined;
     const impactRationale = this.extractTag(accumulatedText, 'impact_rationale');
-    const assumptions = this.extractTag(accumulatedText, 'assumptions');
-    const uncertainties = this.extractTag(accumulatedText, 'uncertainties');
-    const checkpoints = this.extractTag(accumulatedText, 'checkpoints');
+    const plannedNextStep = this.extractScaffoldSection(accumulatedText, 'Next Step I Plan To Do', [
+      'Alternative',
+      'Why I choose A over B',
+    ]);
+    const plannedAlternative = this.extractScaffoldSection(accumulatedText, 'Alternative', ['Why I choose A over B']);
+    const plannedRationale = this.extractScaffoldSection(accumulatedText, 'Why I choose A over B', []);
     return {
       thinkingSummary,
       impact,
       impactRationale,
-      assumptions,
-      uncertainties,
-      checkpoints,
+      plannedNextStep,
+      plannedAlternative,
+      plannedRationale,
     };
+  }
+
+  private extractScaffoldSection(text: string, label: string, stopLabels: string[]): string | undefined {
+    const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const stopPattern = stopLabels
+      .map((item) => item.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('|');
+    const boundaryPattern =
+      stopPattern.length > 0
+        ? `(?=\\n\\s*(?:${stopPattern})\\s*:|\\n\\s*<tool>|$)`
+        : `(?=\\n\\s*<tool>|$)`;
+    const regex = new RegExp(`${escapedLabel}\\s*:\\s*([\\s\\S]*?)${boundaryPattern}`, 'i');
+    const match = text.match(regex);
+    if (!match) return undefined;
+    const value = match[1]
+      .replace(/<thinking_summary>[\s\S]*?<\/thinking_summary>/gi, ' ')
+      .replace(/<impact>[\s\S]*?<\/impact>/gi, ' ')
+      .replace(/<impact_rationale>[\s\S]*?<\/impact_rationale>/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return value.length > 0 ? value : undefined;
   }
 
   private hasRequiredAmplifiedScaffold(text: string): boolean {
@@ -306,7 +330,7 @@ export class ExecutionEngine {
 
   private cleanPlanStepText(text: string): string {
     return text
-      .replace(/<\/?(thinking_summary|impact|impact_rationale|assumptions|uncertainties|checkpoints)>/gi, '')
+      .replace(/<\/?(thinking_summary|impact|impact_rationale)>/gi, '')
       .replace(/<\/?[^>]+>/g, '')
       .replace(/\s+/g, ' ')
       .trim();
@@ -315,7 +339,7 @@ export class ExecutionEngine {
   private isDescriptivePlanStep(text: string): boolean {
     if (!text || text.length < 16) return false;
     if (/^(low|medium|high)$/i.test(text)) return false;
-    if (/^(thinking_summary|impact|impact_rationale|assumptions|uncertainties|checkpoints)$/i.test(text)) return false;
+    if (/^(thinking_summary|impact|impact_rationale)$/i.test(text)) return false;
     return /[a-zA-Z]/.test(text) && text.includes(' ');
   }
 
@@ -690,17 +714,14 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
           const modelMetadata = this.parseModelStepMetadata(accumulatedText);
           const amplificationState = this.promptManager.getAmplificationState();
           if (amplificationState === 'amplified') {
-            const missingAssumptionTags =
-              !modelMetadata.assumptions || !modelMetadata.uncertainties || !modelMetadata.checkpoints;
-            if (!this.hasRequiredAmplifiedScaffold(accumulatedText) || missingAssumptionTags) {
+            if (!this.hasRequiredAmplifiedScaffold(accumulatedText)) {
               messages.push(
                 { role: 'assistant', content: accumulatedText },
                 {
                   role: 'user',
                   content:
                     'Amplified mode schema violation. Before the tool call, include:\n' +
-                    'Next Step I Plan To Do:\nAlternative:\nWhy I choose A over B:\n' +
-                    'and include all tags:\n<assumptions>...</assumptions>\n<uncertainties>...</uncertainties>\n<checkpoints>...</checkpoints>',
+                    'Next Step I Plan To Do:\nAlternative:\nWhy I choose A over B:',
                 }
               );
               messages = trimHistory(messages);
@@ -844,9 +865,9 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               category: riskAssessment.category,
               reasons: riskAssessment.reasons,
               reason,
-              assumptions: modelMetadata.assumptions,
-              uncertainties: modelMetadata.uncertainties,
-              checkpoints: modelMetadata.checkpoints,
+              plannedNextStep: modelMetadata.plannedNextStep,
+              plannedAlternative: modelMetadata.plannedAlternative,
+              plannedRationale: modelMetadata.plannedRationale,
               amplifiedRisk,
             });
           }

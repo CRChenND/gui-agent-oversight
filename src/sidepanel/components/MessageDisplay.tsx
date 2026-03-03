@@ -16,8 +16,7 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({
 }) => {
   const countStepMetadata = (content: string): number => {
     if (!content) return 0;
-    const metadataTripletRegex =
-      /<thinking_summary>[\s\S]*?<\/thinking_summary>\s*<impact>(low|medium|high)<\/impact>\s*<impact_rationale>[\s\S]*?<\/impact_rationale>/gi;
+    const metadataTripletRegex = /<thinking_summary>[\s\S]*?<\/thinking_summary>/gi;
     const matches = content.match(metadataTripletRegex);
     return matches ? matches.length : 0;
   };

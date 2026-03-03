@@ -9,23 +9,23 @@ interface LlmContentProps {
 
 export const LlmContent: React.FC<LlmContentProps> = ({ content, stepStartIndex = 1 }) => {
   // Extract structured step metadata tags for prettier rendering in conversation.
-  const stepMetadata: Array<{ thinkingSummary: string; impact: 'low' | 'medium' | 'high'; impactRationale: string }> = [];
-  const metadataTripletRegex =
-    /<thinking_summary>([\s\S]*?)<\/thinking_summary>\s*<impact>(low|medium|high)<\/impact>\s*<impact_rationale>([\s\S]*?)<\/impact_rationale>/gi;
+  const stepMetadata: Array<{ thinkingSummary: string }> = [];
+  const metadataThinkingRegex = /<thinking_summary>([\s\S]*?)<\/thinking_summary>/gi;
   let metadataMatch;
-  while ((metadataMatch = metadataTripletRegex.exec(content)) !== null) {
+  while ((metadataMatch = metadataThinkingRegex.exec(content)) !== null) {
     stepMetadata.push({
       thinkingSummary: metadataMatch[1].trim(),
-      impact: metadataMatch[2].trim().toLowerCase() as 'low' | 'medium' | 'high',
-      impactRationale: metadataMatch[3].trim(),
     });
   }
 
   const contentWithoutMetadata = content
-    .replace(metadataTripletRegex, '')
+    .replace(metadataThinkingRegex, '')
     .replace(/<thinking_summary>[\s\S]*?<\/thinking_summary>/gi, '')
     .replace(/<impact>([\s\S]*?)<\/impact>/gi, '')
     .replace(/<impact_rationale>[\s\S]*?<\/impact_rationale>/gi, '')
+    .replace(/Next Step I Plan To Do:\s*[\s\S]*?(?=\n\s*<tool>|<tool>|$)/gi, '')
+    .replace(/Alternative:\s*[\s\S]*?(?=\n\s*<tool>|<tool>|$)/gi, '')
+    .replace(/Why I choose A over B:\s*[\s\S]*?(?=\n\s*<tool>|<tool>|$)/gi, '')
     .trim();
 
   const actionChips = Array.from(
@@ -105,23 +105,13 @@ export const LlmContent: React.FC<LlmContentProps> = ({ content, stepStartIndex 
         </div>
       ) : null}
       {stepMetadata.map((item, index) => {
-        const impactClass =
-          item.impact === 'high'
-            ? 'badge badge-error'
-            : item.impact === 'medium'
-              ? 'badge badge-warning'
-              : 'badge badge-success';
         return (
           <div key={`step-meta-${index}`} className="mb-2 rounded border border-base-300 bg-base-200 p-3 text-sm">
             <div className="mb-1 flex items-center justify-between">
               <span className="font-semibold text-base-content/80">Step {stepStartIndex + index}</span>
-              <span className={impactClass}>impact: {item.impact}</span>
-            </div>
-            <div className="mb-1">
-              <span className="font-semibold">Thinking:</span> {item.thinkingSummary}
             </div>
             <div>
-              <span className="font-semibold">Impact rationale:</span> {item.impactRationale}
+              <span className="font-semibold">Thinking:</span> {item.thinkingSummary}
             </div>
           </div>
         );

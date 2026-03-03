@@ -57,10 +57,6 @@ Remember to follow the verification-first workflow: navigate → observe → ana
           `Next Step I Plan To Do:\n` +
           `Alternative:\n` +
           `Why I choose A over B:\n\n` +
-          `And include mandatory tags before the tool call:\n` +
-          `<assumptions>...</assumptions>\n` +
-          `<uncertainties>...</uncertainties>\n` +
-          `<checkpoints>...</checkpoints>\n` +
           `${this.amplificationEnteredReason ? `Entered because: ${this.amplificationEnteredReason}\n` : ''}` +
           `This is a cognitive/presentation requirement, not an approval request.\n`
         : '';
