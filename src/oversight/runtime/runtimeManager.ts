@@ -1,6 +1,11 @@
 import { getOversightSessionManager } from '../session/sessionManager';
 import { getOversightTelemetryLogger } from '../telemetry/logger';
 import type { OversightTelemetryEvent } from '../telemetry/types';
+import {
+  AmplificationManager,
+  type AmplificationConfig,
+  type AmplificationSignal,
+} from './amplificationManager';
 import { AuthorityManager } from './authorityManager';
 import {
   DeliberationManager,
@@ -12,6 +17,7 @@ import { PhaseManager } from './phaseManager';
 import { RegimePolicyAdapter } from './regimePolicyAdapter';
 import { RegimeManager, type RegimeConfig, type RegimeTransitionEvent } from './regimeManager';
 import type {
+  AmplificationEnterReason,
   AuthorityState,
   ExecutionPhase,
   ExecutionState,
@@ -46,17 +52,42 @@ interface StructuralAmplificationRuntimeConfig {
   sustainedWindowMs: number;
   resolutionWindowMs: number;
   escalationPersistenceMs: number;
+  rapidPauseResumeWindowMs: number;
+  traceExpansionWindowMs: number;
+  inactivityExitSteps: number;
+  intentRefreshEverySteps: number;
+  softPauseDurationMs: number;
+  intentRefreshAutoConfirmMs: number;
+}
+
+interface SoftPauseContext {
+  active: boolean;
+  startedAt: number;
+  endsAt: number;
+  timeoutMs: number;
+  stepId?: string;
+  toolName?: string;
+  timer?: ReturnType<typeof setTimeout>;
+  resolver?: (value: { allowed: boolean; reason?: string }) => void;
+}
+
+interface NavigationContext {
+  lastOrigin?: string;
 }
 
 class OversightRuntimeManager {
   private authorityManager = new AuthorityManager();
   private phaseManager = new PhaseManager();
   private executionStateManager = new ExecutionStateManager();
+  private amplificationManager = new AmplificationManager();
   private deliberationManager = new DeliberationManager();
   private regimeManager = new RegimeManager();
   private regimePolicyAdapter = new RegimePolicyAdapter();
   private bindings = new Map<string, RuntimeBinding>();
   private structuralAmplificationConfig = new Map<string, StructuralAmplificationRuntimeConfig>();
+  private softPauseContexts = new Map<string, SoftPauseContext>();
+  private navigationContexts = new Map<string, NavigationContext>();
+  private intentRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private regimeResolutionTimers = new Map<string, ReturnType<typeof setInterval>>();
   private dispatcher: RuntimeEventDispatcher | null = null;
 
@@ -171,6 +202,24 @@ class OversightRuntimeManager {
     });
   }
 
+  private async emitAmplificationEvent(runtimeKey: string, event: Record<string, unknown>): Promise<void> {
+    const binding = this.bindings.get(runtimeKey);
+    if (binding && this.dispatcher) {
+      this.dispatcher.emitOversightEvent(event, binding.tabId, binding.windowId);
+    }
+    await this.logTelemetry('state_transition', event);
+  }
+
+  private normalizeAmplificationConfig(config: StructuralAmplificationRuntimeConfig): AmplificationConfig {
+    return {
+      enabled: config.enabled,
+      rapidPauseResumeWindowMs: Math.max(1, config.rapidPauseResumeWindowMs),
+      traceExpansionWindowMs: Math.max(1, config.traceExpansionWindowMs),
+      inactivityExitSteps: Math.max(1, config.inactivityExitSteps),
+      intentRefreshEverySteps: Math.max(1, config.intentRefreshEverySteps),
+    };
+  }
+
   private normalizeDeliberationConfig(config: StructuralAmplificationRuntimeConfig): DeliberationConfig {
     return {
       enabled: config.enabled,
@@ -185,6 +234,47 @@ class OversightRuntimeManager {
       enabled: config.enabled,
       resolutionWindowMs: Math.max(0, config.resolutionWindowMs),
     };
+  }
+
+  private clearIntentRefreshTimer(runtimeKey: string): void {
+    const timer = this.intentRefreshTimers.get(runtimeKey);
+    if (timer) {
+      clearTimeout(timer);
+      this.intentRefreshTimers.delete(runtimeKey);
+    }
+  }
+
+  private clearSoftPause(runtimeKey: string): void {
+    const context = this.softPauseContexts.get(runtimeKey);
+    if (context?.timer) {
+      clearTimeout(context.timer);
+    }
+    if (context?.resolver) {
+      context.resolver({ allowed: false, reason: 'Soft pause cleared' });
+    }
+    this.softPauseContexts.delete(runtimeKey);
+  }
+
+  private async handleAmplificationEvents(runtimeKey: string, events: Record<string, any>[]): Promise<void> {
+    for (const event of events) {
+      if (event.kind === 'intent_refresh_triggered') {
+        await this.emitAmplificationEvent(runtimeKey, event);
+        this.clearIntentRefreshTimer(runtimeKey);
+        const config = this.structuralAmplificationConfig.get(runtimeKey);
+        const autoConfirmMs = Math.max(0, Number(config?.intentRefreshAutoConfirmMs ?? 1500));
+        const timer = setTimeout(() => {
+          void this.emitAmplificationEvent(runtimeKey, {
+            kind: 'intent_refresh_confirmed',
+            timestamp: Date.now(),
+            response: 'yes_auto',
+          });
+        }, autoConfirmMs);
+        this.intentRefreshTimers.set(runtimeKey, timer);
+        continue;
+      }
+      await this.emitAmplificationEvent(runtimeKey, event);
+    }
+    this.notifyRuntimeState(runtimeKey);
   }
 
   private getRegime(runtimeKey: string): OversightRegime {
@@ -252,11 +342,29 @@ class OversightRuntimeManager {
   }
 
   getSnapshot(runtimeKey: string): RuntimeStatusSnapshot {
+    const amplification = this.amplificationManager.getState(runtimeKey);
+    const softPause = this.softPauseContexts.get(runtimeKey);
     return {
       authorityState: this.authorityManager.getContext(runtimeKey).authorityState,
       executionPhase: this.phaseManager.getPhase(runtimeKey),
       executionState: this.executionStateManager.getState(runtimeKey),
       regime: this.regimeManager.getRegime(runtimeKey),
+      amplification: {
+        state: amplification.state,
+        enteredAt: amplification.enteredAt,
+        enteredReason: amplification.enteredReason,
+        entryCount: amplification.entryCount,
+      },
+      softPause: softPause
+        ? {
+            active: softPause.active,
+            startedAt: softPause.startedAt,
+            endsAt: softPause.endsAt,
+            timeoutMs: softPause.timeoutMs,
+            stepId: softPause.stepId,
+            toolName: softPause.toolName,
+          }
+        : undefined,
       deliberation: this.deliberationManager.getState(runtimeKey),
       runtimePolicy: this.regimePolicyAdapter.getEffectivePolicy(runtimeKey),
       updatedAt: Date.now(),
@@ -290,6 +398,12 @@ class OversightRuntimeManager {
       sustainedWindowMs: Math.max(1, Number(args.structuralAmplification?.sustainedWindowMs ?? 10000)),
       resolutionWindowMs: Math.max(0, Number(args.structuralAmplification?.resolutionWindowMs ?? 15000)),
       escalationPersistenceMs: Math.max(0, Number(args.structuralAmplification?.escalationPersistenceMs ?? 300000)),
+      rapidPauseResumeWindowMs: 5000,
+      traceExpansionWindowMs: 8000,
+      inactivityExitSteps: 3,
+      intentRefreshEverySteps: 3,
+      softPauseDurationMs: 2500,
+      intentRefreshAutoConfirmMs: 1500,
     };
 
     this.structuralAmplificationConfig.set(key, structuralConfig);
@@ -297,8 +411,10 @@ class OversightRuntimeManager {
     this.authorityManager.initialize(key, initialAuthority, `initialized_from_control_mode:${args.controlMode}`);
     this.phaseManager.setPhase(key, 'planning');
     this.executionStateManager.setState(key, 'running');
+    this.amplificationManager.initialize(key);
     this.deliberationManager.initialize(key);
     this.regimeManager.initialize(key);
+    this.navigationContexts.set(key, {});
 
     this.regimePolicyAdapter.initialize(
       key,
@@ -325,6 +441,7 @@ class OversightRuntimeManager {
       executionState: 'running',
       regime: this.regimeManager.getRegime(key),
       structuralAmplificationEnabled: structuralConfig.enabled,
+      amplificationState: 'normal',
       timestamp: Date.now(),
     });
     this.notifyRuntimeState(key);
@@ -341,6 +458,17 @@ class OversightRuntimeManager {
     if (!config?.enabled) return;
 
     const timestamp = Date.now();
+    const amplificationSignal = args.signal as AmplificationSignal;
+    const amplificationEvents = this.amplificationManager.registerSignal(
+      runtimeKey,
+      amplificationSignal,
+      this.normalizeAmplificationConfig(config),
+      timestamp
+    );
+    if (amplificationEvents.length > 0) {
+      await this.handleAmplificationEvents(runtimeKey, amplificationEvents);
+    }
+
     const deliberation = this.deliberationManager.registerSignal(
       runtimeKey,
       args.signal,
@@ -377,6 +505,12 @@ class OversightRuntimeManager {
     const key = this.runtimeKey(windowId);
     const transition = this.phaseManager.setPhase(key, phase);
     if (transition.changed) {
+      if (phase === 'posthoc_review') {
+        const events = this.amplificationManager.exitForTaskBoundary(key, Date.now());
+        if (events.length > 0) {
+          await this.handleAmplificationEvents(key, events);
+        }
+      }
       await this.emitPhaseChanged(key, transition.from, transition.to, reason);
       this.notifyRuntimeState(key);
     }
@@ -496,7 +630,190 @@ class OversightRuntimeManager {
     }
   }
 
+  getAmplificationStatus(windowId: number | undefined): {
+    state: 'normal' | 'amplified';
+    enteredReason?: AmplificationEnterReason;
+  } {
+    const key = this.runtimeKey(windowId);
+    const state = this.amplificationManager.getState(key);
+    return {
+      state: state.state,
+      enteredReason: state.enteredReason,
+    };
+  }
+
+  async waitForSoftPauseWindow(args: {
+    windowId: number | undefined;
+    stepId?: string;
+    toolName?: string;
+  }): Promise<{ allowed: boolean; reason?: string }> {
+    const key = this.runtimeKey(args.windowId);
+    const config = this.structuralAmplificationConfig.get(key);
+    const amplification = this.amplificationManager.getState(key);
+    if (!config?.enabled || amplification.state !== 'amplified') {
+      return { allowed: true };
+    }
+
+    const existing = this.softPauseContexts.get(key);
+    if (existing?.active && existing.resolver) {
+      return new Promise((resolve) => {
+        const previousResolver = existing.resolver!;
+        existing.resolver = (value) => {
+          previousResolver(value);
+          resolve(value);
+        };
+      });
+    }
+
+    const timeoutMs = Math.max(2000, Math.min(3000, config.softPauseDurationMs));
+    const startedAt = Date.now();
+    const endsAt = startedAt + timeoutMs;
+
+    await this.setExecutionState(args.windowId, 'paused_by_system_soft', 'amplification_soft_pause', 'system');
+    await this.logTelemetry('state_transition', {
+      kind: 'soft_pause_started',
+      timestamp: startedAt,
+      timeoutMs,
+      stepId: args.stepId,
+      toolName: args.toolName,
+    });
+
+    return new Promise((resolve) => {
+      const context: SoftPauseContext = {
+        active: true,
+        startedAt,
+        endsAt,
+        timeoutMs,
+        stepId: args.stepId,
+        toolName: args.toolName,
+        resolver: resolve,
+      };
+      context.timer = setTimeout(() => {
+        void this.completeSoftPause(key, 'timeout');
+      }, timeoutMs);
+      this.softPauseContexts.set(key, context);
+      this.notifyRuntimeState(key);
+    });
+  }
+
+  async resolveSoftPauseDecision(
+    windowId: number | undefined,
+    decision: 'continue_now' | 'pause'
+  ): Promise<void> {
+    const key = this.runtimeKey(windowId);
+    const context = this.softPauseContexts.get(key);
+    if (!context?.active) return;
+    await this.completeSoftPause(key, decision);
+  }
+
+  private async completeSoftPause(runtimeKey: string, decision: 'timeout' | 'continue_now' | 'pause'): Promise<void> {
+    const context = this.softPauseContexts.get(runtimeKey);
+    if (!context?.active) return;
+
+    if (context.timer) {
+      clearTimeout(context.timer);
+    }
+
+    const resolvedAt = Date.now();
+    const durationMs = Math.max(0, resolvedAt - context.startedAt);
+    const binding = this.bindings.get(runtimeKey);
+    const windowId = binding?.windowId;
+
+    if (decision === 'pause') {
+      await this.setExecutionState(windowId, 'paused_by_user', 'soft_pause_user_pause', 'user');
+      await this.transitionAuthority(windowId, 'human_control', 'soft_pause_user_pause');
+      context.resolver?.({ allowed: false, reason: 'Paused during soft deliberation window' });
+    } else {
+      await this.setExecutionState(windowId, 'running', `soft_pause_${decision}`, 'system');
+      context.resolver?.({ allowed: true });
+    }
+
+    await this.logTelemetry('state_transition', {
+      kind: 'soft_pause_resolved',
+      timestamp: resolvedAt,
+      decision,
+      durationMs,
+      timeoutMs: context.timeoutMs,
+      stepId: context.stepId,
+      toolName: context.toolName,
+    });
+
+    this.softPauseContexts.delete(runtimeKey);
+    this.notifyRuntimeState(runtimeKey);
+  }
+
+  async registerStepCommitted(windowId: number | undefined): Promise<void> {
+    const key = this.runtimeKey(windowId);
+    const config = this.structuralAmplificationConfig.get(key);
+    if (!config?.enabled) return;
+    const events = this.amplificationManager.registerStepCommitted(key, this.normalizeAmplificationConfig(config), Date.now());
+    if (events.length > 0) {
+      await this.handleAmplificationEvents(key, events);
+    }
+  }
+
+  async exitAmplifiedMode(
+    windowId: number | undefined,
+    _reason: 'explicit_exit' | 'task_boundary' = 'explicit_exit'
+  ): Promise<void> {
+    const key = this.runtimeKey(windowId);
+    const events = this.amplificationManager.explicitExit(key, Date.now());
+    if (events.length > 0) {
+      await this.handleAmplificationEvents(key, events);
+    }
+  }
+
+  classifyAmplifiedRisk(args: {
+    windowId: number | undefined;
+    toolName: string;
+    toolInput: string;
+  }): {
+    effect_type: 'reversible' | 'irreversible';
+    scope: 'local' | 'external';
+    data_flow: 'disclosure' | 'none';
+  } | null {
+    const key = this.runtimeKey(args.windowId);
+    const amplification = this.amplificationManager.getState(key);
+    if (amplification.state !== 'amplified') return null;
+
+    const name = args.toolName.toLowerCase();
+    const input = args.toolInput.toLowerCase();
+    const text = `${name} ${input}`;
+    const hasSubmitVerb = /\b(submit|send|pay)\b/.test(text);
+    const isClipboardExternal = text.includes('clipboard') && /\b(http|www|external|share)\b/.test(text);
+    const permissionPopupDetected = /\b(permission|allow|grant)\b/.test(text);
+
+    let changedOrigin = false;
+    const urlMatch = args.toolInput.match(/https?:\/\/[^\s'"]+/i);
+    if (urlMatch) {
+      try {
+        const parsed = new URL(urlMatch[0]);
+        const navCtx = this.navigationContexts.get(key) ?? {};
+        changedOrigin = Boolean(navCtx.lastOrigin && navCtx.lastOrigin !== parsed.origin);
+        navCtx.lastOrigin = parsed.origin;
+        this.navigationContexts.set(key, navCtx);
+      } catch {
+        // Ignore invalid URL fragments.
+      }
+    }
+
+    if (!hasSubmitVerb && !isClipboardExternal && !permissionPopupDetected && !changedOrigin) {
+      return null;
+    }
+
+    return {
+      effect_type: hasSubmitVerb || permissionPopupDetected ? 'irreversible' : 'reversible',
+      scope: changedOrigin || hasSubmitVerb || isClipboardExternal ? 'external' : 'local',
+      data_flow: hasSubmitVerb || isClipboardExternal ? 'disclosure' : 'none',
+    };
+  }
+
   async pauseByUser(windowId: number | undefined): Promise<void> {
+    const key = this.runtimeKey(windowId);
+    if (this.softPauseContexts.get(key)?.active) {
+      await this.resolveSoftPauseDecision(windowId, 'pause');
+      return;
+    }
     await this.setExecutionState(windowId, 'paused_by_user', 'user_pause', 'user');
     await this.transitionAuthority(windowId, 'human_control', 'user_pause');
     await this.logTelemetry('human_intervention', { kind: 'execution_paused', by: 'user', timestamp: Date.now() });
@@ -504,9 +821,16 @@ class OversightRuntimeManager {
   }
 
   async resumeByUser(windowId: number | undefined): Promise<void> {
+    const key = this.runtimeKey(windowId);
+    if (this.softPauseContexts.get(key)?.active) {
+      await this.resolveSoftPauseDecision(windowId, 'continue_now');
+      await this.handleBehavioralSignal({ windowId, signal: 'resume_by_user', source: 'runtime' });
+      return;
+    }
     await this.setExecutionState(windowId, 'running', 'user_resume', 'user');
     await this.transitionAuthority(windowId, 'shared_supervision', 'user_resume');
     await this.logTelemetry('human_intervention', { kind: 'execution_resumed', by: 'user', timestamp: Date.now() });
+    await this.handleBehavioralSignal({ windowId, signal: 'resume_by_user', source: 'runtime' });
   }
 
   async takeover(windowId: number | undefined): Promise<void> {
@@ -579,12 +903,16 @@ class OversightRuntimeManager {
   clear(windowId: number | undefined): void {
     const key = this.runtimeKey(windowId);
     this.stopRegimeResolutionMonitor(key);
+    this.clearIntentRefreshTimer(key);
+    this.clearSoftPause(key);
     this.authorityManager.clear(key);
     this.phaseManager.clear(key);
     this.executionStateManager.clear(key);
+    this.amplificationManager.clear(key);
     this.deliberationManager.clear(key);
     this.regimeManager.clear(key);
     this.regimePolicyAdapter.clear(key);
+    this.navigationContexts.delete(key);
     this.structuralAmplificationConfig.delete(key);
     this.bindings.delete(key);
   }

@@ -837,6 +837,7 @@ export async function executePrompt(
           toolInput,
           result,
         });
+        void runtimeManager.registerStepCommitted(windowId);
 
         // Check if this is a screenshot result by trying to parse it as JSON
         try {
@@ -1009,7 +1010,27 @@ export async function executePrompt(
       onWaitForExecutionPermission: async () => {
         const windowId = getWindowForTab(targetTabId);
         return runtimeManager.waitUntilExecutable(windowId);
-      }
+      },
+      onPrepareModelStep: async () => {
+        const windowId = getWindowForTab(targetTabId);
+        const amplification = runtimeManager.getAmplificationStatus(windowId);
+        return {
+          amplificationState: amplification.state,
+          enteredReason: amplification.enteredReason,
+        };
+      },
+      onBeforeToolInvocation: async ({ stepId, toolName }) => {
+        const windowId = getWindowForTab(targetTabId);
+        return runtimeManager.waitForSoftPauseWindow({
+          windowId,
+          stepId,
+          toolName,
+        });
+      },
+      classifyAmplifiedRisk: ({ toolName, toolInput }) => {
+        const windowId = getWindowForTab(targetTabId);
+        return runtimeManager.classifyAmplifiedRisk({ windowId, toolName, toolInput });
+      },
     };
 
     registerThinkingDispatch((event) => {

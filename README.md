@@ -66,27 +66,39 @@ MORPH now has first-class runtime primitives for authority, phase, and execution
 - Execution phases:
   - `planning | plan_review | execution | posthoc_review | terminated`
 - Execution states:
-  - `running | paused_by_user | paused_by_system | cancelled | completed`
+  - `running | paused_by_user | paused_by_system | paused_by_system_soft | cancelled | completed`
 - Runtime-level guarantees:
   - plan review can block execution before first action
   - the execution engine is phase-aware and refuses tool invocation unless `ExecutionPhase === 'execution'` and `ExecutionState === 'running'`
   - execution blocking is enforced at the runtime engine layer (not the UI layer), so authority/phase constraints cannot be bypassed via presentation-level manipulation
   - pause/takeover freeze execution until explicit resume/release
+  - when Structural Amplification is active, each tool invocation is held by a runtime-enforced soft window (`paused_by_system_soft`) for 2–3s before execution
 - Side panel controls:
   - Pause / Resume / Takeover / Release control
   - live display of AuthorityState / ExecutionPhase / ExecutionState
+  - amplified-mode indicator + explicit return-to-normal action
 - Runtime telemetry/events include:
   - `authority_transition`
   - `execution_phase_changed`
   - `execution_state_changed`
   - `plan_review_requested`
   - `plan_review_decision`
+  - `amplification_entered`
+  - `amplification_exited`
+  - `intent_refresh_triggered`
+  - `intent_refresh_confirmed`
+  - `soft_pause_started`
+  - `soft_pause_resolved`
 - Session export now appends `oversightRhythmMetrics`:
   - `totalInterruptions`
   - `enforcedInterruptions`
   - `userInitiatedInterruptions`
   - `meanInterruptionIntervalMs`
   - `authorityTransitionCount`
+  - `amplificationDurationMs`
+  - `amplificationEntryCount`
+  - `meanSoftPauseDurationMs`
+  - `intentRefreshCount`
 
 #### Oversight Rhythm Instrumentation
 
@@ -181,10 +193,46 @@ LLM step metadata tags are parsed and rendered as structured cards in conversati
 - `<thinking_summary>...</thinking_summary>`
 - `<impact>low|medium|high</impact>`
 - `<impact_rationale>...</impact_rationale>`
+- (amplified mode) `<assumptions>...</assumptions>`
+- (amplified mode) `<uncertainties>...</uncertainties>`
+- (amplified mode) `<checkpoints>...</checkpoints>`
 
 This avoids raw XML clutter and preserves readable step-level context.
 
-#### 5) Interaction Feature Snapshot (Paper Alignment)
+#### 5) Structural Amplification (`structuralAmplification`)
+
+- Runtime amplification state machine:
+  - `normal | amplified`
+  - enter on any:
+    - rapid pause->resume (`<=5s`)
+    - `Inspect Plan`
+    - repeated trace expansion within short window
+  - exit on:
+    - inactivity across consecutive steps
+    - explicit return-to-normal action
+    - task boundary (`ExecutionPhase=posthoc_review`)
+- Micro-deliberation soft window (not approval gating):
+  - independent from `interventionGate.gatePolicy`
+  - before tool invocation, runtime may enter `paused_by_system_soft`
+  - sidepanel shows countdown overlay (`Next action will execute...`)
+  - user options: `Continue now` or `Pause`; otherwise auto-resume on timeout
+- Amplified schema injection:
+  - requires scaffold before action:
+    - `Next Step I Plan To Do:`
+    - `Alternative:`
+    - `Why I choose A over B:`
+  - requires structured tags:
+    - `<assumptions>`, `<uncertainties>`, `<checkpoints>`
+- Lightweight risk surfacing in amplified mode:
+  - heuristic metadata badge in timeline:
+    - `effect_type: reversible | irreversible`
+    - `scope: local | external`
+    - `data_flow: disclosure | none`
+- Intent refresh:
+  - every N steps in amplified mode, runtime emits a non-blocking intent refresh prompt
+  - auto-confirmation is logged if user does not intervene
+
+#### 6) Interaction Feature Snapshot (Paper Alignment)
 
 Use this as a quick implementation audit against the Strategy/Presentation design space.
 

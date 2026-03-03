@@ -251,6 +251,8 @@ export interface RuntimeInteractionSignalMessage {
   windowId?: number;
   signal:
     | 'pause_by_user'
+    | 'resume_by_user'
+    | 'inspect_plan'
     | 'takeover'
     | 'expand_trace_node'
     | 'hover_risk_label'
@@ -259,6 +261,19 @@ export interface RuntimeInteractionSignalMessage {
     | 'repeated_scroll_backward'
     | 'repeated_trace_expansion';
   durationMs?: number;
+}
+
+export interface SoftPauseDecisionMessage {
+  action: 'softPauseDecision';
+  tabId?: number;
+  windowId?: number;
+  decision: 'continue_now' | 'pause';
+}
+
+export interface ExitAmplifiedModeMessage {
+  action: 'exitAmplifiedMode';
+  tabId?: number;
+  windowId?: number;
 }
 
 export interface AgentStatusUpdateMessage {
@@ -300,7 +315,9 @@ export type BackgroundMessage =
   | ReleaseControlMessage
   | ResolveEscalationMessage
   | PlanReviewDecisionMessage
-  | RuntimeInteractionSignalMessage;
+  | RuntimeInteractionSignalMessage
+  | SoftPauseDecisionMessage
+  | ExitAmplifiedModeMessage;
 
 // New message types for enhanced tab management
 export interface TabStatusChangedMessage {

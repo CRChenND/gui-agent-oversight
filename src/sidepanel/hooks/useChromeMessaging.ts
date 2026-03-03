@@ -40,6 +40,20 @@ interface UseChromeMessagingProps {
     executionPhase: ExecutionPhase;
     executionState: ExecutionState;
     regime: OversightRegime;
+    amplification?: {
+      state: 'normal' | 'amplified';
+      enteredAt?: number;
+      enteredReason?: 'pause_resume_rapid' | 'inspect_plan' | 'rapid_trace_inspection';
+      entryCount: number;
+    };
+    softPause?: {
+      active: boolean;
+      startedAt: number;
+      endsAt: number;
+      timeoutMs: number;
+      stepId?: string;
+      toolName?: string;
+    };
     deliberation?: {
       score: number;
       lastSignalTimestamp: number;
@@ -164,6 +178,7 @@ export const useChromeMessaging = ({
           (payload.executionState === 'running' ||
             payload.executionState === 'paused_by_user' ||
             payload.executionState === 'paused_by_system' ||
+            payload.executionState === 'paused_by_system_soft' ||
             payload.executionState === 'cancelled' ||
             payload.executionState === 'completed') &&
           (payload.regime === 'baseline' || payload.regime === 'deliberative_escalated')
@@ -173,6 +188,32 @@ export const useChromeMessaging = ({
             executionPhase: payload.executionPhase,
             executionState: payload.executionState,
             regime: payload.regime,
+            amplification:
+              payload.amplification && typeof payload.amplification === 'object'
+                ? {
+                    state: payload.amplification.state === 'amplified' ? 'amplified' : 'normal',
+                    enteredAt:
+                      typeof payload.amplification.enteredAt === 'number' ? payload.amplification.enteredAt : undefined,
+                    enteredReason:
+                      payload.amplification.enteredReason === 'pause_resume_rapid' ||
+                      payload.amplification.enteredReason === 'inspect_plan' ||
+                      payload.amplification.enteredReason === 'rapid_trace_inspection'
+                        ? payload.amplification.enteredReason
+                        : undefined,
+                    entryCount: Math.max(0, Number(payload.amplification.entryCount || 0)),
+                  }
+                : undefined,
+            softPause:
+              payload.softPause && typeof payload.softPause === 'object'
+                ? {
+                    active: Boolean(payload.softPause.active),
+                    startedAt: Number(payload.softPause.startedAt || Date.now()),
+                    endsAt: Number(payload.softPause.endsAt || Date.now()),
+                    timeoutMs: Math.max(0, Number(payload.softPause.timeoutMs || 0)),
+                    stepId: typeof payload.softPause.stepId === 'string' ? payload.softPause.stepId : undefined,
+                    toolName: typeof payload.softPause.toolName === 'string' ? payload.softPause.toolName : undefined,
+                  }
+                : undefined,
             deliberation:
               payload.deliberation && typeof payload.deliberation === 'object'
                 ? {
@@ -468,6 +509,8 @@ export const useChromeMessaging = ({
   const runtimeInteractionSignal = (
     signal:
       | 'pause_by_user'
+      | 'resume_by_user'
+      | 'inspect_plan'
       | 'takeover'
       | 'expand_trace_node'
       | 'hover_risk_label'
@@ -486,6 +529,23 @@ export const useChromeMessaging = ({
     });
   };
 
+  const submitSoftPauseDecision = (decision: 'continue_now' | 'pause') => {
+    chrome.runtime.sendMessage({
+      action: 'softPauseDecision',
+      tabId,
+      windowId,
+      decision,
+    });
+  };
+
+  const exitAmplifiedMode = () => {
+    chrome.runtime.sendMessage({
+      action: 'exitAmplifiedMode',
+      tabId,
+      windowId,
+    });
+  };
+
   return {
     executePrompt,
     cancelExecution,
@@ -497,6 +557,8 @@ export const useChromeMessaging = ({
     takeoverAuthority,
     releaseControl,
     resolveEscalation,
+    submitSoftPauseDecision,
+    exitAmplifiedMode,
     submitPlanReviewDecision,
     runtimeInteractionSignal,
   };

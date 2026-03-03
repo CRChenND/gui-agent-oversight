@@ -132,6 +132,12 @@ export function handleMessage(
       case 'runtimeInteractionSignal':
         handleRuntimeInteractionSignal(message, sendResponse);
         return true;
+      case 'softPauseDecision':
+        handleSoftPauseDecision(message, sendResponse);
+        return true;
+      case 'exitAmplifiedMode':
+        handleExitAmplifiedMode(message, sendResponse);
+        return true;
 
       default:
         // This should never happen due to the type guard, but TypeScript requires it
@@ -187,7 +193,9 @@ function isBackgroundMessage(message: any): message is BackgroundMessage {
       message.action === 'releaseControl' ||
       message.action === 'resolveEscalation' ||
       message.action === 'planReviewDecision' ||
-      message.action === 'runtimeInteractionSignal'
+      message.action === 'runtimeInteractionSignal' ||
+      message.action === 'softPauseDecision' ||
+      message.action === 'exitAmplifiedMode'
     )
   );
 }
@@ -257,6 +265,8 @@ function handleRuntimeInteractionSignal(
     windowId?: number;
     signal?:
       | 'pause_by_user'
+      | 'resume_by_user'
+      | 'inspect_plan'
       | 'takeover'
       | 'expand_trace_node'
       | 'hover_risk_label'
@@ -280,6 +290,36 @@ function handleRuntimeInteractionSignal(
       durationMs: typeof message.durationMs === 'number' ? message.durationMs : undefined,
       source: 'ui',
     })
+    .then(() => sendResponse({ success: true }))
+    .catch((error) => sendResponse({ success: false, error: String(error) }));
+}
+
+function handleSoftPauseDecision(
+  message: {
+    tabId?: number;
+    windowId?: number;
+    decision?: 'continue_now' | 'pause';
+  },
+  sendResponse: (response?: any) => void
+): void {
+  if (message.decision !== 'continue_now' && message.decision !== 'pause') {
+    sendResponse({ success: false, error: 'Missing soft pause decision' });
+    return;
+  }
+  const runtimeManager = getOversightRuntimeManager();
+  void runtimeManager
+    .resolveSoftPauseDecision(message.windowId, message.decision)
+    .then(() => sendResponse({ success: true }))
+    .catch((error) => sendResponse({ success: false, error: String(error) }));
+}
+
+function handleExitAmplifiedMode(
+  message: { tabId?: number; windowId?: number },
+  sendResponse: (response?: any) => void
+): void {
+  const runtimeManager = getOversightRuntimeManager();
+  void runtimeManager
+    .exitAmplifiedMode(message.windowId, 'explicit_exit')
     .then(() => sendResponse({ success: true }))
     .catch((error) => sendResponse({ success: false, error: String(error) }));
 }

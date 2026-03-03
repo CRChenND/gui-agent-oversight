@@ -6,6 +6,8 @@ import { BrowserTool } from "./tools/types";
 export class PromptManager {
   private tools: BrowserTool[];
   private globalKnowledgeText: string = "";
+  private amplificationState: 'normal' | 'amplified' = 'normal';
+  private amplificationEnteredReason?: string;
   
   constructor(tools: BrowserTool[]) {
     this.tools = tools;
@@ -43,12 +45,27 @@ Remember to follow the verification-first workflow: navigate → observe → ana
     const globalKnowledgeSection = this.globalKnowledgeText?.trim()
       ? `\n\n## USER GLOBAL KNOWLEDGE\n${this.globalKnowledgeText}\n`
       : "";
+    const amplificationSection =
+      this.amplificationState === 'amplified'
+        ? `\n\n## STRUCTURAL AMPLIFICATION (REQUIRED)\n` +
+          `You are currently in Amplified Mode.\n` +
+          `Before EVERY tool call, include this exact scaffold:\n` +
+          `Next Step I Plan To Do:\n` +
+          `Alternative:\n` +
+          `Why I choose A over B:\n\n` +
+          `And include mandatory tags before the tool call:\n` +
+          `<assumptions>...</assumptions>\n` +
+          `<uncertainties>...</uncertainties>\n` +
+          `<checkpoints>...</checkpoints>\n` +
+          `${this.amplificationEnteredReason ? `Entered because: ${this.amplificationEnteredReason}\n` : ''}` +
+          `This is a cognitive/presentation requirement, not an approval request.\n`
+        : '';
   
     return `You are a browser-automation assistant called **MORPH**.
   
   You have access to these tools:
   
-  ${toolDescriptions}${pageContextSection}${globalKnowledgeSection}
+  ${toolDescriptions}${pageContextSection}${globalKnowledgeSection}${amplificationSection}
   
   ────────────────────────────────────────
   ## MULTI-TAB OPERATION INSTRUCTIONS
@@ -129,5 +146,14 @@ Remember to follow the verification-first workflow: navigate → observe → ana
    */
   setGlobalKnowledgeText(text: string): void {
     this.globalKnowledgeText = text || "";
+  }
+
+  setAmplificationContext(context: { state: 'normal' | 'amplified'; enteredReason?: string }): void {
+    this.amplificationState = context.state;
+    this.amplificationEnteredReason = context.enteredReason;
+  }
+
+  getAmplificationState(): 'normal' | 'amplified' {
+    return this.amplificationState;
   }
 }

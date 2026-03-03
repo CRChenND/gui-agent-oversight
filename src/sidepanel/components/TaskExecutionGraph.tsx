@@ -22,6 +22,14 @@ export interface TaskNode {
     adaptiveGateLevel: string;
     reasonText?: string;
     decision?: 'approve' | 'deny' | 'edit' | 'rollback';
+    assumptions?: string;
+    uncertainties?: string;
+    checkpoints?: string;
+    amplifiedRisk?: {
+      effect_type: 'reversible' | 'irreversible';
+      scope: 'local' | 'external';
+      data_flow: 'disclosure' | 'none';
+    } | null;
   };
 }
 
@@ -266,6 +274,11 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                           decision:{node.intervention.decision}
                         </span>
                       ) : null}
+                      {node.intervention.amplifiedRisk ? (
+                        <span className="badge badge-xs badge-accent">
+                          {node.intervention.amplifiedRisk.effect_type}/{node.intervention.amplifiedRisk.scope}
+                        </span>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
@@ -285,6 +298,29 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                     <div>
                       <div className="mb-1 font-semibold text-base-content/80">Impact Assessment</div>
                       {renderImpactExplanation(node)}
+                      {node.intervention.amplifiedRisk ? (
+                        <div className="mt-2">
+                          <div>effect: {node.intervention.amplifiedRisk.effect_type}</div>
+                          <div>scope: {node.intervention.amplifiedRisk.scope}</div>
+                          <div>data flow: {node.intervention.amplifiedRisk.data_flow}</div>
+                        </div>
+                      ) : null}
+                      {node.intervention.assumptions ||
+                      node.intervention.uncertainties ||
+                      node.intervention.checkpoints ? (
+                        <details className="mt-2">
+                          <summary className="cursor-pointer font-semibold text-base-content/80">
+                            Assumptions
+                          </summary>
+                          {node.intervention.assumptions ? <div className="mt-1">assumptions: {node.intervention.assumptions}</div> : null}
+                          {node.intervention.uncertainties ? (
+                            <div className="mt-1">uncertainties: {node.intervention.uncertainties}</div>
+                          ) : null}
+                          {node.intervention.checkpoints ? (
+                            <div className="mt-1">checkpoints: {node.intervention.checkpoints}</div>
+                          ) : null}
+                        </details>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>

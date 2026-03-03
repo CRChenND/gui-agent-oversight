@@ -52,6 +52,14 @@ export interface ExecutionCallbacks {
     plan?: string[];
   }) => Promise<{ decision: 'approve' | 'edit' | 'reject'; editedPlan?: string }>;
   onWaitForExecutionPermission?: () => Promise<{ allowed: boolean; reason?: string }>;
+  onPrepareModelStep?: () => Promise<{ amplificationState: 'normal' | 'amplified'; enteredReason?: string }>;
+  onBeforeToolInvocation?: (payload: { stepId: string; toolName: string }) => Promise<{ allowed: boolean; reason?: string }>;
+  onAfterToolCommitted?: () => Promise<void>;
+  classifyAmplifiedRisk?: (payload: { toolName: string; toolInput: string }) => {
+    effect_type: 'reversible' | 'irreversible';
+    scope: 'local' | 'external';
+    data_flow: 'disclosure' | 'none';
+  } | null;
 }
 
 /**
@@ -82,6 +90,10 @@ class CallbackAdapter {
       onFallbackStarted: this.originalCallbacks.onFallbackStarted,
       onPlanReviewRequired: this.originalCallbacks.onPlanReviewRequired,
       onWaitForExecutionPermission: this.originalCallbacks.onWaitForExecutionPermission,
+      onPrepareModelStep: this.originalCallbacks.onPrepareModelStep,
+      onBeforeToolInvocation: this.originalCallbacks.onBeforeToolInvocation,
+      onAfterToolCommitted: this.originalCallbacks.onAfterToolCommitted,
+      classifyAmplifiedRisk: this.originalCallbacks.classifyAmplifiedRisk,
     };
   }
 
@@ -251,17 +263,34 @@ export class ExecutionEngine {
     thinkingSummary?: string;
     impact?: LlmImpact;
     impactRationale?: string;
+    assumptions?: string;
+    uncertainties?: string;
+    checkpoints?: string;
   } {
     const thinkingSummary = this.extractTag(accumulatedText, 'thinking_summary');
     const rawImpact = this.extractTag(accumulatedText, 'impact');
     const impact =
       rawImpact === 'low' || rawImpact === 'medium' || rawImpact === 'high' ? rawImpact : undefined;
     const impactRationale = this.extractTag(accumulatedText, 'impact_rationale');
+    const assumptions = this.extractTag(accumulatedText, 'assumptions');
+    const uncertainties = this.extractTag(accumulatedText, 'uncertainties');
+    const checkpoints = this.extractTag(accumulatedText, 'checkpoints');
     return {
       thinkingSummary,
       impact,
       impactRationale,
+      assumptions,
+      uncertainties,
+      checkpoints,
     };
+  }
+
+  private hasRequiredAmplifiedScaffold(text: string): boolean {
+    return (
+      text.includes('Next Step I Plan To Do:') &&
+      text.includes('Alternative:') &&
+      text.includes('Why I choose A over B:')
+    );
   }
 
   // Token usage tracking removed
@@ -381,6 +410,16 @@ export class ExecutionEngine {
 
       while (!done && step++ < MAX_STEPS && !this.errorHandler.isExecutionCancelled()) {
         try {
+          if (adaptedCallbacks.onPrepareModelStep) {
+            const context = await adaptedCallbacks.onPrepareModelStep();
+            this.promptManager.setAmplificationContext({
+              state: context.amplificationState,
+              enteredReason: context.enteredReason,
+            });
+          } else {
+            this.promptManager.setAmplificationContext({ state: 'normal' });
+          }
+
           // Check for cancellation before each major step
           if (this.errorHandler.isExecutionCancelled()) break;
 
@@ -527,6 +566,25 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
           const tool = this.toolManager.findTool(toolName);
           const stepId = createStepId(step);
           const modelMetadata = this.parseModelStepMetadata(accumulatedText);
+          const amplificationState = this.promptManager.getAmplificationState();
+          if (amplificationState === 'amplified') {
+            const missingAssumptionTags =
+              !modelMetadata.assumptions || !modelMetadata.uncertainties || !modelMetadata.checkpoints;
+            if (!this.hasRequiredAmplifiedScaffold(accumulatedText) || missingAssumptionTags) {
+              messages.push(
+                { role: 'assistant', content: accumulatedText },
+                {
+                  role: 'user',
+                  content:
+                    'Amplified mode schema violation. Before the tool call, include:\n' +
+                    'Next Step I Plan To Do:\nAlternative:\nWhy I choose A over B:\n' +
+                    'and include all tags:\n<assumptions>...</assumptions>\n<uncertainties>...</uncertainties>\n<checkpoints>...</checkpoints>',
+                }
+              );
+              messages = trimHistory(messages);
+              continue;
+            }
+          }
           const thinking = buildThinkingSummary({
             goal: prompt,
             toolName,
@@ -589,6 +647,9 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               : baseRiskAssessment.reasons,
           };
           const gateConfig = await this.getInterventionGateConfig();
+          const amplifiedRisk = adaptedCallbacks.classifyAmplifiedRisk
+            ? adaptedCallbacks.classifyAmplifiedRisk({ toolName, toolInput })
+            : null;
           const promptedByGate =
             gateConfig.enabled &&
             shouldPromptByGatePolicy(gateConfig.policy, riskAssessment, this.adaptiveGateState.currentLevel);
@@ -655,6 +716,19 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             }
           }
 
+          if (adaptedCallbacks.onBeforeToolInvocation) {
+            const softWindow = await adaptedCallbacks.onBeforeToolInvocation({ stepId, toolName });
+            if (!softWindow.allowed) {
+              adaptedCallbacks.onToolOutput(`⏸️ Action paused: ${softWindow.reason || 'soft deliberation window'}`);
+              messages.push(
+                { role: 'assistant', content: accumulatedText },
+                { role: 'user', content: `Action paused before execution. ${softWindow.reason || ''}` }
+              );
+              messages = trimHistory(messages);
+              continue;
+            }
+          }
+
           if (adaptedCallbacks.onToolStart) {
             adaptedCallbacks.onToolStart(stepId, toolName, toolInput);
           }
@@ -684,6 +758,10 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               category: riskAssessment.category,
               reasons: riskAssessment.reasons,
               reason,
+              assumptions: modelMetadata.assumptions,
+              uncertainties: modelMetadata.uncertainties,
+              checkpoints: modelMetadata.checkpoints,
+              amplifiedRisk,
             });
           }
 
@@ -795,6 +873,9 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
           // Signal that tool execution is complete
           if (adaptedCallbacks.onToolEnd) {
             adaptedCallbacks.onToolEnd(stepId, result);
+          }
+          if (adaptedCallbacks.onAfterToolCommitted) {
+            await adaptedCallbacks.onAfterToolCommitted();
           }
 
           // Check for cancellation after tool execution

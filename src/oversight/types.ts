@@ -2,7 +2,13 @@ export type AttentionFocusType = 'selector' | 'coordinates' | 'url' | 'text' | '
 export type StepImpact = 'low' | 'medium' | 'high';
 export type AuthorityState = 'agent_autonomous' | 'shared_supervision' | 'human_control';
 export type ExecutionPhase = 'planning' | 'plan_review' | 'execution' | 'posthoc_review' | 'terminated';
-export type ExecutionState = 'running' | 'paused_by_user' | 'paused_by_system' | 'cancelled' | 'completed';
+export type ExecutionState =
+  | 'running'
+  | 'paused_by_user'
+  | 'paused_by_system'
+  | 'paused_by_system_soft'
+  | 'cancelled'
+  | 'completed';
 
 export type OversightLevel = 'observe' | 'impact_gated' | 'stepwise';
 
@@ -89,6 +95,8 @@ export type OversightEvent =
       isDeliberative: boolean;
       signal:
         | 'pause_by_user'
+        | 'resume_by_user'
+        | 'inspect_plan'
         | 'takeover'
         | 'expand_trace_node'
         | 'hover_risk_label'
@@ -104,6 +112,8 @@ export type OversightEvent =
       sustainedDurationMs: number;
       signal:
         | 'pause_by_user'
+        | 'resume_by_user'
+        | 'inspect_plan'
         | 'takeover'
         | 'expand_trace_node'
         | 'hover_risk_label'
@@ -162,4 +172,28 @@ export type OversightEvent =
       decision: 'approve' | 'edit' | 'reject';
       edited: boolean;
       timestamp: number;
+    }
+  | {
+      kind: 'amplification_entered';
+      from: 'normal' | 'amplified';
+      to: 'amplified';
+      reason: 'pause_resume_rapid' | 'inspect_plan' | 'rapid_trace_inspection';
+      timestamp: number;
+    }
+  | {
+      kind: 'amplification_exited';
+      from: 'amplified';
+      to: 'normal';
+      reason: 'inactivity' | 'explicit_exit' | 'task_boundary';
+      timestamp: number;
+    }
+  | {
+      kind: 'intent_refresh_triggered';
+      timestamp: number;
+      stepCountInAmplified: number;
+    }
+  | {
+      kind: 'intent_refresh_confirmed';
+      timestamp: number;
+      response: 'yes_auto';
     };

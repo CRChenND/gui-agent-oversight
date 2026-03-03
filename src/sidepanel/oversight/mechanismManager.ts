@@ -54,7 +54,13 @@ export interface OversightUiState {
   runtime: {
     authorityState: 'agent_autonomous' | 'shared_supervision' | 'human_control';
     executionPhase: 'planning' | 'plan_review' | 'execution' | 'posthoc_review' | 'terminated';
-    executionState: 'running' | 'paused_by_user' | 'paused_by_system' | 'cancelled' | 'completed';
+    executionState:
+      | 'running'
+      | 'paused_by_user'
+      | 'paused_by_system'
+      | 'paused_by_system_soft'
+      | 'cancelled'
+      | 'completed';
     updatedAt: number;
   };
 }
@@ -284,6 +290,28 @@ const interventionGateMechanism: OversightMechanism = {
             gatePolicy: asString(payload.gatePolicy, 'impact'),
             adaptiveGateLevel: asString(payload.adaptiveGateLevel, state.adaptiveState.currentLevel),
             reasonText,
+            assumptions: asString(payload.assumptions) || undefined,
+            uncertainties: asString(payload.uncertainties) || undefined,
+            checkpoints: asString(payload.checkpoints) || undefined,
+            amplifiedRisk:
+              payload.amplifiedRisk &&
+              typeof payload.amplifiedRisk === 'object' &&
+              (payload.amplifiedRisk as Record<string, unknown>).effect_type &&
+              (payload.amplifiedRisk as Record<string, unknown>).scope &&
+              (payload.amplifiedRisk as Record<string, unknown>).data_flow
+                ? {
+                    effect_type:
+                      (payload.amplifiedRisk as Record<string, unknown>).effect_type === 'irreversible'
+                        ? 'irreversible'
+                        : 'reversible',
+                    scope:
+                      (payload.amplifiedRisk as Record<string, unknown>).scope === 'external' ? 'external' : 'local',
+                    data_flow:
+                      (payload.amplifiedRisk as Record<string, unknown>).data_flow === 'disclosure'
+                        ? 'disclosure'
+                        : 'none',
+                  }
+                : null,
           },
         };
       });
@@ -336,6 +364,10 @@ const interventionGateMechanism: OversightMechanism = {
               promptedByGate: false,
               gatePolicy: 'impact',
               adaptiveGateLevel: state.adaptiveState.currentLevel,
+              assumptions: undefined,
+              uncertainties: undefined,
+              checkpoints: undefined,
+              amplifiedRisk: null,
             }),
             decision: event.decision,
           },

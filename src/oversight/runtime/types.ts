@@ -1,5 +1,7 @@
 export type AuthorityState = 'agent_autonomous' | 'shared_supervision' | 'human_control';
 export type OversightRegime = 'baseline' | 'deliberative_escalated';
+export type AmplificationState = 'normal' | 'amplified';
+export type AmplificationEnterReason = 'pause_resume_rapid' | 'inspect_plan' | 'rapid_trace_inspection';
 
 export interface AuthorityContext {
   authorityState: AuthorityState;
@@ -9,7 +11,13 @@ export interface AuthorityContext {
 
 export type ExecutionPhase = 'planning' | 'plan_review' | 'execution' | 'posthoc_review' | 'terminated';
 
-export type ExecutionState = 'running' | 'paused_by_user' | 'paused_by_system' | 'cancelled' | 'completed';
+export type ExecutionState =
+  | 'running'
+  | 'paused_by_user'
+  | 'paused_by_system'
+  | 'paused_by_system_soft'
+  | 'cancelled'
+  | 'completed';
 
 export type PlanReviewDecision = 'approve' | 'edit' | 'reject';
 
@@ -33,6 +41,20 @@ export interface RuntimeStatusSnapshot {
   executionPhase: ExecutionPhase;
   executionState: ExecutionState;
   regime: OversightRegime;
+  amplification: {
+    state: AmplificationState;
+    enteredAt?: number;
+    enteredReason?: AmplificationEnterReason;
+    entryCount: number;
+  };
+  softPause?: {
+    active: boolean;
+    startedAt: number;
+    endsAt: number;
+    timeoutMs: number;
+    stepId?: string;
+    toolName?: string;
+  };
   deliberation: DeliberationState;
   runtimePolicy: RuntimePolicyState;
   updatedAt: number;
@@ -44,6 +66,10 @@ export interface OversightRhythmMetrics {
   userInitiatedInterruptions: number;
   meanInterruptionIntervalMs: number;
   authorityTransitionCount: number;
+  amplificationDurationMs: number;
+  amplificationEntryCount: number;
+  meanSoftPauseDurationMs: number;
+  intentRefreshCount: number;
 }
 
 export interface OversightEscalationMetrics {

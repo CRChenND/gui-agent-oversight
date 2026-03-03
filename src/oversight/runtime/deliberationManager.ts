@@ -2,7 +2,9 @@ import type { DeliberationState } from './types';
 
 export type BehavioralSignalType =
   | 'pause_by_user'
+  | 'resume_by_user'
   | 'takeover'
+  | 'inspect_plan'
   | 'expand_trace_node'
   | 'hover_risk_label'
   | 'open_oversight_tab'

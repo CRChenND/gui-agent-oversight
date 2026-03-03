@@ -204,6 +204,25 @@ export class OversightTelemetryLogger {
       return event.payload?.kind === 'execution_paused' && event.payload?.by === 'user';
     }).length;
     const authorityTransitionCount = events.filter((event) => event.payload?.kind === 'authority_transition').length;
+    const amplificationEntered = events
+      .filter((event) => event.payload?.kind === 'amplification_entered')
+      .sort((a, b) => a.timestamp - b.timestamp);
+    const amplificationExited = events
+      .filter((event) => event.payload?.kind === 'amplification_exited')
+      .sort((a, b) => a.timestamp - b.timestamp);
+    const softPauseDurations = events
+      .filter((event) => event.payload?.kind === 'soft_pause_resolved')
+      .map((event) => Math.max(0, Number(event.payload?.durationMs || 0)));
+    const intentRefreshCount = events.filter((event) => event.payload?.kind === 'intent_refresh_triggered').length;
+
+    const amplificationDurations: number[] = [];
+    for (const entered of amplificationEntered) {
+      const exited = amplificationExited.find((candidate) => candidate.timestamp >= entered.timestamp);
+      if (exited) {
+        amplificationDurations.push(Math.max(0, exited.timestamp - entered.timestamp));
+      }
+    }
+    const amplificationDurationMs = amplificationDurations.reduce((sum, value) => sum + value, 0);
 
     return {
       totalInterruptions: interruptionEvents.length,
@@ -212,6 +231,13 @@ export class OversightTelemetryLogger {
       meanInterruptionIntervalMs:
         intervals.length > 0 ? intervals.reduce((sum, value) => sum + value, 0) / intervals.length : 0,
       authorityTransitionCount,
+      amplificationDurationMs,
+      amplificationEntryCount: amplificationEntered.length,
+      meanSoftPauseDurationMs:
+        softPauseDurations.length > 0
+          ? softPauseDurations.reduce((sum, value) => sum + value, 0) / softPauseDurations.length
+          : 0,
+      intentRefreshCount,
     };
   }
 

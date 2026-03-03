@@ -48,6 +48,20 @@ export function SidePanel() {
     executionPhase: ExecutionPhase;
     executionState: ExecutionState;
     regime: OversightRegime;
+    amplification?: {
+      state: 'normal' | 'amplified';
+      enteredAt?: number;
+      enteredReason?: 'pause_resume_rapid' | 'inspect_plan' | 'rapid_trace_inspection';
+      entryCount: number;
+    };
+    softPause?: {
+      active: boolean;
+      startedAt: number;
+      endsAt: number;
+      timeoutMs: number;
+      stepId?: string;
+      toolName?: string;
+    };
     deliberation?: {
       score: number;
       lastSignalTimestamp: number;
@@ -67,6 +81,10 @@ export function SidePanel() {
     executionPhase: 'planning',
     executionState: 'running',
     regime: 'baseline',
+    amplification: {
+      state: 'normal',
+      entryCount: 0,
+    },
   });
   const [planReviewRequest, setPlanReviewRequest] = useState<{
     planSummary: string;
@@ -76,6 +94,7 @@ export function SidePanel() {
     toolInput?: string;
   } | null>(null);
   const [showApprovalOverlay, setShowApprovalOverlay] = useState(true);
+  const [softPauseNow, setSoftPauseNow] = useState(Date.now());
   const lastApprovalPromptTsRef = useRef(0);
   const approvalPromptWindowRef = useRef<number[]>([]);
 
@@ -462,6 +481,8 @@ export function SidePanel() {
     takeoverAuthority,
     releaseControl,
     resolveEscalation,
+    submitSoftPauseDecision,
+    exitAmplifiedMode,
     submitPlanReviewDecision,
     runtimeInteractionSignal,
   } = useChromeMessaging({
@@ -609,11 +630,21 @@ export function SidePanel() {
       }
     },
     onOversightEvent: (event) => {
+      if (event.kind === 'intent_refresh_triggered') {
+        addSystemMessage('Still aiming to current goal? (auto-confirming Yes...)');
+      }
+      if (event.kind === 'intent_refresh_confirmed') {
+        addSystemMessage('Intent refresh confirmed: Yes.');
+      }
       handleOversightEvent(event);
     },
     onRuntimeStateUpdate: (status) => {
       setRuntimeStatus(status);
-      if (status.executionState === 'paused_by_user' || status.executionState === 'paused_by_system') {
+      if (
+        status.executionState === 'paused_by_user' ||
+        status.executionState === 'paused_by_system' ||
+        status.executionState === 'paused_by_system_soft'
+      ) {
         setIsProcessing(true);
       }
       if (status.executionState === 'cancelled' || status.executionState === 'completed') {
@@ -632,6 +663,14 @@ export function SidePanel() {
       setActivePanel('oversight');
     }
   }, [runtimeStatus.regime]);
+
+  useEffect(() => {
+    if (!runtimeStatus.softPause?.active) return;
+    const timer = window.setInterval(() => {
+      setSoftPauseNow(Date.now());
+    }, 200);
+    return () => window.clearInterval(timer);
+  }, [runtimeStatus.softPause?.active]);
 
   const handlePlanReviewApprove = () => {
     submitPlanReviewDecision('approve');
@@ -730,10 +769,20 @@ export function SidePanel() {
   const shouldShowOverlay = pendingApprovalCount > 0 && (notificationModality === 'modal' || notificationModality === 'mixed' || showApprovalOverlay);
   const canPause = runtimeStatus.executionState === 'running';
   const canResume =
-    runtimeStatus.executionState === 'paused_by_user' || runtimeStatus.executionState === 'paused_by_system';
+    runtimeStatus.executionState === 'paused_by_user' ||
+    runtimeStatus.executionState === 'paused_by_system' ||
+    runtimeStatus.executionState === 'paused_by_system_soft';
   const canTakeover = runtimeStatus.authorityState !== 'human_control';
   const canRelease = runtimeStatus.authorityState === 'human_control';
   const formatRuntimeValue = (value: string) => value.replace(/_/g, ' ');
+  const amplificationReasonText =
+    runtimeStatus.amplification?.enteredReason === 'inspect_plan'
+      ? 'Inspect Plan'
+      : runtimeStatus.amplification?.enteredReason === 'rapid_trace_inspection'
+        ? 'Rapid Trace Inspection'
+        : runtimeStatus.amplification?.enteredReason === 'pause_resume_rapid'
+          ? 'Rapid Pause/Resume'
+          : 'Unknown';
 
   return (
     <div className="morph-shell flex h-screen flex-col bg-base-200/60">
@@ -765,6 +814,11 @@ export function SidePanel() {
                   <span className="badge badge-ghost badge-sm">authority: {formatRuntimeValue(runtimeStatus.authorityState)}</span>
                   <span className="badge badge-ghost badge-sm">phase: {formatRuntimeValue(runtimeStatus.executionPhase)}</span>
                   <span className="badge badge-ghost badge-sm">state: {formatRuntimeValue(runtimeStatus.executionState)}</span>
+                  {runtimeStatus.amplification?.state === 'amplified' ? (
+                    <span className="badge badge-warning badge-sm">
+                      Amplified Mode ON ({amplificationReasonText})
+                    </span>
+                  ) : null}
                   {runtimeStatus.regime === 'deliberative_escalated' ? (
                     <span className="badge badge-warning badge-sm">Deliberative Mode Active</span>
                   ) : null}
@@ -811,6 +865,15 @@ export function SidePanel() {
                         type="button"
                       >
                         Exit Deliberative
+                      </button>
+                    ) : null}
+                    {runtimeStatus.amplification?.state === 'amplified' ? (
+                      <button
+                        className="btn btn-xs btn-warning"
+                        onClick={exitAmplifiedMode}
+                        type="button"
+                      >
+                        Return to Normal Mode
                       </button>
                     ) : null}
                   </div>
@@ -934,6 +997,13 @@ export function SidePanel() {
                   </ol>
                 ) : null}
                 <div className="flex gap-2">
+                  <button
+                    className="btn btn-xs btn-outline"
+                    onClick={() => runtimeInteractionSignal('inspect_plan')}
+                    type="button"
+                  >
+                    Inspect Plan
+                  </button>
                   <button className="btn btn-xs btn-success" onClick={handlePlanReviewApprove} type="button">
                     Approve Plan
                   </button>
@@ -942,6 +1012,33 @@ export function SidePanel() {
                   </button>
                   <button className="btn btn-xs btn-error" onClick={handlePlanReviewReject} type="button">
                     Reject Plan
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {runtimeStatus.softPause?.active ? (
+            <div className="pointer-events-none fixed inset-x-4 bottom-60 z-50">
+              <div className="pointer-events-auto rounded-lg border border-info/40 bg-base-100 p-4 shadow-xl">
+                <div className="mb-2 text-sm font-semibold">Next action will execute...</div>
+                <div className="mb-3 text-xs text-base-content/80">
+                  Countdown active ({Math.max(0, Math.ceil((runtimeStatus.softPause.endsAt - softPauseNow) / 1000))}s)
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    className="btn btn-xs btn-primary"
+                    onClick={() => submitSoftPauseDecision('continue_now')}
+                    type="button"
+                  >
+                    Continue now
+                  </button>
+                  <button
+                    className="btn btn-xs btn-outline"
+                    onClick={() => submitSoftPauseDecision('pause')}
+                    type="button"
+                  >
+                    Pause
                   </button>
                 </div>
               </div>
