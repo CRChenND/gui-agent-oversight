@@ -1,4 +1,4 @@
-import { faPaperPlane, faXmark } from '@fortawesome/free-solid-svg-icons';
+import { faPaperPlane, faPause, faPlay, faXmark } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import React, { useState } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
@@ -65,13 +65,13 @@ export const PromptForm: React.FC<PromptFormProps> = ({
         {isProcessing ? (
           <div className="absolute flex gap-1" style={{ bottom: '8px', right: '8px' }}>
             {canPause ? (
-              <button type="button" onClick={onPause} className="btn btn-xs btn-outline" title="Pause">
-                Pause
+              <button type="button" onClick={onPause} className="btn btn-sm btn-circle btn-outline" title="Pause">
+                <FontAwesomeIcon icon={faPause} />
               </button>
             ) : null}
             {canResume ? (
-              <button type="button" onClick={onResume} className="btn btn-xs btn-outline" title="Resume">
-                Resume
+              <button type="button" onClick={onResume} className="btn btn-sm btn-circle btn-outline" title="Resume">
+                <FontAwesomeIcon icon={faPlay} />
               </button>
             ) : null}
             <button

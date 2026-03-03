@@ -27,7 +27,6 @@ import { useTabManagement } from './hooks/useTabManagement';
 
 export function SidePanel() {
   const [activePanel, setActivePanel] = useState<'conversation' | 'oversight'>('conversation');
-  const [showRuntimeControls, setShowRuntimeControls] = useState(false);
   const [mechanismSettings, setMechanismSettings] = useState(createDefaultOversightMechanismSettings);
   const [mechanismParameterSettings, setMechanismParameterSettings] = useState(createDefaultOversightParameterSettings);
 
@@ -480,9 +479,6 @@ export function SidePanel() {
     rejectRequest,
     pauseExecution,
     resumeExecution,
-    takeoverAuthority,
-    releaseControl,
-    resolveEscalation,
     submitSoftPauseDecision,
     exitAmplifiedMode,
     submitPlanReviewDecision,
@@ -806,9 +802,6 @@ export function SidePanel() {
     runtimeStatus.executionState === 'paused_by_user' ||
     runtimeStatus.executionState === 'paused_by_system' ||
     runtimeStatus.executionState === 'paused_by_system_soft';
-  const canTakeover = runtimeStatus.authorityState !== 'human_control';
-  const canRelease = runtimeStatus.authorityState === 'human_control';
-  const formatRuntimeValue = (value: string) => value.replace(/_/g, ' ');
   const amplificationReasonText =
     runtimeStatus.amplification?.enteredReason === 'inspect_plan'
       ? 'Inspect Plan'
@@ -845,73 +838,17 @@ export function SidePanel() {
 
               <div className="morph-status-strip mt-2 bg-base-200/60 text-xs">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="badge badge-ghost badge-sm">authority: {formatRuntimeValue(runtimeStatus.authorityState)}</span>
-                  <span className="badge badge-ghost badge-sm">phase: {formatRuntimeValue(runtimeStatus.executionPhase)}</span>
-                  <span className="badge badge-ghost badge-sm">state: {formatRuntimeValue(runtimeStatus.executionState)}</span>
                   {runtimeStatus.amplification?.state === 'amplified' ? (
                     <span className="badge badge-warning badge-sm">
                       Amplified Mode ON ({amplificationReasonText})
                     </span>
                   ) : null}
-                  {runtimeStatus.regime === 'deliberative_escalated' ? (
-                    <span className="badge badge-warning badge-sm">Deliberative Mode Active</span>
+                  {runtimeStatus.amplification?.state === 'amplified' ? (
+                    <button className="btn btn-xs btn-warning ml-auto" onClick={exitAmplifiedMode} type="button">
+                      Return to Normal Mode
+                    </button>
                   ) : null}
-                  <button
-                    className="btn btn-ghost btn-xs ml-auto"
-                    onClick={() => setShowRuntimeControls((prev) => !prev)}
-                    type="button"
-                  >
-                    {showRuntimeControls ? 'Hide Controls' : 'Controls'}
-                  </button>
                 </div>
-                {showRuntimeControls ? (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {canPause ? (
-                      <button className="btn btn-xs btn-outline" onClick={pauseExecution} type="button">
-                        Pause
-                      </button>
-                    ) : null}
-                    {canResume ? (
-                      <button className="btn btn-xs btn-outline" onClick={resumeExecution} type="button">
-                        Resume
-                      </button>
-                    ) : null}
-                    {canTakeover ? (
-                      <button className="btn btn-xs btn-outline" onClick={takeoverAuthority} type="button">
-                        Takeover
-                      </button>
-                    ) : null}
-                    {canRelease ? (
-                      <button className="btn btn-xs btn-outline" onClick={releaseControl} type="button">
-                        Release
-                      </button>
-                    ) : null}
-                    {runtimeStatus.regime === 'deliberative_escalated' ? (
-                      <button
-                        className="btn btn-xs btn-warning"
-                        onClick={() => {
-                          resolveEscalation();
-                          void logHumanTelemetry('human_intervention', {
-                            action: 'deliberative_mode_exit',
-                            timestamp: Date.now(),
-                          });
-                        }}
-                        type="button"
-                      >
-                        Exit Deliberative
-                      </button>
-                    ) : null}
-                    {runtimeStatus.amplification?.state === 'amplified' ? (
-                      <button
-                        className="btn btn-xs btn-warning"
-                        onClick={exitAmplifiedMode}
-                        type="button"
-                      >
-                        Return to Normal Mode
-                      </button>
-                    ) : null}
-                  </div>
-                ) : null}
               </div>
             </div>
 
@@ -1020,18 +957,18 @@ export function SidePanel() {
 
           {planReviewRequest ? (
             <div className="pointer-events-none fixed inset-x-4 bottom-44 z-40">
-              <div className="pointer-events-auto rounded-lg border border-warning/40 bg-base-100 p-4 shadow-xl">
+              <div className="pointer-events-auto flex max-h-[62vh] flex-col rounded-lg border border-warning/40 bg-base-100 p-4 shadow-xl">
                 <div className="mb-2 text-sm font-semibold">Plan Review</div>
                 <div className="mb-2 text-xs text-base-content/80 whitespace-pre-wrap">{planReviewRequest.planSummary}</div>
                 {planReviewRequest.plan && planReviewRequest.plan.length > 0 ? (
-                  <div className="mb-3 space-y-2">
+                  <div className="mb-3 flex-1 space-y-2 overflow-y-auto pr-1">
                     {(isEditingPlan ? editedPlanSteps : planReviewRequest.plan).map((line, idx) => (
                       <div key={`plan-line-${idx}`} className="grid grid-cols-[64px_1fr] items-start gap-2">
                         <div className="pt-2 text-xs font-semibold text-base-content/80">Step {idx + 1}</div>
                         {isEditingPlan ? (
                           <div className="space-y-1">
                             <textarea
-                              className="textarea textarea-bordered w-full text-xs"
+                              className="textarea textarea-bordered w-full resize-y text-xs max-h-36"
                               value={line}
                               onChange={(e) => handlePlanStepChange(idx, e.target.value)}
                               rows={2}
@@ -1056,7 +993,7 @@ export function SidePanel() {
                     ))}
                   </div>
                 ) : null}
-                <div className="flex flex-wrap gap-2">
+                <div className="shrink-0 border-t border-base-300 pt-3 flex flex-wrap gap-2">
                   <button
                     className="btn btn-xs btn-outline min-w-[110px] flex-1"
                     onClick={() => runtimeInteractionSignal('inspect_plan')}
