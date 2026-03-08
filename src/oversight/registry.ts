@@ -4,6 +4,7 @@ export const MONITORING_MECHANISM_ID = 'monitoring' as const;
 export const INTERVENTION_GATE_MECHANISM_ID = 'interventionGate' as const;
 export const ADAPTIVE_CONTROLLER_MECHANISM_ID = 'adaptiveController' as const;
 export const STRUCTURAL_AMPLIFICATION_MECHANISM_ID = 'structuralAmplification' as const;
+export const DEFAULT_STRUCTURAL_AMPLIFICATION_STEP_DELAY_MS = 5000;
 
 export type OversightMechanismId =
   | typeof AGENT_FOCUS_MECHANISM_ID

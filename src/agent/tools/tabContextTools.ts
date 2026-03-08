@@ -1,6 +1,7 @@
 import { DynamicTool } from "langchain/tools";
 import type { Page } from "playwright-crx";
 import { getCurrentPage } from "../PageContextManager";
+import { ScreenshotManager } from "../../tracking/screenshotManager";
 import { ToolFactory } from "./types";
 import { getCurrentTabId } from "./utils";
 
@@ -170,8 +171,6 @@ export const browserScreenshotTab: ToolFactory = (page: Page) =>
         const fullPage = flags.includes("full");
         const quality = 40; // Default quality
         
-        // Import ScreenshotManager
-        const { ScreenshotManager } = await import("../../tracking/screenshotManager");
         const screenshotManager = ScreenshotManager.getInstance();
         
         // Take the screenshot

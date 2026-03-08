@@ -29,6 +29,7 @@ function ensureRuntimeDispatcherRegistered(): void {
 ensureRuntimeDispatcherRegistered();
 
 let activeStepContextByStepId: Record<string, TaskStepContext> = {};
+const thinkingByStepId: Record<string, string> = {};
 
 export function setActiveTaskStepContexts(steps: TaskStepContext[] = []): void {
   activeStepContextByStepId = steps.reduce((acc, step) => {
@@ -39,6 +40,55 @@ export function setActiveTaskStepContexts(steps: TaskStepContext[] = []): void {
 
 export function clearActiveTaskStepContexts(): void {
   activeStepContextByStepId = {};
+  Object.keys(thinkingByStepId).forEach((stepId) => {
+    delete thinkingByStepId[stepId];
+  });
+}
+
+function describeApprovalAction(toolName: string, toolInput: string): string {
+  const trimmedInput = toolInput.trim();
+  const quotedTarget = trimmedInput.match(/["']([^"']+)["']/)?.[1]?.trim();
+
+  if (toolName.includes('snapshot') || toolName.includes('query') || toolName.includes('read')) {
+    return 'Review this part of the page';
+  }
+  if (toolName.includes('click')) {
+    return quotedTarget ? `Interact with "${quotedTarget}"` : 'Click the highlighted item';
+  }
+  if (toolName.includes('type') || toolName.includes('fill')) {
+    return 'Enter information here';
+  }
+  if (toolName.includes('navigate')) {
+    return 'Open the next page';
+  }
+  return 'Run this next step';
+}
+
+function describeApprovalConsequence(actionTitle: string): string {
+  const action = actionTitle.charAt(0).toLowerCase() + actionTitle.slice(1);
+  return `If you approve, the agent will ${action} now. If you reject, it will stop here and this step will not happen.`;
+}
+
+function humanizeApprovalReason(reason: string, actionTitle: string): string {
+  const normalized = reason.replace(/\s+/g, ' ').trim();
+  let rationale: string;
+
+  if (!normalized) {
+    rationale = 'This step could meaningfully affect the page, so the agent is waiting for your decision.';
+  } else if (/step_through/i.test(normalized)) {
+    rationale = 'This setup asks you to confirm each step before the agent continues.';
+  } else if (/post-action review/i.test(normalized)) {
+    rationale = 'The agent has already done this step and wants to make sure it should keep going.';
+  } else if (/sensitive|approval/i.test(normalized)) {
+    rationale = '';
+  } else {
+    rationale = normalized
+      .replace(/Control mode\s+\w+\s+/gi, 'The current oversight setup ')
+      .replace(/requires approval/gi, 'asks for your approval')
+      .replace(/before execution/gi, 'before moving forward');
+  }
+
+  return `${rationale ? `${rationale} ` : ''}${describeApprovalConsequence(actionTitle)}`;
 }
 
 function resolveStepContext(stepId: string, toolName: string, toolInput: string): StepContextEvent {
@@ -86,9 +136,12 @@ export async function handleToolStarted(args: {
   toolName: string;
   toolInput: string;
   enableAgentFocus: boolean;
+  thinking?: string;
+  enableThinkingOverlay?: boolean;
 }): Promise<void> {
-  const { tabId, windowId, page, stepId, toolName, toolInput, enableAgentFocus } = args;
+  const { tabId, windowId, page, stepId, toolName, toolInput, enableAgentFocus, thinking, enableThinkingOverlay } = args;
   const attentionTarget = inferAttentionTarget(toolName, toolInput);
+  thinkingByStepId[stepId] = thinking || '';
   const stepContext = resolveStepContext(stepId, toolName, toolInput);
   const stepContextTimestamp = Date.now();
 
@@ -140,7 +193,10 @@ export async function handleToolStarted(args: {
 
   if (enableAgentFocus && page) {
     try {
-      await renderAttentionOverlay(page, attentionTarget);
+      await renderAttentionOverlay(page, {
+        ...attentionTarget,
+        thinking: enableThinkingOverlay ? thinking : undefined,
+      });
     } catch (error) {
       logWithTimestamp(
         `Failed to render attention overlay: ${error instanceof Error ? error.message : String(error)}`,
@@ -281,13 +337,15 @@ export async function handleRiskSignal(args: {
 export async function handleApprovalRequested(args: {
   tabId: number;
   windowId?: number;
+  page?: Page;
   stepId: string;
   requestId: string;
   toolName: string;
   toolInput: string;
   reason: string;
+  enableAgentFocus?: boolean;
 }): Promise<void> {
-  const { tabId, windowId, stepId, requestId, toolName, toolInput, reason } = args;
+  const { tabId, windowId, page, stepId, requestId, toolName, toolInput, reason, enableAgentFocus } = args;
   void logTelemetry({
     source: 'system',
     eventType: 'oversight_signal',
@@ -303,6 +361,31 @@ export async function handleApprovalRequested(args: {
       windowId,
     },
   });
+
+  if (enableAgentFocus && page) {
+    try {
+      const target = inferAttentionTarget(toolName, toolInput);
+      const actionTitle = describeApprovalAction(toolName, toolInput);
+      await renderAttentionOverlay(page, {
+        ...target,
+        thinking: thinkingByStepId[stepId],
+        approval: {
+          requestId,
+          tabId,
+          windowId,
+          title: actionTitle,
+          message: humanizeApprovalReason(reason, actionTitle),
+          approveLabel: 'Approve',
+          rejectLabel: 'Reject',
+        },
+      });
+    } catch (error) {
+      logWithTimestamp(
+        `Failed to render approval overlay: ${error instanceof Error ? error.message : String(error)}`,
+        'warn'
+      );
+    }
+  }
 }
 
 export async function handleAgentThinking(args: {

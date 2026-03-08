@@ -1,5 +1,12 @@
+import { waitForOverlayApprovalDecision } from '../background/attentionTracker';
 import { handleApprovalRequested } from '../background/oversightManager';
-import { getWindowForTab } from '../background/tabManager';
+import { getTabState, getWindowForTab } from '../background/tabManager';
+import { sendUIMessage } from '../background/utils';
+import {
+  AGENT_FOCUS_MECHANISM_ID,
+  getOversightStorageQueryDefaults,
+  mapStorageToOversightSettings,
+} from '../oversight/registry';
 
 // Pending approvals map
 const pendingApprovals = new Map<string, {
@@ -40,15 +47,55 @@ export async function requestApproval(
       }
     }
 
-    void handleApprovalRequested({
-      stepId,
-      requestId,
-      tabId,
-      windowId,
-      toolName,
-      toolInput,
-      reason,
-    });
+    void chrome.storage.sync
+      .get(getOversightStorageQueryDefaults())
+      .then((result) => {
+        const oversightSettings = mapStorageToOversightSettings(result as Record<string, unknown>);
+        const enableAgentFocus = Boolean(oversightSettings[AGENT_FOCUS_MECHANISM_ID]);
+        const page = getTabState(tabId)?.page;
+
+        if (enableAgentFocus && page) {
+          void waitForOverlayApprovalDecision(page, requestId).then((decision) => {
+            if (!decision || !pendingApprovals.has(requestId)) return;
+            handleApprovalResponse(requestId, decision.approved);
+            sendUIMessage(
+              'approvalResolved',
+              {
+                requestId,
+                approved: decision.approved,
+              },
+              tabId,
+              windowId
+            );
+          });
+        }
+
+        return handleApprovalRequested({
+          stepId,
+          requestId,
+          tabId,
+          windowId,
+          page,
+          toolName,
+          toolInput,
+          reason,
+          enableAgentFocus,
+        });
+      })
+      .catch((error) => {
+        console.warn('Failed to load oversight settings for approval overlay:', error);
+        return handleApprovalRequested({
+          stepId,
+          requestId,
+          tabId,
+          windowId,
+          page: getTabState(tabId)?.page,
+          toolName,
+          toolInput,
+          reason,
+          enableAgentFocus: false,
+        });
+      });
     
     // Send approval request to UI with a callback to handle errors
     chrome.runtime.sendMessage({

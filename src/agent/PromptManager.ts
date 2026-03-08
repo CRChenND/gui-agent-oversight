@@ -113,7 +113,7 @@ Remember to follow the verification-first workflow: navigate → observe → ana
   ## STEP METADATA + TOOL-CALL SYNTAX
   Before every tool call, include concise step metadata so oversight can trace your reasoning:
 
-  <thinking_summary>one short sentence about why this next step is needed</thinking_summary>
+  <thinking_summary>one or two short plain-language sentences for a non-technical user explaining what you are about to do, why you are doing it, and how it helps with the user's goal</thinking_summary>
   <impact>low or medium or high</impact>
   <impact_rationale>one short sentence explaining the impact judgment</impact_rationale>
 

@@ -1,6 +1,5 @@
 import path from 'path';
 import { defineConfig } from 'vite';
-import sourcemaps from 'rollup-plugin-sourcemaps';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
@@ -13,12 +12,11 @@ export default defineConfig({
   build: {
     // playwright-crx cannot be obfuscated
     minify: false,
+    cssMinify: 'esbuild',
     sourcemap: true,
     outDir: 'dist',
     emptyOutDir: true,
     rollupOptions: {
-      // @ts-ignore
-      plugins: [sourcemaps()],
       input: {
         'background': path.resolve(__dirname, 'src/background.ts'),
         'sidepanel': path.resolve(__dirname, 'src/sidepanel/index.tsx'),

@@ -23,6 +23,7 @@ interface UseChromeMessagingProps {
     toolInput: string;
     reason: string;
   }) => void;
+  onApprovalResolved?: (payload: { requestId: string; approved: boolean }) => void;
   setTabTitle: (title: string) => void;
   onTabStatusChanged?: (status: 'attached' | 'detached' | 'running' | 'idle' | 'error', tabId: number) => void;
   onTargetCreated?: (tabId: number, targetInfo: any) => void;
@@ -92,6 +93,7 @@ export const useChromeMessaging = ({
   onUpdateScreenshot,
   onProcessingComplete,
   onRequestApproval,
+  onApprovalResolved,
   setTabTitle,
   onTabStatusChanged,
   onTargetCreated,
@@ -309,6 +311,16 @@ export const useChromeMessaging = ({
           console.warn('Received incomplete requestApproval message');
           sendResponse({ success: false, error: 'Incomplete approval request' });
         }
+      } else if (
+        message.action === 'approvalResolved' &&
+        onApprovalResolved &&
+        typeof message.content?.requestId === 'string' &&
+        typeof message.content?.approved === 'boolean'
+      ) {
+        onApprovalResolved({
+          requestId: message.content.requestId,
+          approved: message.content.approved,
+        });
       }
       else if (message.action === 'tabStatusChanged' && onTabStatusChanged && message.status && message.tabId) {
         onTabStatusChanged(message.status, message.tabId);
@@ -387,6 +399,7 @@ export const useChromeMessaging = ({
     onUpdateScreenshot,
     onProcessingComplete,
     onRequestApproval,
+    onApprovalResolved,
     setTabTitle,
     onTabStatusChanged,
     onTargetCreated,
@@ -506,6 +519,15 @@ export const useChromeMessaging = ({
     });
   };
 
+  const updateApprovedPlan = async (editedPlan: string) => {
+    return chrome.runtime.sendMessage({
+      action: 'updateApprovedPlan',
+      tabId,
+      windowId,
+      editedPlan,
+    });
+  };
+
   const runtimeInteractionSignal = (
     signal:
       | 'pause_by_user'
@@ -599,6 +621,7 @@ export const useChromeMessaging = ({
     submitSoftPauseDecision,
     exitAmplifiedMode,
     submitPlanReviewDecision,
+    updateApprovedPlan,
     runtimeInteractionSignal,
     assessPlanProgress,
   };

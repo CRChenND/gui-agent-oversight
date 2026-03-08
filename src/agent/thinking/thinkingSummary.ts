@@ -4,6 +4,25 @@ function truncate(value: string, maxLength: number): string {
   return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }
 
+function rewriteForUsers(text: string): string {
+  return truncate(
+    text
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/\bDOM\b/gi, 'page')
+      .replace(/\bUI\b/gi, 'screen')
+      .replace(/\bquery\b/gi, 'check')
+    .replace(/\blocator\b/gi, 'target')
+    .replace(/\bselector\b/gi, 'page area')
+    .replace(/\belement\b/gi, 'part of the page')
+      .replace(/\bmodal\b/gi, 'popup')
+      .replace(/\bauth\b/gi, 'sign-in')
+      .replace(/\s+/g, ' ')
+      .trim(),
+    360
+  );
+}
+
 function extractRationale(accumulatedText: string): string | undefined {
   const withoutToolCall = accumulatedText
     .replace(/<tool>[\s\S]*?<\/requires_approval>/g, '')
@@ -11,7 +30,7 @@ function extractRationale(accumulatedText: string): string | undefined {
     .replace(/```/g, '')
     .trim();
   if (!withoutToolCall) return undefined;
-  return truncate(withoutToolCall.replace(/\s+/g, ' '), 280);
+  return truncate(withoutToolCall.replace(/\s+/g, ' '), 360);
 }
 
 function sanitizeForPlan(accumulatedText: string): string {
@@ -80,8 +99,9 @@ export function buildThinkingSummary(args: {
   modelThinkingSummary?: string;
 }): AgentThinkingSummary {
   const fromModel = args.modelThinkingSummary?.trim();
-  const rationale = fromModel ? truncate(fromModel, 280) : extractRationale(args.accumulatedText ?? '');
-  const plan = extractPlan(rationale, args.accumulatedText);
+  const rawRationale = fromModel || extractRationale(args.accumulatedText ?? '');
+  const rationale = rawRationale ? rewriteForUsers(rawRationale) : undefined;
+  const plan = extractPlan(rawRationale, args.accumulatedText);
   const riskFlags: string[] = [];
 
   const normalizedInput = (args.toolInput ?? '').toLowerCase();

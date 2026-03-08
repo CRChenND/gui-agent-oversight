@@ -171,6 +171,10 @@ export class BrowserAgent {
       false // Non-streaming mode
     );
   }
+
+  updateApprovedPlanGuidanceDuringRun(text: string): void {
+    this.executionEngine.updateApprovedPlanGuidanceDuringRun(text);
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

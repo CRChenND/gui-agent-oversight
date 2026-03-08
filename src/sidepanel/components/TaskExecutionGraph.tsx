@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import type { StepImpact } from '../../oversight/types';
 
 export type TaskNodeStatus = 'active' | 'completed' | 'cancelled' | 'error';
@@ -35,6 +35,8 @@ export interface TaskNode {
   };
 }
 
+type TooltipKind = 'thinking' | 'risk' | 'decision';
+
 interface TaskExecutionGraphProps {
   nodes: TaskNode[];
   contentGranularity?: 'task' | 'step' | 'substep';
@@ -62,73 +64,96 @@ const riskBadgeMap: Record<StepImpact, string> = {
   high: 'badge badge-error badge-xs',
 };
 
-function decisionBadgeClass(decision: 'approve' | 'deny' | 'edit' | 'rollback'): string {
-  if (decision === 'approve') return 'badge badge-success badge-xs';
-  if (decision === 'deny') return 'badge badge-error badge-xs';
-  if (decision === 'edit') return 'badge badge-warning badge-xs';
-  return 'badge badge-info badge-xs';
-}
+const decisionBadgeMap: Record<'approve' | 'deny' | 'edit' | 'rollback', string> = {
+  approve: 'badge badge-success badge-xs',
+  deny: 'badge badge-error badge-xs',
+  edit: 'badge badge-warning badge-xs',
+  rollback: 'badge badge-info badge-xs',
+};
 
 function formatToolName(toolName: string): string {
   if (!toolName) return toolName;
-  const withoutPrefix = toolName.startsWith('browser_') ? toolName.slice('browser_'.length) : toolName;
-  return withoutPrefix;
+  return toolName.startsWith('browser_') ? toolName.slice('browser_'.length) : toolName;
+}
+
+function summarizeStepTitle(node: TaskNode): string {
+  const source = `${node.thinking || ''} ${node.focusLabel || ''}`.trim();
+  const quoted = Array.from(source.matchAll(/["']([^"']+)["']/g))
+    .map((match) => match[1].trim())
+    .filter(Boolean);
+
+  const tool = formatToolName(node.toolName).toLowerCase();
+  const verb =
+    tool.includes('snapshot') || tool.includes('query') || tool.includes('read')
+      ? 'Scan'
+      : tool.includes('click')
+        ? 'Open'
+        : tool.includes('type') || tool.includes('fill')
+          ? 'Fill'
+          : tool.includes('navigate')
+            ? 'Open'
+            : 'Check';
+
+  const rawEntity =
+    quoted[0] ||
+    source
+      .replace(/^i(?:'m| am)\s+/i, '')
+      .replace(/^i\s+will\s+/i, '')
+      .replace(/^i\s+need\s+to\s+/i, '')
+      .replace(/^now\s+/i, '')
+      .replace(/\b(scroll down|find|locate|open|fill out|fill|type|click|check|scan)\b/gi, '')
+      .replace(/\b(the|a|an|section|button|form|page|target|area)\b/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const entityWords = rawEntity
+    .replace(/[^\w\s"-]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 5);
+
+  const entity = entityWords.length > 0 ? entityWords.join(' ') : 'next step';
+  const title = `${verb} ${entity}`;
+  const compact = title.split(/\s+/).slice(0, 6).join(' ');
+  return compact.length > 48 ? `${compact.slice(0, 45)}...` : compact;
+}
+
+function getRiskExplanationText(node: TaskNode): string {
+  if (!node.intervention) return '';
+  const rationale = node.intervention.impactRationale || node.intervention.reasonText || '';
+  if (rationale.trim()) return rationale.trim();
+  if (node.intervention.impact === 'low') {
+    return 'This step is low risk because it mainly observes the page or changes something easy to undo.';
+  }
+  if (node.intervention.impact === 'medium') {
+    return 'This step is medium risk because it changes page state, but the impact is still limited and usually reversible.';
+  }
+  return 'This step is high risk because it could cause a meaningful action, external effect, or hard-to-undo change.';
+}
+
+function getDecisionExplanationText(node: TaskNode): string {
+  if (!node.intervention) return '';
+  return (
+    node.intervention.reasonText ||
+    node.intervention.impactRationale ||
+    'This step asked for a user decision because it could meaningfully affect the task or page state.'
+  );
 }
 
 export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
   nodes,
   contentGranularity = 'step',
-  informationDensity = 'balanced',
   colorEncoding = 'semantic',
   monitoringContentScope = 'full',
-  explanationAvailability = 'summary',
-  explanationFormat = 'text',
-  onTraceNodeExpanded,
-  onRepeatedTraceExpansion,
-  onRepeatedScrollBackward,
   onRiskLabelHover,
 }) => {
-  const listRef = useRef<HTMLDivElement>(null);
-  const lastScrollTopRef = useRef(0);
-  const backwardScrollRef = useRef<number[]>([]);
-  const expansionRef = useRef<number[]>([]);
   const hoverStartByStepRef = useRef<Record<string, number>>({});
-  const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
-  const [expandedSteps, setExpandedSteps] = useState<Record<string, boolean>>({});
-
-  const isNearBottom = (el: HTMLDivElement) => {
-    const threshold = 24;
-    return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
-  };
-
-  useEffect(() => {
-    const list = listRef.current;
-    if (!list || !autoScrollEnabled) return;
-    list.scrollTop = list.scrollHeight;
-  }, [nodes, autoScrollEnabled]);
-
-  const handleScroll = () => {
-    const list = listRef.current;
-    if (!list) return;
-    const previous = lastScrollTopRef.current;
-    const current = list.scrollTop;
-    if (current + 24 < previous) {
-      const now = Date.now();
-      backwardScrollRef.current = backwardScrollRef.current.filter((ts) => now - ts <= 10000);
-      backwardScrollRef.current.push(now);
-      if (backwardScrollRef.current.length >= 3) {
-        onRepeatedScrollBackward?.();
-        backwardScrollRef.current = [];
-      }
-    }
-    lastScrollTopRef.current = current;
-    setAutoScrollEnabled(isNearBottom(list));
-  };
+  const [activeTooltip, setActiveTooltip] = useState<{
+    stepId: string;
+    kind: TooltipKind;
+  } | null>(null);
 
   if (nodes.length === 0) return null;
-
-  const maxHeightClass =
-    informationDensity === 'compact' ? 'max-h-72' : informationDensity === 'detailed' ? 'max-h-[36rem]' : 'max-h-[30rem]';
   const statusClasses: Record<TaskNodeStatus, string> =
     colorEncoding === 'monochrome'
       ? {
@@ -152,192 +177,125 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
     const errored = nodes.filter((n) => n.status === 'error').length;
     return (
       <div className="border-b border-base-300 bg-base-100 px-3 py-2 text-sm">
-        <div className="text-xs font-semibold uppercase tracking-wide text-base-content/70">Task Graph</div>
         <div className="mt-1">steps: {nodes.length}</div>
         <div className="text-xs text-base-content/70">active: {active} | completed: {completed} | error: {errored}</div>
       </div>
     );
   }
 
-  const toggleStep = (stepId: string) => {
-    setExpandedSteps((prev) => {
-      const nextExpanded = !prev[stepId];
-      if (nextExpanded) {
-        onTraceNodeExpanded?.(stepId);
-        const now = Date.now();
-        expansionRef.current = expansionRef.current.filter((ts) => now - ts <= 10000);
-        expansionRef.current.push(now);
-        if (expansionRef.current.length >= 3) {
-          onRepeatedTraceExpansion?.();
-          expansionRef.current = [];
-        }
-      }
-      return {
-        ...prev,
-        [stepId]: nextExpanded,
-      };
-    });
-  };
-
-  const renderRiskExplanation = (node: TaskNode) => {
-    if (!node.intervention) return null;
-    const risk = node.intervention.impact;
-    const source = node.intervention.impactSource || 'heuristic';
-    const rationale = node.intervention.impactRationale || node.intervention.reasonText || '';
-
-    if (explanationFormat === 'diff') {
-      const heuristicLine = `- heuristic risk baseline: ${risk}`;
-      const llmLine =
-        source === 'llm'
-          ? `+ llm-adjusted risk: ${risk}`
-          : '+ llm-adjusted risk: (not provided)';
-      return (
-        <div className="mt-1 whitespace-pre-wrap font-mono">
-          {heuristicLine}
-          {'\n'}
-          {llmLine}
-          {rationale ? `\n+ rationale: ${rationale}` : ''}
-        </div>
-      );
-    }
-
-    if (explanationFormat === 'snippet') {
-      const snippet = rationale ? rationale.slice(0, 140) : `risk=${risk} source=${source}`;
-      return <div className="mt-1 whitespace-pre-wrap">{snippet}</div>;
-    }
-
-    return (
-      <>
-        <div>risk level: {risk}</div>
-        {node.intervention.category ? <div>category: {node.intervention.category}</div> : null}
-        {typeof node.intervention.reversible === 'boolean' ? (
-          <div>reversibility: {node.intervention.reversible ? 'reversible' : 'irreversible'}</div>
-        ) : null}
-        {node.intervention.impactRationale && explanationAvailability === 'full' ? (
-          <div className="whitespace-pre-wrap">rationale: {node.intervention.impactRationale}</div>
-        ) : null}
-        {node.intervention.reasonText && explanationAvailability === 'full' ? (
-          <div className="mt-1 whitespace-pre-wrap">decision basis: {node.intervention.reasonText}</div>
-        ) : null}
-      </>
-    );
-  };
-
   return (
-    <div className="border-b border-base-300 bg-base-100 px-3 py-2">
-      <div className="mb-2 flex items-center justify-between">
-        <div className="text-xs font-semibold uppercase tracking-wide text-base-content/70">
-          Task Graph ({nodes.length})
-        </div>
-      </div>
-      <div
-        ref={listRef}
-        onScroll={handleScroll}
-        className={`${maxHeightClass} space-y-2 overflow-y-auto pr-1`}
-      >
+    <div className="bg-base-100 px-3 py-2">
+      <div className="space-y-2">
         {nodes.map((node, idx) => {
           const isLast = idx === nodes.length - 1;
-          const isExpanded = Boolean(expandedSteps[node.stepId]);
+          const showThinkingTooltip = activeTooltip?.stepId === node.stepId && activeTooltip.kind === 'thinking';
+          const showRiskTooltip = activeTooltip?.stepId === node.stepId && activeTooltip.kind === 'risk';
+          const showDecisionTooltip = activeTooltip?.stepId === node.stepId && activeTooltip.kind === 'decision';
+
           return (
-            <div key={node.id} className="relative rounded px-1 py-1 hover:bg-base-200">
-              <button
-                className="group flex w-full items-start gap-2 text-left"
-                onClick={() => toggleStep(node.stepId)}
-              >
+            <div
+              key={node.id}
+              className="relative rounded px-1 py-1 hover:bg-base-200"
+              onMouseEnter={() => {
+                if (node.thinking) {
+                  setActiveTooltip({ stepId: node.stepId, kind: 'thinking' });
+                }
+              }}
+              onMouseLeave={() => {
+                setActiveTooltip((current) => (current?.stepId === node.stepId ? null : current));
+              }}
+            >
+              <div className="group flex w-full items-start gap-2 text-left">
                 <div className="relative flex w-5 justify-center">
                   <span className={`mt-1 block h-2.5 w-2.5 rounded-full ${statusClasses[node.status]}`} />
                   {!isLast ? <span className="absolute top-4 h-5 w-px bg-base-300" /> : null}
                 </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-sm font-medium text-base-content">{formatToolName(node.toolName)}</div>
-                    <div className="text-[11px] text-base-content/50">{isExpanded ? 'Hide' : 'Show'}</div>
-                  </div>
-                  <div className="truncate text-xs text-base-content/70">{node.focusLabel}</div>
-                  {node.intervention && monitoringContentScope !== 'minimal' ? (
-                    <div className="mt-1 flex flex-wrap items-center gap-1">
-                      <span
-                        className={riskBadgeMap[node.intervention.impact]}
-                        onMouseEnter={() => {
-                          hoverStartByStepRef.current[node.stepId] = Date.now();
-                        }}
-                        onMouseLeave={() => {
-                          const startedAt = hoverStartByStepRef.current[node.stepId];
-                          if (!startedAt) return;
-                          delete hoverStartByStepRef.current[node.stepId];
-                          const durationMs = Date.now() - startedAt;
-                          if (durationMs > 0) {
-                            onRiskLabelHover?.(durationMs);
-                          }
-                        }}
-                      >
-                        risk: {node.intervention.impact}
-                      </span>
-                      {node.intervention.promptedByGate && monitoringContentScope === 'full' ? (
-                        <span className="badge badge-xs badge-info">gate:{node.intervention.gatePolicy}</span>
-                      ) : null}
-                      {node.intervention.decision ? (
-                        <span className={decisionBadgeClass(node.intervention.decision)}>
-                          decision:{node.intervention.decision}
-                        </span>
-                      ) : null}
-                      {node.intervention.amplifiedRisk ? (
-                        <span className="badge badge-xs badge-accent">
-                          {node.intervention.amplifiedRisk.effect_type}/{node.intervention.amplifiedRisk.scope}
-                        </span>
-                      ) : null}
+                <div className="relative min-w-0 flex-1">
+                  <div className="inline-flex max-w-full">
+                    <div className="flex items-center gap-2">
+                      <div className="text-sm font-medium text-base-content">
+                        {summarizeStepTitle(node)}
+                      </div>
                     </div>
-                  ) : null}
-                </div>
-              </button>
-
-              {isExpanded && explanationAvailability !== 'none' && (node.thinking || node.intervention) ? (
-                <div className="ml-7 mt-2 rounded border border-base-300 bg-base-200 p-2 text-xs text-base-content">
-                  {node.thinking && monitoringContentScope !== 'minimal' ? (
-                    <div className="mb-2">
-                      <div className="mb-1 font-semibold text-base-content/80">Thinking</div>
-                      <div className="whitespace-pre-wrap">
-                        {explanationAvailability === 'summary' ? node.thinking.slice(0, 160) : node.thinking}
+                  </div>
+                  {showThinkingTooltip && node.thinking ? (
+                    <div className="pointer-events-none absolute left-0 top-full z-20 mt-2 w-72 rounded-2xl border border-base-300 bg-gradient-to-br from-base-100 to-base-200 p-3 shadow-xl">
+                      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-base-content/50">
+                        Agent Thinking
+                      </div>
+                      <div className="text-xs leading-5 text-base-content/80">
+                        {node.thinking}
                       </div>
                     </div>
                   ) : null}
                   {node.intervention && monitoringContentScope !== 'minimal' ? (
-                    <div>
-                      <div className="mb-1 font-semibold text-base-content/80">Risk Analysis</div>
-                      {renderRiskExplanation(node)}
-                      {node.intervention.amplifiedRisk ? (
-                        <div className="mt-2">
-                          <div>effect: {node.intervention.amplifiedRisk.effect_type}</div>
-                          <div>scope: {node.intervention.amplifiedRisk.scope}</div>
-                          <div>data flow: {node.intervention.amplifiedRisk.data_flow}</div>
+                    <div className="relative mt-1">
+                      <div className="flex flex-wrap items-center gap-1">
+                        <div
+                          className="inline-flex"
+                          onMouseEnter={() => {
+                            setActiveTooltip({ stepId: node.stepId, kind: 'risk' });
+                            hoverStartByStepRef.current[node.stepId] = Date.now();
+                          }}
+                          onMouseLeave={() => {
+                            setActiveTooltip((current) =>
+                              current?.stepId === node.stepId && current.kind === 'risk' ? null : current
+                            );
+                            const startedAt = hoverStartByStepRef.current[node.stepId];
+                            if (!startedAt) return;
+                            delete hoverStartByStepRef.current[node.stepId];
+                            const durationMs = Date.now() - startedAt;
+                            if (durationMs > 0) {
+                              onRiskLabelHover?.(durationMs);
+                            }
+                          }}
+                        >
+                          <span className={riskBadgeMap[node.intervention.impact]}>
+                            risk: {node.intervention.impact}
+                          </span>
+                        </div>
+                        {node.intervention.decision ? (
+                          <div
+                            className="inline-flex"
+                            onMouseEnter={() => {
+                              setActiveTooltip({ stepId: node.stepId, kind: 'decision' });
+                            }}
+                            onMouseLeave={() => {
+                              setActiveTooltip((current) =>
+                                current?.stepId === node.stepId && current.kind === 'decision' ? null : current
+                              );
+                            }}
+                          >
+                            <span className={`${decisionBadgeMap[node.intervention.decision]} cursor-help`}>
+                              decision:{node.intervention.decision}
+                            </span>
+                          </div>
+                        ) : null}
+                      </div>
+                      {showRiskTooltip ? (
+                        <div className="pointer-events-none absolute left-0 top-full z-20 mt-2 w-64 rounded-2xl border border-base-300 bg-gradient-to-br from-base-100 to-base-200 p-3 shadow-xl">
+                          <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-base-content/50">
+                            Risk Explanation
+                          </div>
+                          <div className="text-xs leading-5 text-base-content/80">
+                            {getRiskExplanationText(node)}
+                          </div>
                         </div>
                       ) : null}
-                      {node.intervention.plannedNextStep ||
-                      node.intervention.plannedAlternative ||
-                      node.intervention.plannedRationale ? (
-                        <div className="mt-2 rounded border border-base-300 bg-base-100 p-2">
-                          <div className="mb-1 font-semibold text-base-content/80">Planned Deliberation</div>
-                          {node.intervention.plannedNextStep ? (
-                            <div className="mb-1">
-                              <span className="font-semibold">Next:</span> {node.intervention.plannedNextStep}
-                            </div>
-                          ) : null}
-                          {node.intervention.plannedAlternative ? (
-                            <div className="mb-1">
-                              <span className="font-semibold">Alternative:</span> {node.intervention.plannedAlternative}
-                            </div>
-                          ) : null}
-                          {node.intervention.plannedRationale ? (
-                            <div>
-                              <span className="font-semibold">Why A over B:</span> {node.intervention.plannedRationale}
-                            </div>
-                          ) : null}
+                      {showDecisionTooltip ? (
+                        <div className="pointer-events-none absolute left-0 top-full z-20 mt-2 w-64 rounded-2xl border border-base-300 bg-gradient-to-br from-base-100 to-base-200 p-3 shadow-xl">
+                          <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-base-content/50">
+                            Decision Context
+                          </div>
+                          <div className="text-xs leading-5 text-base-content/80">
+                            {getDecisionExplanationText(node)}
+                          </div>
                         </div>
                       ) : null}
                     </div>
                   ) : null}
                 </div>
-              ) : null}
+              </div>
             </div>
           );
         })}

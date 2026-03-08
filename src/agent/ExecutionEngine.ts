@@ -39,6 +39,7 @@ export interface ExecutionCallbacks {
   onComplete: () => void;
   onError?: (error: any) => void;
   onToolStart?: (stepId: string, toolName: string, toolInput: string) => void;
+  onAfterToolStart?: (payload: { stepId: string; toolName: string; toolInput: string; thinking: string }) => Promise<void>;
   onToolEnd?: (stepId: string, result: string) => void;
   onToolError?: (stepId: string, toolName: string, toolInput: string, error: string) => void;
   onRiskSignal?: (stepId: string, toolName: string, payload: Record<string, unknown>) => void;
@@ -83,6 +84,7 @@ class CallbackAdapter {
       onComplete: this.handleComplete.bind(this),
       onError: this.originalCallbacks.onError,
       onToolStart: this.originalCallbacks.onToolStart,
+      onAfterToolStart: this.originalCallbacks.onAfterToolStart,
       onToolEnd: this.originalCallbacks.onToolEnd,
       onToolError: this.originalCallbacks.onToolError,
       onRiskSignal: this.originalCallbacks.onRiskSignal,
@@ -128,6 +130,7 @@ export class ExecutionEngine {
   private promptManager: PromptManager;
   private errorHandler: ErrorHandler;
   private adaptiveGateState: AdaptiveGateState = INITIAL_ADAPTIVE_GATE_STATE;
+  private liveMessages: any[] | null = null;
 
   constructor(
     llmProvider: LLMProvider,
@@ -139,6 +142,19 @@ export class ExecutionEngine {
     this.toolManager = toolManager;
     this.promptManager = promptManager;
     this.errorHandler = errorHandler;
+  }
+
+  updateApprovedPlanGuidanceDuringRun(text: string): void {
+    const normalized = text.trim();
+    this.promptManager.setApprovedPlanGuidance(normalized);
+    if (!normalized || !this.liveMessages) return;
+    this.liveMessages.push({
+      role: 'user',
+      content:
+        'Updated plan guidance replaces every earlier approved plan instruction. ' +
+        'Ignore the old plan and follow this revised plan for all remaining steps:\n' +
+        normalized,
+    });
   }
 
   /**
@@ -508,6 +524,7 @@ export class ExecutionEngine {
     try {
       // Initialize messages with the prompt
       let messages = this.initializeMessages(prompt, initialMessages);
+      this.liveMessages = messages;
       this.promptManager.setApprovedPlanGuidance('');
 
       let done = false;
@@ -538,6 +555,7 @@ export class ExecutionEngine {
             content: `Follow this approved plan guidance for the full task:\n${editText}`,
           });
           messages = trimHistory(messages);
+          this.liveMessages = messages;
         } else {
           const approvedPlanText = [
             `Plan Summary: ${generatedPlan.summary}`,
@@ -551,6 +569,7 @@ export class ExecutionEngine {
               approvedPlanText,
           });
           messages = trimHistory(messages);
+          this.liveMessages = messages;
         }
       }
 
@@ -725,6 +744,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
                 }
               );
               messages = trimHistory(messages);
+              this.liveMessages = messages;
               continue;
             }
           }
@@ -819,6 +839,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
                 { role: "user", content: `Execution blocked by runtime state. ${permission.reason || ''}` }
               );
               messages = trimHistory(messages);
+              this.liveMessages = messages;
               continue;
             }
           }
@@ -832,12 +853,21 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
                 { role: 'user', content: `Action paused before execution. ${softWindow.reason || ''}` }
               );
               messages = trimHistory(messages);
+              this.liveMessages = messages;
               continue;
             }
           }
 
           if (adaptedCallbacks.onToolStart) {
             adaptedCallbacks.onToolStart(stepId, toolName, toolInput);
+          }
+          if (adaptedCallbacks.onAfterToolStart) {
+            await adaptedCallbacks.onAfterToolStart({
+              stepId,
+              toolName,
+              toolInput,
+              thinking: thinking.rationale || thinking.goal || modelMetadata.thinkingSummary || '',
+            });
           }
 
           // ── 3. Execute tool ──────────────────────────────────────────────────
@@ -995,6 +1025,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               { role: "user", content: `Tool result: ${result}\nExecution stopped by post-action review policy.` }
             );
             messages = trimHistory(messages);
+            this.liveMessages = messages;
             continue;
           }
 
@@ -1029,6 +1060,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
           }
 
           messages = trimHistory(messages);
+          this.liveMessages = messages;
         } catch (error) {
           // If an error occurs during execution, check if it was due to cancellation
           if (this.errorHandler.isExecutionCancelled()) break;
@@ -1045,8 +1077,10 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
           `Stopped: exceeded maximum of ${MAX_STEPS} steps.`
         );
       }
+      this.liveMessages = null;
       adaptedCallbacks.onComplete();
     } catch (err: any) {
+      this.liveMessages = null;
       // Check if this is a retryable error (rate limit or overloaded)
       if (this.errorHandler.isRetryableError(err)) {
         console.log("Retryable error detected:", err);

@@ -1,4 +1,5 @@
 import type { Page } from "playwright-crx";
+import { wait } from "./utils";
 
 export type AttentionType = "selector" | "coordinates" | "url" | "text" | "none";
 
@@ -6,8 +7,19 @@ export interface AttentionTarget {
   type: AttentionType;
   label: string;
   selector?: string;
+  text?: string;
   x?: number;
   y?: number;
+  thinking?: string;
+  approval?: {
+    requestId: string;
+    tabId?: number;
+    windowId?: number;
+    title: string;
+    message: string;
+    approveLabel?: string;
+    rejectLabel?: string;
+  };
 }
 
 const TOOL_LABELS: Record<string, string> = {
@@ -22,6 +34,9 @@ const TOOL_LABELS: Record<string, string> = {
   browser_mouse_click: "Mouse click point",
   browser_mouse_move: "Mouse move point",
   browser_mouse_drag: "Mouse drag path",
+  browser_click_xy: "Mouse click point",
+  browser_move_mouse: "Mouse move point",
+  browser_drag: "Mouse drag path",
 };
 
 function trimForDisplay(input: string, max = 120): string {
@@ -37,12 +52,24 @@ function parseSelectorFromSnapshotInput(input: string): string | null {
 }
 
 function parseCoordinates(input: string): { x: number; y: number } | null {
-  const numberMatches = input.match(/-?\d+(\.\d+)?/g);
-  if (!numberMatches || numberMatches.length < 2) return null;
-  const x = Number(numberMatches[0]);
-  const y = Number(numberMatches[1]);
+  const parts = input.split("|").map((part) => part.trim()).filter(Boolean);
+  const numberMatches = parts.length >= 2 ? parts : input.match(/-?\d+(\.\d+)?/g) || [];
+  if (numberMatches.length < 2) return null;
+  const x = Number(numberMatches[numberMatches.length >= 4 ? numberMatches.length - 2 : 0]);
+  const y = Number(numberMatches[numberMatches.length >= 4 ? numberMatches.length - 1 : 1]);
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
   return { x, y };
+}
+
+function looksLikeSelector(input: string): boolean {
+  const trimmed = input.trim();
+  if (!trimmed) return false;
+  if (/^[.#\[]/.test(trimmed)) return true;
+  if (/[>:[\]=]/.test(trimmed)) return true;
+  if (/^(input|button|a|div|span|textarea|select|label|form|main|section|article|nav|header|footer)\b/i.test(trimmed)) {
+    return true;
+  }
+  return false;
 }
 
 export function inferAttentionTarget(toolName: string, toolInput: string): AttentionTarget {
@@ -65,7 +92,6 @@ export function inferAttentionTarget(toolName: string, toolInput: string): Atten
   }
 
   if (
-    toolName === "browser_click" ||
     toolName === "browser_query" ||
     toolName === "browser_snapshot_dom"
   ) {
@@ -83,10 +109,29 @@ export function inferAttentionTarget(toolName: string, toolInput: string): Atten
     }
   }
 
+  if (toolName === "browser_click") {
+    if (looksLikeSelector(cleanInput)) {
+      return {
+        type: "selector",
+        selector: cleanInput,
+        label: `${toolLabel}: ${trimForDisplay(cleanInput)}`,
+      };
+    }
+
+    return {
+      type: "text",
+      text: cleanInput,
+      label: `${toolLabel}: ${trimForDisplay(cleanInput)}`,
+    };
+  }
+
   if (
     toolName === "browser_mouse_click" ||
     toolName === "browser_mouse_move" ||
-    toolName === "browser_mouse_drag"
+    toolName === "browser_mouse_drag" ||
+    toolName === "browser_click_xy" ||
+    toolName === "browser_move_mouse" ||
+    toolName === "browser_drag"
   ) {
     const coords = parseCoordinates(cleanInput);
     if (coords) {
@@ -120,7 +165,13 @@ export async function clearAttentionOverlay(page: Page): Promise<void> {
 }
 
 export async function renderAttentionOverlay(page: Page, target: AttentionTarget): Promise<void> {
-  if (target.type !== "selector" && target.type !== "coordinates") {
+  if (
+    target.type !== "selector" &&
+    target.type !== "coordinates" &&
+    target.type !== "text" &&
+    !target.thinking &&
+    !target.approval
+  ) {
     await clearAttentionOverlay(page);
     return;
   }
@@ -135,7 +186,7 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
     root.style.position = "fixed";
     root.style.inset = "0";
     root.style.zIndex = "2147483647";
-    root.style.pointerEvents = "none";
+    root.style.pointerEvents = "auto";
     document.documentElement.appendChild(root);
 
     const box = document.createElement("div");
@@ -158,8 +209,232 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
     badge.style.pointerEvents = "none";
     root.appendChild(badge);
 
+    const cardStack = document.createElement("div");
+    cardStack.style.position = "fixed";
+    cardStack.style.display = "flex";
+    cardStack.style.flexDirection = "column";
+    cardStack.style.gap = "10px";
+    cardStack.style.pointerEvents = "auto";
+    root.appendChild(cardStack);
+
+    const sharedCardStyles = (card: HTMLDivElement) => {
+      card.style.maxWidth = "320px";
+      card.style.minWidth = "220px";
+      card.style.background = "linear-gradient(180deg, rgba(17, 24, 39, 0.96) 0%, rgba(31, 41, 55, 0.96) 100%)";
+      card.style.color = "#f9fafb";
+      card.style.border = "1px solid rgba(251, 113, 133, 0.28)";
+      card.style.borderRadius = "16px";
+      card.style.padding = "12px 14px";
+      card.style.boxShadow = "0 18px 44px rgba(15, 23, 42, 0.34)";
+      card.style.fontSize = "12px";
+      card.style.lineHeight = "1.5";
+      card.style.fontFamily =
+        "ui-rounded, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+    };
+
+    const thinkingCard = payload.thinking
+      ? (() => {
+          const card = document.createElement("div");
+          sharedCardStyles(card);
+
+          const title = document.createElement("div");
+          title.textContent = "Thinking";
+          title.style.fontSize = "10px";
+          title.style.fontWeight = "700";
+          title.style.letterSpacing = "0.08em";
+          title.style.textTransform = "uppercase";
+          title.style.color = "rgba(248, 113, 113, 0.95)";
+          title.style.marginBottom = "6px";
+          card.appendChild(title);
+
+          const body = document.createElement("div");
+          card.appendChild(body);
+          cardStack.appendChild(card);
+
+          const text = payload.thinking ?? "";
+          let index = 0;
+          const timer = window.setInterval(() => {
+            index = Math.min(text.length, index + 2);
+            body.textContent = text.slice(0, index);
+            if (index >= text.length) {
+              window.clearInterval(timer);
+            }
+          }, 18);
+
+          return card;
+        })()
+      : null;
+
+    const approvalCard = payload.approval
+      ? (() => {
+          const card = document.createElement("div");
+          sharedCardStyles(card);
+          card.style.pointerEvents = "auto";
+          card.style.border = "1px solid rgba(251, 191, 36, 0.30)";
+          card.style.background =
+            "linear-gradient(180deg, rgba(17, 24, 39, 0.98) 0%, rgba(55, 65, 81, 0.98) 100%)";
+
+          const eyebrow = document.createElement("div");
+          eyebrow.textContent = "Needs Your Decision";
+          eyebrow.style.fontSize = "10px";
+          eyebrow.style.fontWeight = "700";
+          eyebrow.style.letterSpacing = "0.08em";
+          eyebrow.style.textTransform = "uppercase";
+          eyebrow.style.color = "rgba(253, 224, 71, 0.95)";
+          eyebrow.style.marginBottom = "6px";
+          card.appendChild(eyebrow);
+
+          const title = document.createElement("div");
+          title.textContent = payload.approval.title;
+          title.style.fontSize = "15px";
+          title.style.fontWeight = "700";
+          title.style.lineHeight = "1.3";
+          title.style.marginBottom = "8px";
+          card.appendChild(title);
+
+          const body = document.createElement("div");
+          body.textContent = payload.approval.message;
+          body.style.color = "rgba(255, 255, 255, 0.88)";
+          body.style.fontSize = "12px";
+          body.style.lineHeight = "1.5";
+          card.appendChild(body);
+
+          const actions = document.createElement("div");
+          actions.style.display = "flex";
+          actions.style.justifyContent = "flex-end";
+          actions.style.gap = "8px";
+          actions.style.marginTop = "12px";
+
+          const rejectButton = document.createElement("button");
+          rejectButton.textContent = payload.approval.rejectLabel || "Reject";
+          rejectButton.style.border = "none";
+          rejectButton.style.background = "linear-gradient(135deg, #fb7185 0%, #e11d48 100%)";
+          rejectButton.style.color = "#fff";
+          rejectButton.style.borderRadius = "9999px";
+          rejectButton.style.padding = "7px 12px";
+          rejectButton.style.fontSize = "12px";
+          rejectButton.style.fontWeight = "700";
+          rejectButton.style.cursor = "pointer";
+          rejectButton.style.boxShadow = "0 8px 18px rgba(225, 29, 72, 0.28)";
+
+          const approveButton = document.createElement("button");
+          approveButton.textContent = payload.approval.approveLabel || "Approve";
+          approveButton.style.border = "none";
+          approveButton.style.background = "linear-gradient(135deg, #34d399 0%, #16a34a 100%)";
+          approveButton.style.color = "#fff";
+          approveButton.style.borderRadius = "9999px";
+          approveButton.style.padding = "7px 14px";
+          approveButton.style.fontSize = "12px";
+          approveButton.style.fontWeight = "700";
+          approveButton.style.cursor = "pointer";
+          approveButton.style.boxShadow = "0 8px 18px rgba(22, 163, 74, 0.28)";
+
+          const setPendingState = () => {
+            rejectButton.disabled = true;
+            approveButton.disabled = true;
+            rejectButton.style.opacity = "0.65";
+            approveButton.style.opacity = "0.65";
+            rejectButton.style.cursor = "default";
+            approveButton.style.cursor = "default";
+          };
+
+          const submitDecision = (approved: boolean) => {
+            setPendingState();
+            (window as Window & {
+              __morphApprovalDecision__?: {
+                requestId: string;
+                approved: boolean;
+                tabId?: number;
+                windowId?: number;
+                at: number;
+              };
+            }).__morphApprovalDecision__ = {
+              requestId: payload.approval!.requestId,
+              approved,
+              tabId: payload.approval!.tabId,
+              windowId: payload.approval!.windowId,
+              at: Date.now(),
+            };
+            root.remove();
+          };
+
+          rejectButton.addEventListener("click", () => submitDecision(false));
+          approveButton.addEventListener("click", () => submitDecision(true));
+
+          actions.appendChild(rejectButton);
+          actions.appendChild(approveButton);
+          card.appendChild(actions);
+          cardStack.appendChild(card);
+          return card;
+        })()
+      : null;
+
+    function placeCardStack(anchorRect: DOMRect | { left: number; top: number; width: number; height: number }) {
+      if (!thinkingCard && !approvalCard) return;
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const cardWidth = Math.min(320, Math.max(180, viewportWidth * 0.28));
+      cardStack.style.width = `${cardWidth}px`;
+
+      let left = anchorRect.left + anchorRect.width + 14;
+      if (left + cardWidth > viewportWidth - 12) {
+        left = Math.max(12, anchorRect.left - cardWidth - 14);
+      }
+
+      const estimatedHeight = approvalCard ? 248 : 132;
+      let top = anchorRect.top + anchorRect.height + 10;
+      if (top + estimatedHeight > viewportHeight - 12) {
+        top = Math.max(12, anchorRect.top + anchorRect.height - estimatedHeight);
+      }
+      if (top + estimatedHeight > viewportHeight - 12) {
+        top = Math.max(12, viewportHeight - estimatedHeight - 12);
+      }
+
+      cardStack.style.left = `${left}px`;
+      cardStack.style.top = `${top}px`;
+    }
+
+    function resolveVisibleTextTarget(text: string): Element | null {
+      const needle = text.trim().toLowerCase();
+      if (!needle) return null;
+
+      const elements = Array.from(document.querySelectorAll("button, a, input, textarea, select, label, [role='button'], [role='link'], p, span, div"));
+      let best: { element: Element; score: number } | null = null;
+
+      for (const element of elements) {
+        const htmlElement = element as HTMLElement;
+        const rect = htmlElement.getBoundingClientRect();
+        if (rect.width < 4 || rect.height < 4) continue;
+        if (rect.bottom < 0 || rect.right < 0 || rect.top > window.innerHeight || rect.left > window.innerWidth) continue;
+
+        const rawText =
+          (htmlElement.innerText || htmlElement.textContent || htmlElement.getAttribute("aria-label") || htmlElement.getAttribute("placeholder") || "").trim();
+        if (!rawText) continue;
+
+        const haystack = rawText.toLowerCase();
+        if (!haystack.includes(needle)) continue;
+
+        let score = 0;
+        if (haystack === needle) score += 100;
+        if (haystack.startsWith(needle)) score += 30;
+        score -= Math.max(0, haystack.length - needle.length);
+
+        if (!best || score > best.score) {
+          best = { element, score };
+        }
+      }
+
+      return best?.element ?? null;
+    }
+
     if (payload.type === "selector" && payload.selector) {
-      const element = document.querySelector(payload.selector);
+      let element: Element | null = null;
+      try {
+        element = document.querySelector(payload.selector);
+      } catch {
+        element = null;
+      }
+
       if (element) {
         const rect = element.getBoundingClientRect();
         box.style.left = `${Math.max(0, rect.left - 4)}px`;
@@ -168,11 +443,27 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
         box.style.height = `${Math.max(8, rect.height + 8)}px`;
         badge.style.left = `${Math.max(8, rect.left)}px`;
         badge.style.top = `${Math.max(8, rect.top - 28)}px`;
+        placeCardStack(rect);
       } else {
         box.remove();
-        badge.textContent = "Agent Focus: selector not found";
-        badge.style.left = "12px";
-        badge.style.top = "12px";
+        badge.remove();
+        placeCardStack({ left: 12, top: 44, width: 0, height: 0 });
+      }
+    } else if (payload.type === "text" && payload.text) {
+      const element = resolveVisibleTextTarget(payload.text);
+      if (element) {
+        const rect = (element as HTMLElement).getBoundingClientRect();
+        box.style.left = `${Math.max(0, rect.left - 4)}px`;
+        box.style.top = `${Math.max(0, rect.top - 4)}px`;
+        box.style.width = `${Math.max(8, rect.width + 8)}px`;
+        box.style.height = `${Math.max(8, rect.height + 8)}px`;
+        badge.style.left = `${Math.max(8, rect.left)}px`;
+        badge.style.top = `${Math.max(8, rect.top - 28)}px`;
+        placeCardStack(rect);
+      } else {
+        box.remove();
+        badge.remove();
+        placeCardStack({ left: 12, top: 44, width: 0, height: 0 });
       }
     } else if (payload.type === "coordinates") {
       const x = Math.max(0, Number(payload.x) || 0);
@@ -185,11 +476,61 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
       box.style.boxShadow = "0 0 0 9999px rgba(239, 68, 68, 0.08)";
       badge.style.left = `${Math.max(8, x + 16)}px`;
       badge.style.top = `${Math.max(8, y - 12)}px`;
+      placeCardStack({ left: x + 16, top: y - 12, width: 0, height: 0 });
+    } else {
+      box.remove();
+      badge.remove();
+      placeCardStack({ left: 12, top: 44, width: 0, height: 0 });
     }
 
-    setTimeout(() => {
-      const current = document.getElementById(OVERLAY_ID);
-      if (current) current.remove();
-    }, 6000);
+    if (!payload.approval) {
+      setTimeout(() => {
+        const current = document.getElementById(OVERLAY_ID);
+        if (current) current.remove();
+      }, 6000);
+    }
   }, target);
+}
+
+export async function waitForOverlayApprovalDecision(
+  page: Page,
+  requestId: string,
+  timeoutMs = 5 * 60 * 1000
+): Promise<{ requestId: string; approved: boolean; tabId?: number; windowId?: number } | null> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const payload = await page.evaluate<
+        { requestId: string; approved: boolean; tabId?: number; windowId?: number } | null,
+        string
+      >((targetRequestId: string) => {
+        const decision = (window as Window & {
+          __morphApprovalDecision__?: {
+            requestId: string;
+            approved: boolean;
+            tabId?: number;
+            windowId?: number;
+          };
+        }).__morphApprovalDecision__;
+
+        if (!decision || decision.requestId !== targetRequestId) {
+          return null;
+        }
+
+        delete (window as Window & { __morphApprovalDecision__?: unknown }).__morphApprovalDecision__;
+        return decision;
+      }, requestId);
+
+      if (payload) {
+        return payload;
+      }
+    } catch {
+      return null;
+    }
+
+    await wait(200);
+  }
+
+  return null;
 }

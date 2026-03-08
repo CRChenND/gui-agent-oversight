@@ -1,5 +1,6 @@
 import { DynamicTool } from "langchain/tools";
 import type { Page } from "playwright-crx";
+import { ScreenshotManager } from "../../tracking/screenshotManager";
 import { ToolFactory } from "./types";
 import { truncate, MAX_RETURN_CHARS, MAX_SCREENSHOT_CHARS, withActivePage, getCurrentTabId } from "./utils";
 
@@ -360,8 +361,6 @@ export const browserScreenshot: ToolFactory = (page: Page) =>
     func: async (input: string) => {
       try {
         return await withActivePage(page, async (activePage) => {
-          // Import ScreenshotManager
-          const { ScreenshotManager } = await import("../../tracking/screenshotManager");
           const screenshotManager = ScreenshotManager.getInstance();
           
           // Constants

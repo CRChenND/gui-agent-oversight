@@ -1,15 +1,8 @@
 import React, { useState } from 'react';
-import type {
-  OversightMechanismDefinition,
-  OversightMechanismId,
-  OversightMechanismParameterSettings,
-  OversightParameterValue,
-  OversightMechanismSettings,
-} from '../../oversight/registry';
-import type { OversightArchetype } from '../archetypes';
 import { Model } from './ModelList';
 import { OllamaModel } from './OllamaModelList';
-import { InteractionTab } from './tabs/InteractionTab';
+import type { OversightArchetype } from '../oversightArchetypes';
+import { ArchetypesTab } from './tabs/ArchetypesTab';
 import { ProvidersTab } from './tabs/ProvidersTab';
 
 interface VerticalTabsProps {
@@ -84,22 +77,10 @@ interface VerticalTabsProps {
   // Global knowledge
   globalKnowledgeText?: string;
   setGlobalKnowledgeText?: (val: string) => void;
-  // Oversight mechanism settings
-  oversightMechanisms: OversightMechanismDefinition[];
-  oversightSettings: OversightMechanismSettings;
-  oversightParameterSettings: OversightMechanismParameterSettings;
-  setOversightMechanismEnabled: (mechanismId: OversightMechanismId, enabled: boolean) => void;
-  setOversightMechanismParameter: (
-    mechanismId: OversightMechanismId,
-    parameterKey: string,
-    value: OversightParameterValue
-  ) => void;
-  handleExportDesignMatrix: () => void;
-  builtinArchetypes: OversightArchetype[];
-  customArchetypes: OversightArchetype[];
+  // Oversight archetypes
+  archetypes: OversightArchetype[];
+  selectedArchetypeId: string;
   applyArchetype: (archetype: OversightArchetype) => void;
-  saveCurrentAsArchetype: (name: string) => void;
-  deleteCustomArchetype: (archetypeId: string) => void;
 }
 
 export function VerticalTabs(props: VerticalTabsProps) {
@@ -107,7 +88,7 @@ export function VerticalTabs(props: VerticalTabsProps) {
 
   const tabs = [
     { id: 'providers', label: 'LLM Configuration', icon: '🤖' },
-    { id: 'interaction', label: 'Interaction Features', icon: '🧭' },
+    { id: 'archetypes', label: 'Archetypes', icon: '🛡️' },
   ];
 
   const renderProvidersTab = () => (
@@ -165,28 +146,6 @@ export function VerticalTabs(props: VerticalTabsProps) {
       handleEditModel={props.handleEditModel}
       globalKnowledgeText={props.globalKnowledgeText}
       setGlobalKnowledgeText={props.setGlobalKnowledgeText}
-      oversightMechanisms={props.oversightMechanisms}
-      oversightSettings={props.oversightSettings}
-      oversightParameterSettings={props.oversightParameterSettings}
-    />
-  );
-
-  const renderInteractionTab = () => (
-    <InteractionTab
-      mechanisms={props.oversightMechanisms}
-      settings={props.oversightSettings}
-      parameterSettings={props.oversightParameterSettings}
-      onToggle={props.setOversightMechanismEnabled}
-      onParameterChange={props.setOversightMechanismParameter}
-      isSaving={props.isSaving}
-      saveStatus={props.saveStatus}
-      handleSave={props.handleSave}
-      handleExportDesignMatrix={props.handleExportDesignMatrix}
-      builtinArchetypes={props.builtinArchetypes}
-      customArchetypes={props.customArchetypes}
-      applyArchetype={props.applyArchetype}
-      saveCurrentAsArchetype={props.saveCurrentAsArchetype}
-      deleteCustomArchetype={props.deleteCustomArchetype}
     />
   );
 
@@ -194,8 +153,17 @@ export function VerticalTabs(props: VerticalTabsProps) {
     switch (activeTab) {
       case 'providers':
         return renderProvidersTab();
-      case 'interaction':
-        return renderInteractionTab();
+      case 'archetypes':
+        return (
+          <ArchetypesTab
+            archetypes={props.archetypes}
+            selectedArchetypeId={props.selectedArchetypeId}
+            onApplyArchetype={props.applyArchetype}
+            isSaving={props.isSaving}
+            saveStatus={props.saveStatus}
+            handleSave={props.handleSave}
+          />
+        );
       default:
         return renderProvidersTab();
     }
@@ -203,7 +171,7 @@ export function VerticalTabs(props: VerticalTabsProps) {
 
   return (
     <div className="flex min-h-screen bg-base-200">
-      {/* Left Sidebar - Single Tab (Providers) */}
+      {/* Left Sidebar */}
       <div className="w-64 bg-base-100 shadow-lg">
         <div className="p-4">
           <h1 className="text-2xl font-bold text-primary mb-6">MORPH</h1>

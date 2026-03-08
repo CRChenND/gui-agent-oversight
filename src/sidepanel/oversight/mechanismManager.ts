@@ -26,8 +26,10 @@ export interface OversightConfig {
 
 export interface AgentFocusState {
   state: 'active' | 'idle';
+  stepId: string | null;
   toolName: string | null;
   focusLabel: string;
+  thinking?: string;
   updatedAt: number;
 }
 
@@ -205,6 +207,14 @@ const taskGraphMechanism: OversightMechanism = {
           ...state.taskGraph,
           nodes: nextNodes,
         },
+        agentFocus:
+          state.agentFocus.stepId === event.stepId
+            ? {
+                ...state.agentFocus,
+                thinking: event.thinking.rationale || event.thinking.goal,
+                updatedAt: event.timestamp,
+              }
+            : state.agentFocus,
         thinkingByStepId: {
           ...state.thinkingByStepId,
           [event.stepId]: event.thinking,
@@ -255,8 +265,13 @@ const agentFocusMechanism: OversightMechanism = {
         ...state,
         agentFocus: {
           state: 'active',
+          stepId: event.stepId,
           toolName: showToolName ? event.toolName : null,
           focusLabel: event.focusLabel,
+          thinking:
+            state.thinkingByStepId[event.stepId]?.rationale ||
+            state.thinkingByStepId[event.stepId]?.goal ||
+            ctx.getLatestThinking(),
           updatedAt: event.timestamp,
         },
       };
@@ -267,8 +282,10 @@ const agentFocusMechanism: OversightMechanism = {
         ...state,
         agentFocus: {
           state: 'idle',
+          stepId: null,
           toolName: null,
           focusLabel: event.focusLabel,
+          thinking: '',
           updatedAt: event.timestamp,
         },
       };
@@ -464,8 +481,10 @@ export function createInitialOversightState(): OversightUiState {
     },
     agentFocus: {
       state: 'idle',
+      stepId: null,
       toolName: null,
       focusLabel: 'Waiting for agent action',
+      thinking: '',
       updatedAt: Date.now(),
     },
     thinkingByStepId: {},

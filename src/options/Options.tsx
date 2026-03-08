@@ -9,10 +9,7 @@ import {
   geminiDefaultModelId,
   ollamaDefaultModelId
 } from '../models/models';
-import { exportDesignMatrix } from '../oversight/design/exportDesignMatrix';
 import {
-  type OversightParameterValue,
-  OVERSIGHT_MECHANISM_REGISTRY,
   buildOversightParameterStoragePatch,
   buildOversightStoragePatch,
   createDefaultOversightParameterSettings,
@@ -21,15 +18,16 @@ import {
   getOversightStorageQueryDefaults,
   mapStorageToOversightParameterSettings,
   mapStorageToOversightSettings,
-  type OversightMechanismId,
 } from '../oversight/registry';
 import {
-  getBuiltinArchetypes,
-  hydrateCustomArchetypes,
-  OVERSIGHT_ARCHETYPES_STORAGE_KEY,
-  toStoredArchetype,
+  BUILTIN_OVERSIGHT_ARCHETYPES,
+  cloneArchetypeState,
+  getDefaultOversightArchetype,
+  getOversightArchetypeById,
+  inferOversightArchetypeId,
+  OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY,
   type OversightArchetype,
-} from './archetypes';
+} from './oversightArchetypes';
 
 // Import components
 import { Model } from './components/ModelList';
@@ -85,11 +83,10 @@ export function Options() {
   const [newModel, setNewModel] = useState({ id: '', name: '', isReasoningModel: false });
   // Global always-on knowledge
   const [globalKnowledgeText, setGlobalKnowledgeText] = useState('');
-  // Oversight mechanism toggles
+  // Oversight runtime state
   const [oversightSettings, setOversightSettings] = useState(createDefaultOversightMechanismSettings);
   const [oversightParameterSettings, setOversightParameterSettings] = useState(createDefaultOversightParameterSettings);
-  const [builtinArchetypes] = useState<OversightArchetype[]>(getBuiltinArchetypes);
-  const [customArchetypes, setCustomArchetypes] = useState<OversightArchetype[]>([]);
+  const [selectedArchetypeId, setSelectedArchetypeId] = useState(getDefaultOversightArchetype().id);
 
   // Load saved settings when component mounts
   useEffect(() => {
@@ -118,7 +115,7 @@ export function Options() {
       openrouterBaseUrl: 'https://openrouter.ai/api/v1',
       openrouterModelId: '',
       globalKnowledgeText: '',
-      [OVERSIGHT_ARCHETYPES_STORAGE_KEY]: [],
+      [OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY]: getDefaultOversightArchetype().id,
       ...getOversightStorageQueryDefaults(),
       ...getOversightParameterStorageQueryDefaults(),
     }, (result) => {
@@ -147,9 +144,19 @@ export function Options() {
       setOpenrouterBaseUrl(result.openrouterBaseUrl || 'https://openrouter.ai/api/v1');
       setOpenrouterModelId(result.openrouterModelId || '');
       setGlobalKnowledgeText(result.globalKnowledgeText || '');
-      setOversightSettings(mapStorageToOversightSettings(result as Record<string, unknown>));
-      setOversightParameterSettings(mapStorageToOversightParameterSettings(result as Record<string, unknown>));
-      setCustomArchetypes(hydrateCustomArchetypes((result as Record<string, unknown>)[OVERSIGHT_ARCHETYPES_STORAGE_KEY]));
+      const nextOversightSettings = mapStorageToOversightSettings(result as Record<string, unknown>);
+      const nextOversightParameterSettings = mapStorageToOversightParameterSettings(result as Record<string, unknown>);
+      setOversightSettings(nextOversightSettings);
+      setOversightParameterSettings(nextOversightParameterSettings);
+      const storedArchetypeId = (result as Record<string, unknown>)[OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY];
+      if (typeof storedArchetypeId === 'string' && getOversightArchetypeById(storedArchetypeId)) {
+        setSelectedArchetypeId(storedArchetypeId);
+        return;
+      }
+      const inferredArchetypeId = inferOversightArchetypeId(nextOversightSettings, nextOversightParameterSettings);
+      if (inferredArchetypeId) {
+        setSelectedArchetypeId(inferredArchetypeId);
+      }
     });
   }, []);
 
@@ -183,6 +190,7 @@ export function Options() {
       openrouterBaseUrl,
       openrouterModelId,
       globalKnowledgeText,
+      [OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY]: selectedArchetypeId,
       ...buildOversightStoragePatch(oversightSettings),
       ...buildOversightParameterStoragePatch(oversightParameterSettings),
     }, () => {
@@ -200,27 +208,6 @@ export function Options() {
         setSaveStatus('');
       }, 3000);
     });
-  };
-
-  const setOversightMechanismEnabled = (mechanismId: OversightMechanismId, enabled: boolean) => {
-    setOversightSettings((prev) => ({
-      ...prev,
-      [mechanismId]: enabled,
-    }));
-  };
-
-  const setOversightMechanismParameter = (
-    mechanismId: OversightMechanismId,
-    parameterKey: string,
-    value: OversightParameterValue
-  ) => {
-    setOversightParameterSettings((prev) => ({
-      ...prev,
-      [mechanismId]: {
-        ...prev[mechanismId],
-        [parameterKey]: value,
-      },
-    }));
   };
 
   // ollama model list operations
@@ -273,56 +260,12 @@ export function Options() {
     setOpenaiCompatibleModels(models => models.map((m, i) => i === idx ? { ...m, [field]: value } : m));
   };
 
-  const handleExportDesignMatrix = () => {
-    const content = exportDesignMatrix('json');
-    const blob = new Blob([content], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `oversight-design-matrix-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
-  const persistCustomArchetypes = (archetypes: OversightArchetype[]) => {
-    const stored = archetypes.map(toStoredArchetype);
-    chrome.storage.sync.set({
-      [OVERSIGHT_ARCHETYPES_STORAGE_KEY]: stored,
-    });
-  };
-
   const applyArchetype = (archetype: OversightArchetype) => {
-    setOversightSettings({ ...archetype.settings });
-    setOversightParameterSettings({ ...archetype.parameterSettings });
+    const nextState = cloneArchetypeState(archetype);
+    setOversightSettings(nextState.settings);
+    setOversightParameterSettings(nextState.parameterSettings);
+    setSelectedArchetypeId(archetype.id);
     setSaveStatus(`Applied archetype: ${archetype.name}`);
-    setTimeout(() => setSaveStatus(''), 2000);
-  };
-
-  const saveCurrentAsArchetype = (name: string) => {
-    const trimmedName = name.trim();
-    if (!trimmedName) return;
-    const archetype: OversightArchetype = {
-      id: `custom-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
-      name: trimmedName,
-      description: 'User-defined archetype preset.',
-      scope: 'custom',
-      settings: { ...oversightSettings },
-      parameterSettings: { ...oversightParameterSettings },
-    };
-    const updated = [...customArchetypes, archetype];
-    setCustomArchetypes(updated);
-    persistCustomArchetypes(updated);
-    setSaveStatus(`Saved archetype: ${trimmedName}`);
-    setTimeout(() => setSaveStatus(''), 2000);
-  };
-
-  const deleteCustomArchetype = (archetypeId: string) => {
-    const updated = customArchetypes.filter((item) => item.id !== archetypeId);
-    setCustomArchetypes(updated);
-    persistCustomArchetypes(updated);
-    setSaveStatus('Deleted archetype preset');
     setTimeout(() => setSaveStatus(''), 2000);
   };
 
@@ -390,17 +333,9 @@ export function Options() {
       handleEditModel={handleEditModel}
       globalKnowledgeText={globalKnowledgeText}
       setGlobalKnowledgeText={setGlobalKnowledgeText}
-      oversightMechanisms={OVERSIGHT_MECHANISM_REGISTRY}
-      oversightSettings={oversightSettings}
-      oversightParameterSettings={oversightParameterSettings}
-      setOversightMechanismEnabled={setOversightMechanismEnabled}
-      setOversightMechanismParameter={setOversightMechanismParameter}
-      handleExportDesignMatrix={handleExportDesignMatrix}
-      builtinArchetypes={builtinArchetypes}
-      customArchetypes={customArchetypes}
+      archetypes={BUILTIN_OVERSIGHT_ARCHETYPES}
+      selectedArchetypeId={selectedArchetypeId}
       applyArchetype={applyArchetype}
-      saveCurrentAsArchetype={saveCurrentAsArchetype}
-      deleteCustomArchetype={deleteCustomArchetype}
     />
   );
 }

@@ -245,6 +245,13 @@ export interface PlanReviewDecisionMessage {
   editedPlan?: string;
 }
 
+export interface UpdateApprovedPlanMessage {
+  action: 'updateApprovedPlan';
+  tabId?: number;
+  windowId?: number;
+  editedPlan: string;
+}
+
 export interface RuntimeInteractionSignalMessage {
   action: 'runtimeInteractionSignal';
   tabId?: number;
@@ -329,6 +336,7 @@ export type BackgroundMessage =
   | ReleaseControlMessage
   | ResolveEscalationMessage
   | PlanReviewDecisionMessage
+  | UpdateApprovedPlanMessage
   | RuntimeInteractionSignalMessage
   | SoftPauseDecisionMessage
   | ExitAmplifiedModeMessage

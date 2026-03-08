@@ -105,15 +105,6 @@ The runtime architecture enables formal measurement of oversight rhythm.
 Oversight rhythm is defined as the temporal structure of enforced and user-initiated regulatory events across execution.
 Each session export includes derived metrics capturing interruption density, enforcement ratio, and authority transitions, enabling quantitative comparison of oversight archetypes.
 
-### Interaction Features Reference
-
-`Options -> Interaction Features` now exposes policy parameters that directly affect runtime behavior in sidepanel and approval flow.
-
-It now includes an **Archetype Presets** block where you can:
-- load built-in archetypes
-- save current settings as a custom archetype
-- reload/delete custom archetypes (persisted in `chrome.storage.sync` under `oversight.interaction.archetypes`)
-
 #### 0) Sidepanel Interaction Surface (Runtime UI)
 
 - Layout mode:
@@ -338,9 +329,9 @@ The following maps the research design space to currently configurable runtime/U
   - Current controls: task graph + oversight trace + post-hoc panel (`monitoring.showPostHocPanel`)
   - Coverage: progress/trace feedback supported
 
-### Built-in Archetype Presets
+### Built-in Archetypes
 
-`Interaction Features -> Archetype Presets` includes 3 built-in presets:
+The runtime includes 3 built-in presets:
 
 Each preset also initializes runtime state at run start through its policy profile:
 - initial `ExecutionPhase` starts at `planning` and moves through `plan_review` into `execution`
@@ -396,7 +387,7 @@ Each preset also initializes runtime state at run start through its policy profi
 
 #### Example Configurations
 
-Use these as starting presets in `Interaction Features`:
+Use these as starting presets:
 
 1. Low-interruption baseline
 ```text

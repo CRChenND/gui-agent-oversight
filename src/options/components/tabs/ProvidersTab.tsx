@@ -1,9 +1,4 @@
 import React from 'react';
-import type {
-  OversightMechanismDefinition,
-  OversightMechanismParameterSettings,
-  OversightMechanismSettings,
-} from '../../../oversight/registry';
 import { GlobalKnowledgeSettings } from '../GlobalKnowledgeSettings';
 import { Model } from '../ModelList';
 import { OllamaModel } from '../OllamaModelList';
@@ -84,11 +79,6 @@ interface ProvidersTabProps {
   // Global knowledge
   globalKnowledgeText?: string;
   setGlobalKnowledgeText?: (val: string) => void;
-  // Retained for compatibility with VerticalTabs prop wiring
-  oversightMechanisms: OversightMechanismDefinition[];
-  oversightSettings: OversightMechanismSettings;
-  oversightParameterSettings: OversightMechanismParameterSettings;
-  
 }
 
 export function ProvidersTab({
@@ -162,10 +152,6 @@ export function ProvidersTab({
   setOpenrouterModelId,
   globalKnowledgeText,
   setGlobalKnowledgeText,
-  oversightMechanisms,
-  oversightSettings,
-  oversightParameterSettings,
-  
 }: ProvidersTabProps) {
   return (
     <div className="space-y-6">

@@ -1,4 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { faPlus, faTrash } from '@fortawesome/free-solid-svg-icons';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ConfigManager } from '../background/configManager';
 import type { AuthorityState, ExecutionPhase, ExecutionState, OversightRegime } from '../oversight/runtime/types';
 import {
@@ -13,12 +15,11 @@ import {
   mapStorageToOversightParameterSettings,
   mapStorageToOversightSettings,
 } from '../oversight/registry';
-import { AgentAttentionBar } from './components/AgentAttentionBar';
+import { OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY } from '../options/oversightArchetypes';
 import { ApprovalRequest } from './components/ApprovalRequest';
 import { MessageDisplay } from './components/MessageDisplay';
 import { OutputHeader } from './components/OutputHeader';
 import { PromptForm } from './components/PromptForm';
-import { ProviderSelector } from './components/ProviderSelector';
 import { TaskExecutionGraph } from './components/TaskExecutionGraph';
 import { useChromeMessaging } from './hooks/useChromeMessaging';
 import { useMessageManagement } from './hooks/useMessageManagement';
@@ -27,6 +28,8 @@ import { useTabManagement } from './hooks/useTabManagement';
 
 export function SidePanel() {
   const [activePanel, setActivePanel] = useState<'conversation' | 'oversight'>('conversation');
+  const [selectedArchetypeId, setSelectedArchetypeId] = useState('risk-gated');
+  const [currentPrompt, setCurrentPrompt] = useState('');
   const [mechanismSettings, setMechanismSettings] = useState(createDefaultOversightMechanismSettings);
   const [mechanismParameterSettings, setMechanismParameterSettings] = useState(createDefaultOversightParameterSettings);
 
@@ -104,13 +107,19 @@ export function SidePanel() {
   } | null>(null);
   const [inspectPlanLoading, setInspectPlanLoading] = useState(false);
   const [inspectPlanError, setInspectPlanError] = useState<string | null>(null);
-  const [showInspectPlanModal, setShowInspectPlanModal] = useState(false);
-  const [isEditingPlan, setIsEditingPlan] = useState(false);
   const [editedPlanSteps, setEditedPlanSteps] = useState<string[]>([]);
+  const [editingRemainingPlan, setEditingRemainingPlan] = useState(false);
+  const [showInspectPlanModal, setShowInspectPlanModal] = useState(false);
+  const [remainingPlanDraftSteps, setRemainingPlanDraftSteps] = useState<string[]>([]);
+  const [draggedPlanStepIndex, setDraggedPlanStepIndex] = useState<number | null>(null);
+  const [draggedRemainingStepIndex, setDraggedRemainingStepIndex] = useState<number | null>(null);
+  const [editingPlanStepIndex, setEditingPlanStepIndex] = useState<number | null>(null);
+  const [editingRemainingStepIndex, setEditingRemainingStepIndex] = useState<number | null>(null);
   const [showApprovalOverlay, setShowApprovalOverlay] = useState(true);
   const [softPauseNow, setSoftPauseNow] = useState(Date.now());
   const lastApprovalPromptTsRef = useRef(0);
   const approvalPromptWindowRef = useRef<number[]>([]);
+  const resolvedApprovalIdsRef = useRef<Set<string>>(new Set());
 
   // State to track if any LLM providers are configured
   const [hasConfiguredProviders, setHasConfiguredProviders] = useState<boolean>(false);
@@ -123,9 +132,15 @@ export function SidePanel() {
     };
     const loadFeatureFlags = async () => {
       const result = await chrome.storage.sync.get({
+        [OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY]: 'risk-gated',
         ...getOversightStorageQueryDefaults(),
         ...getOversightParameterStorageQueryDefaults(),
       });
+      setSelectedArchetypeId(
+        typeof result[OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY] === 'string'
+          ? result[OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY]
+          : 'risk-gated'
+      );
       setMechanismSettings(mapStorageToOversightSettings(result as Record<string, unknown>));
       setMechanismParameterSettings(mapStorageToOversightParameterSettings(result as Record<string, unknown>));
     };
@@ -196,7 +211,6 @@ export function SidePanel() {
 
   const {
     taskNodes,
-    agentFocus,
     handleOversightEvent,
     logHumanTelemetry,
     resetRunState,
@@ -209,6 +223,7 @@ export function SidePanel() {
 
   const enableAgentFocus = mechanismSettings[AGENT_FOCUS_MECHANISM_ID];
   const enableTaskGraph = mechanismSettings[TASK_GRAPH_MECHANISM_ID];
+  const isStructuralAmplificationArchetype = selectedArchetypeId === 'structural-amplification';
   const monitoringParams = mechanismParameterSettings[MONITORING_MECHANISM_ID] || {};
   const interventionParams = mechanismParameterSettings[INTERVENTION_GATE_MECHANISM_ID] || {};
   const taskGraphParams = mechanismParameterSettings[TASK_GRAPH_MECHANISM_ID] || {};
@@ -261,9 +276,52 @@ export function SidePanel() {
     taskGraphParams.colorEncoding === 'high_contrast'
       ? taskGraphParams.colorEncoding
       : 'semantic';
+  useEffect(() => {
+    setActivePanel(isStructuralAmplificationArchetype ? 'oversight' : 'conversation');
+  }, [isStructuralAmplificationArchetype]);
   const interruptCooldownMs = Math.max(0, Number(interventionParams.interruptCooldownMs || 0));
   const interruptTopK = Math.max(1, Number(interventionParams.interruptTopK || 999));
   const approvedPlanSteps = approvedPlan?.steps || [];
+  const computePlanStepAssignments = useCallback((planSteps: string[], nodes: typeof taskNodes) => {
+    if (planSteps.length === 0 || nodes.length === 0) return [] as Array<number | null>;
+
+    const tokenize = (value: string) =>
+      value
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter((token) => token.length > 2);
+
+    const planTokens = planSteps.map((step) => new Set(tokenize(step)));
+    let currentPlanIndex = 0;
+
+    return nodes.map((node) => {
+      const nodeText = `${node.toolName} ${node.focusLabel} ${node.thinking || ''}`.trim();
+      const nodeTokens = tokenize(nodeText);
+      if (nodeTokens.length === 0) {
+        return currentPlanIndex < planSteps.length ? currentPlanIndex : planSteps.length - 1;
+      }
+
+      let bestIndex = currentPlanIndex;
+      let bestScore = -1;
+
+      for (let idx = currentPlanIndex; idx < planTokens.length; idx += 1) {
+        const tokens = planTokens[idx];
+        let score = 0;
+        for (const token of nodeTokens) {
+          if (tokens.has(token)) score += 1;
+        }
+        if (idx === currentPlanIndex) score += 0.25;
+        if (score > bestScore) {
+          bestScore = score;
+          bestIndex = idx;
+        }
+      }
+
+      currentPlanIndex = bestIndex;
+      return bestIndex;
+    });
+  }, [taskNodes]);
 
   const handleDownloadTaskGraph = useCallback(() => {
     if (taskNodes.length === 0) return;
@@ -427,6 +485,28 @@ export function SidePanel() {
     addSystemMessage(`⚠️ Dismissed warning: ${requestId} (auto-rejected)`);
   };
 
+  const handleApprovalResolved = useCallback((payload: { requestId: string; approved: boolean }) => {
+    resolvedApprovalIdsRef.current.add(payload.requestId);
+
+    setApprovalRequests((prev) => {
+      const request = prev.find((item) => item.requestId === payload.requestId);
+      if (request) {
+        const stepId = request.stepId || payload.requestId;
+        void logHumanTelemetry('oversight_signal', {
+          kind: 'intervention_decision',
+          stepId,
+          decision: payload.approved ? 'approve' : 'deny',
+        });
+        handleOversightEvent({
+          kind: 'intervention_decision',
+          stepId,
+          decision: payload.approved ? 'approve' : 'deny',
+        });
+      }
+      return prev.filter((item) => item.requestId !== payload.requestId);
+    });
+  }, [handleOversightEvent, logHumanTelemetry]);
+
   // Set up Chrome messaging with callbacks
   const {
     executePrompt,
@@ -437,8 +517,8 @@ export function SidePanel() {
     pauseExecution,
     resumeExecution,
     submitSoftPauseDecision,
-    exitAmplifiedMode,
     submitPlanReviewDecision,
+    updateApprovedPlan,
     runtimeInteractionSignal,
     assessPlanProgress,
   } = useChromeMessaging({
@@ -510,6 +590,9 @@ export function SidePanel() {
       }
 
       window.setTimeout(() => {
+        if (resolvedApprovalIdsRef.current.has(request.requestId)) {
+          return;
+        }
         setApprovalRequests(prev => [...prev, request]);
         const timestamp = Date.now();
         lastApprovalPromptTsRef.current = timestamp;
@@ -519,7 +602,7 @@ export function SidePanel() {
           setShowApprovalOverlay(true);
         }
 
-        if (persistenceMs > 0) {
+        if (persistenceMs > 0 && !isStructuralAmplificationArchetype) {
           window.setTimeout(() => {
             setApprovalRequests((prev) => {
               const exists = prev.some((item) => item.requestId === request.requestId);
@@ -532,6 +615,7 @@ export function SidePanel() {
         }
       }, feedbackLatencyMs);
     },
+    onApprovalResolved: handleApprovalResolved,
     setTabTitle,
     // New event handlers for tab events
     onTabStatusChanged: (status, _tabId) => {
@@ -610,17 +694,21 @@ export function SidePanel() {
     onPlanReviewRequired: (payload) => {
       setPlanReviewRequest(payload);
       setEditedPlanSteps((payload.plan || []).filter((step) => step.trim().length > 0));
-      setIsEditingPlan(false);
-      setActivePanel('oversight');
+      setEditingPlanStepIndex(null);
+      if (isStructuralAmplificationArchetype) {
+        setActivePanel('oversight');
+      }
       addSystemMessage('🧭 Plan review required before execution.');
     },
   });
 
   useEffect(() => {
     if (runtimeStatus.regime === 'deliberative_escalated') {
-      setActivePanel('oversight');
+      if (isStructuralAmplificationArchetype) {
+        setActivePanel('oversight');
+      }
     }
-  }, [runtimeStatus.regime]);
+  }, [runtimeStatus.regime, isStructuralAmplificationArchetype]);
 
   useEffect(() => {
     if (!runtimeStatus.softPause?.active) return;
@@ -631,13 +719,28 @@ export function SidePanel() {
   }, [runtimeStatus.softPause?.active]);
 
   useEffect(() => {
-    if (!showInspectPlanModal) {
-      setInspectPlanLoading(false);
-    }
-  }, [showInspectPlanModal]);
+    if (!editingRemainingPlan) return;
+    setRemainingPlanDraftSteps(remainingPlanTail);
+    setEditingRemainingStepIndex(null);
+  }, [
+    editingRemainingPlan,
+    approvedPlan?.steps,
+    inspectPlanProgress?.currentStepNumber,
+    inspectPlanProgress?.completedCount,
+    approvedPlanSteps,
+  ]);
 
   useEffect(() => {
-    if (!showInspectPlanModal || !approvedPlan || approvedPlan.steps.length === 0) return;
+    if (
+      runtimeStatus.executionState !== 'paused_by_user' &&
+      runtimeStatus.executionState !== 'paused_by_system_soft'
+    ) {
+      setShowInspectPlanModal(false);
+    }
+  }, [runtimeStatus.executionState]);
+
+  useEffect(() => {
+    if (!approvedPlan || approvedPlan.steps.length === 0) return;
     let cancelled = false;
     setInspectPlanLoading(true);
     setInspectPlanError(null);
@@ -676,10 +779,11 @@ export function SidePanel() {
     return () => {
       cancelled = true;
     };
-  }, [showInspectPlanModal, approvedPlan, taskNodes]);
+  }, [approvedPlan, taskNodes]);
 
   const handlePlanReviewApprove = () => {
-    const steps = (planReviewRequest?.plan || []).map((step) => step.trim()).filter(Boolean);
+    const steps = editedPlanSteps.map((step) => step.trim()).filter(Boolean);
+    const originalSteps = (planReviewRequest?.plan || []).map((step) => step.trim()).filter(Boolean);
     if (steps.length > 0) {
       setApprovedPlan({
         summary: planReviewRequest?.planSummary || 'Approved plan.',
@@ -688,18 +792,19 @@ export function SidePanel() {
       setInspectPlanProgress(null);
       setInspectPlanError(null);
     }
-    submitPlanReviewDecision('approve');
-    setPlanReviewRequest(null);
-    setIsEditingPlan(false);
-    setEditedPlanSteps([]);
-    addSystemMessage('✅ Plan approved. Execution continues.');
-  };
-
-  const handlePlanReviewEdit = () => {
-    if (editedPlanSteps.length === 0) {
-      setEditedPlanSteps(['']);
+    const reorderedOrEdited =
+      steps.length !== originalSteps.length || steps.some((step, index) => step !== originalSteps[index]);
+    if (reorderedOrEdited) {
+      const editedPlan = steps.map((step, idx) => `${idx + 1}. ${step}`).join('\n');
+      submitPlanReviewDecision('edit', editedPlan);
+      addSystemMessage('✅ Plan order updated and approved.');
+    } else {
+      submitPlanReviewDecision('approve');
+      addSystemMessage('✅ Plan approved. Execution continues.');
     }
-    setIsEditingPlan(true);
+    setPlanReviewRequest(null);
+    setEditedPlanSteps([]);
+    setEditingPlanStepIndex(null);
   };
 
   const handlePlanStepChange = (index: number, value: string) => {
@@ -707,43 +812,116 @@ export function SidePanel() {
   };
 
   const handlePlanStepAdd = () => {
-    setEditedPlanSteps((prev) => [...prev, '']);
+    setEditedPlanSteps((prev) => {
+      const next = [...prev, ''];
+      setEditingPlanStepIndex(next.length - 1);
+      return next;
+    });
   };
 
   const handlePlanStepRemove = (index: number) => {
     setEditedPlanSteps((prev) => prev.filter((_, idx) => idx !== index));
+    setEditingPlanStepIndex((prev) => {
+      if (prev === null) return null;
+      if (prev === index) return null;
+      return prev > index ? prev - 1 : prev;
+    });
   };
 
-  const handlePlanEditSubmit = () => {
-    const normalized = editedPlanSteps.map((step) => step.trim()).filter(Boolean);
-    if (normalized.length === 0) {
-      addSystemMessage('⚠️ Please keep at least one plan step before submitting edits.');
+  const movePlanStep = (fromIndex: number, toIndex: number) => {
+    setEditedPlanSteps((prev) => {
+      if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= prev.length || toIndex >= prev.length) {
+        return prev;
+      }
+      const next = [...prev];
+      const [item] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, item);
+      return next;
+    });
+    setEditingPlanStepIndex((prev) => {
+      if (prev === null) return null;
+      if (prev === fromIndex) return toIndex;
+      if (fromIndex < toIndex && prev > fromIndex && prev <= toIndex) return prev - 1;
+      if (toIndex < fromIndex && prev >= toIndex && prev < fromIndex) return prev + 1;
+      return prev;
+    });
+  };
+
+  const moveRemainingPlanStep = (fromIndex: number, toIndex: number) => {
+    setRemainingPlanDraftSteps((prev) => {
+      if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= prev.length || toIndex >= prev.length) {
+        return prev;
+      }
+      const next = [...prev];
+      const [item] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, item);
+      return next;
+    });
+    setEditingRemainingStepIndex((prev) => {
+      if (prev === null) return null;
+      if (prev === fromIndex) return toIndex;
+      if (fromIndex < toIndex && prev > fromIndex && prev <= toIndex) return prev - 1;
+      if (toIndex < fromIndex && prev >= toIndex && prev < fromIndex) return prev + 1;
+      return prev;
+    });
+  };
+
+  const handleRemainingPlanStepChange = (index: number, value: string) => {
+    setRemainingPlanDraftSteps((prev) => prev.map((step, idx) => (idx === index ? value : step)));
+  };
+
+  const handleRemainingPlanStepAdd = () => {
+    setRemainingPlanDraftSteps((prev) => {
+      const next = [...prev, ''];
+      setEditingRemainingStepIndex(next.length - 1);
+      return next;
+    });
+  };
+
+  const handleRemainingPlanStepRemove = (index: number) => {
+    setRemainingPlanDraftSteps((prev) => prev.filter((_, idx) => idx !== index));
+    setEditingRemainingStepIndex((prev) => {
+      if (prev === null) return null;
+      if (prev === index) return null;
+      return prev > index ? prev - 1 : prev;
+    });
+  };
+
+  const handleRemainingPlanSubmit = async () => {
+    if (!approvedPlan) return;
+    const normalizedTail = remainingPlanDraftSteps.map((step) => step.trim()).filter(Boolean);
+    const mergedSteps = [...remainingPlanPrefix, ...normalizedTail];
+    if (mergedSteps.length === 0) {
+      addSystemMessage('⚠️ Please keep at least one remaining plan step.');
       return;
     }
-    const editedPlan = normalized.map((step, idx) => `${idx + 1}. ${step}`).join('\n');
+    const editedPlan = [
+      `Plan Summary: ${approvedPlan.summary}`,
+      ...mergedSteps.map((step, idx) => `Step ${idx + 1}: ${step}`),
+    ].join('\n');
+    const response = await updateApprovedPlan(editedPlan);
+    if (!response?.success) {
+      addSystemMessage(`⚠️ Failed to update the remaining plan: ${response?.error || 'unknown error'}`);
+      return;
+    }
     runtimeInteractionSignal('edit_intermediate_output');
-    submitPlanReviewDecision('edit', editedPlan);
     setApprovedPlan({
-      summary: planReviewRequest?.planSummary || 'Edited plan.',
-      steps: normalized,
+      summary: approvedPlan.summary,
+      steps: mergedSteps,
     });
-    setInspectPlanProgress(null);
-    setInspectPlanError(null);
-    setPlanReviewRequest(null);
-    setIsEditingPlan(false);
-    setEditedPlanSteps([]);
-    addSystemMessage(`✏️ Plan edited with ${normalized.length} steps.`);
+    setEditingRemainingPlan(false);
+    setEditingRemainingStepIndex(null);
+    addSystemMessage('✏️ Updated the remaining plan steps. The agent will follow the revised order after resume.');
   };
 
   const handlePlanReviewReject = () => {
     submitPlanReviewDecision('reject');
     setApprovedPlan(null);
-    setShowInspectPlanModal(false);
     setInspectPlanProgress(null);
     setInspectPlanError(null);
     setPlanReviewRequest(null);
-    setIsEditingPlan(false);
     setEditedPlanSteps([]);
+    setEditingPlanStepIndex(null);
     setIsProcessing(false);
     addSystemMessage('❌ Plan rejected. Execution terminated.');
   };
@@ -751,9 +929,9 @@ export function SidePanel() {
   // Handle form submission
   const handleSubmit = async (prompt: string) => {
     setIsProcessing(true);
+    setCurrentPrompt(prompt);
     setHaltReason(null);
     setApprovedPlan(null);
-    setShowInspectPlanModal(false);
     setInspectPlanProgress(null);
     setInspectPlanError(null);
     // Update the tab status to running
@@ -762,7 +940,7 @@ export function SidePanel() {
 
     // Add a system message to indicate a new prompt
     addSystemMessage(`New prompt: "${prompt}"`);
-    setActivePanel('conversation');
+    setActivePanel(isStructuralAmplificationArchetype ? 'oversight' : 'conversation');
 
     try {
       await executePrompt(prompt);
@@ -816,7 +994,6 @@ export function SidePanel() {
     clearOversightState();
     setHaltReason(null);
     setApprovedPlan(null);
-    setShowInspectPlanModal(false);
     setInspectPlanProgress(null);
     setInspectPlanError(null);
   };
@@ -828,35 +1005,32 @@ export function SidePanel() {
   };
 
   const pendingApprovalCount = approvalRequests.length;
-  const shouldShowBadge = pendingApprovalCount > 0 && (notificationModality === 'badge' || notificationModality === 'mixed');
-  const shouldShowOverlay = pendingApprovalCount > 0 && (notificationModality === 'modal' || notificationModality === 'mixed' || showApprovalOverlay);
+  const shouldShowBadge =
+    !isStructuralAmplificationArchetype &&
+    pendingApprovalCount > 0 &&
+    (notificationModality === 'badge' || notificationModality === 'mixed');
+  const shouldShowOverlay =
+    !isStructuralAmplificationArchetype &&
+    pendingApprovalCount > 0 &&
+    (notificationModality === 'modal' || notificationModality === 'mixed' || showApprovalOverlay);
   const canPause = runtimeStatus.executionState === 'running';
   const canResume =
     runtimeStatus.executionState === 'paused_by_user' ||
     runtimeStatus.executionState === 'paused_by_system' ||
     runtimeStatus.executionState === 'paused_by_system_soft';
-  const amplificationReasonText =
-    runtimeStatus.amplification?.enteredReason === 'inspect_plan'
-      ? 'Inspect Plan'
-      : runtimeStatus.amplification?.enteredReason === 'rapid_trace_inspection'
-        ? 'Rapid Trace Inspection'
-        : runtimeStatus.amplification?.enteredReason === 'pause_resume_rapid'
-          ? 'Rapid Pause/Resume'
-          : 'Unknown';
-  const isAmplified = runtimeStatus.amplification?.state === 'amplified';
-  const handleAmplifiedToggle = (checked: boolean) => {
-    if (checked) {
-      runtimeInteractionSignal('inspect_plan');
-      return;
-    }
-    exitAmplifiedMode();
-  };
   const inspectPlanView = inspectPlanProgress ?? {
     completedCount: 0,
     currentStepNumber: 0,
     isFullyCompleted: false,
     steps: approvedPlanSteps.map(() => ({ status: 'pending' as const, reason: 'Awaiting LLM assessment.' })),
   };
+  const currentPlanStepIndex = Math.max(0, inspectPlanView.currentStepNumber > 0 ? inspectPlanView.currentStepNumber - 1 : inspectPlanView.completedCount);
+  const remainingPlanPrefix = approvedPlanSteps.slice(0, currentPlanStepIndex);
+  const remainingPlanTail = approvedPlanSteps.slice(currentPlanStepIndex);
+  const taskNodePlanIndices = useMemo(
+    () => computePlanStepAssignments(approvedPlanSteps, taskNodes),
+    [approvedPlanSteps, taskNodes, computePlanStepAssignments]
+  );
 
   return (
     <div className="morph-shell flex h-screen flex-col bg-base-200/60">
@@ -864,14 +1038,14 @@ export function SidePanel() {
         <>
           <div className="morph-surface flex min-h-0 flex-1 flex-col overflow-hidden bg-base-100">
             <OutputHeader
+              onOpenOptions={navigateToOptions}
               onClearHistory={handleClearHistory}
               onDownloadTaskGraph={handleDownloadTaskGraph}
               canDownloadTaskGraph={taskNodes.length > 0}
               isProcessing={isProcessing}
             />
             <div className="px-3 pt-2">
-              <div className="flex items-center justify-between gap-2">
-                <ProviderSelector isProcessing={isProcessing} />
+              <div className="flex items-start justify-between gap-2">
                 {shouldShowBadge ? (
                   <button
                     className="btn btn-warning btn-xs"
@@ -882,55 +1056,27 @@ export function SidePanel() {
                   </button>
                 ) : null}
               </div>
+            </div>
 
-              <div className="morph-status-strip mt-2 bg-base-200/60 text-xs">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {approvedPlanSteps.length > 0 ? (
-                    <button
-                      className="btn btn-xs btn-outline"
-                      onClick={() => {
-                        runtimeInteractionSignal('inspect_plan');
-                        setShowInspectPlanModal(true);
-                      }}
-                      type="button"
-                    >
-                      Inspect Plan
-                    </button>
-                  ) : null}
-                  <label className="ml-auto flex items-center gap-2 rounded-md border border-base-300 px-2 py-1">
-                    <span className="text-xs font-medium text-base-content/80">Amplified Mode</span>
-                    <input
-                      type="checkbox"
-                      className="toggle toggle-warning toggle-xs"
-                      checked={isAmplified}
-                      onChange={(e) => handleAmplifiedToggle(e.target.checked)}
-                    />
-                    <span className="text-[11px] text-base-content/60">{isAmplified ? 'ON' : 'OFF'}</span>
-                  </label>
-                  {isAmplified ? (
-                    <span className="text-[11px] text-base-content/70">Entered because: {amplificationReasonText}</span>
-                  ) : null}
-                </div>
+            {approvedPlan &&
+            (runtimeStatus.executionState === 'paused_by_user' || runtimeStatus.executionState === 'paused_by_system_soft') ? (
+              <div className="mx-3 mb-2 flex justify-end">
+                <button
+                  className="inline-flex items-center gap-2 rounded-full border border-base-300 bg-base-100 px-3 py-1.5 text-xs font-medium text-base-content shadow-sm transition hover:border-warning/40 hover:bg-base-100/90"
+                  onClick={() => {
+                    runtimeInteractionSignal('inspect_plan');
+                    setRemainingPlanDraftSteps(remainingPlanTail);
+                    setEditingRemainingStepIndex(null);
+                    setEditingRemainingPlan(false);
+                    setShowInspectPlanModal(true);
+                  }}
+                  type="button"
+                >
+                  <span className="h-2 w-2 rounded-full bg-warning" />
+                  Plan Studio
+                </button>
               </div>
-            </div>
-
-            <div className="morph-tabbar mx-3 mt-2 mb-2 flex gap-2 bg-base-200">
-              <button
-                className={`btn btn-sm flex-1 rounded-lg ${activePanel === 'conversation' ? 'btn-primary' : 'btn-ghost'}`}
-                onClick={() => setActivePanel('conversation')}
-              >
-                Conversation
-              </button>
-              <button
-                className={`btn btn-sm flex-1 rounded-lg ${activePanel === 'oversight' ? 'btn-primary' : 'btn-ghost'}`}
-                onClick={() => {
-                  setActivePanel('oversight');
-                  runtimeInteractionSignal('open_oversight_tab');
-                }}
-              >
-                Oversight
-              </button>
-            </div>
+            ) : null}
 
             {haltReason ? (
               <div className="mx-3 mb-2 rounded-md border border-warning/40 bg-warning/15 px-3 py-2 text-xs text-warning-content">
@@ -963,7 +1109,7 @@ export function SidePanel() {
               </div>
             ) : null}
 
-            {activePanel === 'conversation' && (
+            {!isStructuralAmplificationArchetype && activePanel === 'conversation' && (
               <div
                 ref={outputRef}
                 className="morph-scroll min-h-0 flex-1 overflow-auto"
@@ -976,16 +1122,18 @@ export function SidePanel() {
               </div>
             )}
 
-            {activePanel === 'oversight' && (
+            {isStructuralAmplificationArchetype && activePanel === 'oversight' && (
               <div className="morph-scroll min-h-0 flex-1 overflow-auto">
-                {enableAgentFocus && agentFocus.state === 'active' && (
-                  <AgentAttentionBar
-                    state={agentFocus.state}
-                    toolName={agentFocus.toolName}
-                    focusLabel={agentFocus.focusLabel}
-                    updatedAt={agentFocus.updatedAt}
-                  />
-                )}
+                {currentPrompt ? (
+                  <div className="mx-3 mb-3 rounded-2xl border border-base-300 bg-base-100/90 px-3 py-3">
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-base-content/45">
+                      Your Request
+                    </div>
+                    <div className="text-sm leading-6 text-base-content/85">
+                      {currentPrompt}
+                    </div>
+                  </div>
+                ) : null}
                 {enableTaskGraph && (
                   <TaskExecutionGraph
                     nodes={taskNodes}
@@ -1037,86 +1185,92 @@ export function SidePanel() {
             <div className="pointer-events-none fixed inset-x-4 bottom-44 z-40">
               <div className="pointer-events-auto flex max-h-[62vh] flex-col rounded-lg border border-warning/40 bg-base-100 p-4 shadow-xl">
                 <div className="mb-2 text-sm font-semibold">Plan Review</div>
-                <div className="mb-2 text-xs text-base-content/80 whitespace-pre-wrap">{planReviewRequest.planSummary}</div>
-                {planReviewRequest.plan && planReviewRequest.plan.length > 0 ? (
+                <div className="mb-2 text-xs whitespace-pre-wrap text-base-content/80">{planReviewRequest.planSummary}</div>
+                {editedPlanSteps.length > 0 ? (
                   <div className="mb-3 flex-1 space-y-2 overflow-y-auto pr-1">
-                    {(isEditingPlan ? editedPlanSteps : planReviewRequest.plan).map((line, idx) => (
-                      <div key={`plan-line-${idx}`} className="grid grid-cols-[64px_1fr] items-start gap-2">
+                    {editedPlanSteps.map((line, idx) => (
+                      <div
+                        key={`plan-line-${idx}`}
+                        className={`grid grid-cols-[64px_1fr_auto] items-start gap-2 rounded-md border border-transparent p-1 transition ${draggedPlanStepIndex === idx ? 'bg-base-200/70' : 'hover:border-base-300/80'}`}
+                        draggable
+                        onDragStart={() => setDraggedPlanStepIndex(idx)}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={() => {
+                          if (draggedPlanStepIndex === null) return;
+                          movePlanStep(draggedPlanStepIndex, idx);
+                          setDraggedPlanStepIndex(null);
+                        }}
+                        onDragEnd={() => setDraggedPlanStepIndex(null)}
+                      >
                         <div className="pt-2 text-xs font-semibold text-base-content/80">Step {idx + 1}</div>
-                        {isEditingPlan ? (
-                          <div className="space-y-1">
-                            <textarea
-                              className="textarea textarea-bordered w-full resize-y text-xs max-h-36"
-                              value={line}
-                              onChange={(e) => handlePlanStepChange(idx, e.target.value)}
-                              rows={2}
-                            />
-                            <div className="flex justify-end">
-                              <button
-                                className="btn btn-ghost btn-xs text-error"
-                                onClick={() => handlePlanStepRemove(idx)}
-                                type="button"
-                                disabled={editedPlanSteps.length <= 1}
-                              >
-                                Remove
-                              </button>
-                            </div>
-                          </div>
+                        {editingPlanStepIndex === idx ? (
+                          <textarea
+                            autoFocus
+                            className="textarea textarea-bordered min-h-[5rem] w-full resize-y text-xs"
+                            value={line}
+                            onBlur={() => setEditingPlanStepIndex(null)}
+                            onChange={(e) => handlePlanStepChange(idx, e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Escape') {
+                                setEditingPlanStepIndex(null);
+                              }
+                            }}
+                            rows={3}
+                          />
                         ) : (
-                          <div className="rounded-md bg-base-200 px-3 py-2 text-xs text-base-content/90 whitespace-pre-wrap">
-                            {line}
-                          </div>
+                          <button
+                            type="button"
+                            onDoubleClick={() => setEditingPlanStepIndex(idx)}
+                            className="min-h-[5rem] rounded-md bg-base-200 px-3 py-2 text-left text-xs text-base-content/90 transition hover:bg-base-200/80"
+                            title="Double-click to edit this step"
+                          >
+                            {line.trim() || 'Double-click to add this step.'}
+                          </button>
                         )}
+                        <div className="pt-1">
+                          <button
+                            className="btn btn-ghost btn-xs text-error hover:bg-error/10"
+                            onClick={() => handlePlanStepRemove(idx)}
+                            type="button"
+                            aria-label={`Delete step ${idx + 1}`}
+                          >
+                            <FontAwesomeIcon icon={faTrash} />
+                          </button>
+                        </div>
                       </div>
                     ))}
-                  </div>
-                ) : null}
-                <div className="shrink-0 border-t border-base-300 pt-3 flex flex-wrap gap-2">
-                  {!isEditingPlan ? (
                     <button
-                      className="btn btn-xs btn-success min-w-[110px] flex-1"
-                      onClick={handlePlanReviewApprove}
+                      className="flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-base-300 px-3 py-2 text-xs font-medium text-base-content/70 transition hover:border-warning/40 hover:text-base-content"
+                      onClick={handlePlanStepAdd}
                       type="button"
                     >
-                      Approve Plan
-                    </button>
-                  ) : null}
-                  {!isEditingPlan ? (
-                    <button className="btn btn-xs btn-error min-w-[110px] flex-1" onClick={handlePlanReviewReject} type="button">
-                      Reject Plan
-                    </button>
-                  ) : null}
-                  {!isEditingPlan ? (
-                    <button
-                      className="btn btn-xs btn-warning min-w-[110px] flex-1"
-                      onClick={handlePlanReviewEdit}
-                      type="button"
-                    >
-                      Edit Plan
-                    </button>
-                  ) : null}
-                  {isEditingPlan ? (
-                    <button className="btn btn-xs btn-outline min-w-[110px] flex-1" onClick={handlePlanStepAdd} type="button">
+                      <FontAwesomeIcon icon={faPlus} />
                       Add Step
                     </button>
-                  ) : null}
-                  {isEditingPlan ? (
-                    <button className="btn btn-xs btn-warning min-w-[110px] flex-1" onClick={handlePlanEditSubmit} type="button">
-                      Save Edits
-                    </button>
-                  ) : null}
-                  {isEditingPlan ? (
+                  </div>
+                ) : (
+                  <div className="mb-3">
                     <button
-                      className="btn btn-xs btn-ghost min-w-[110px] flex-1"
-                      onClick={() => {
-                        setIsEditingPlan(false);
-                        setEditedPlanSteps((planReviewRequest.plan || []).filter((step) => step.trim().length > 0));
-                      }}
+                      className="flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-base-300 px-3 py-3 text-xs font-medium text-base-content/70 transition hover:border-warning/40 hover:text-base-content"
+                      onClick={handlePlanStepAdd}
                       type="button"
                     >
-                      Cancel Edit
+                      <FontAwesomeIcon icon={faPlus} />
+                      Add Step
                     </button>
-                  ) : null}
+                  </div>
+                )}
+                <div className="shrink-0 flex flex-wrap gap-2 border-t border-base-300 pt-3">
+                  <button
+                    className="btn btn-xs btn-success min-w-[110px] flex-1"
+                    onClick={handlePlanReviewApprove}
+                    type="button"
+                  >
+                    Approve Plan
+                  </button>
+                  <button className="btn btn-xs btn-error min-w-[110px] flex-1" onClick={handlePlanReviewReject} type="button">
+                    Reject Plan
+                  </button>
                 </div>
               </div>
             </div>
@@ -1124,65 +1278,183 @@ export function SidePanel() {
 
           {showInspectPlanModal && approvedPlan ? (
             <div className="pointer-events-none fixed inset-x-4 bottom-44 z-40">
-              <div className="pointer-events-auto flex max-h-[62vh] flex-col rounded-lg border border-primary/40 bg-base-100 p-4 shadow-xl">
-                <div className="mb-1 flex items-center justify-between gap-2">
-                  <div className="text-sm font-semibold">Inspect Plan</div>
+              <div className="pointer-events-auto flex max-h-[62vh] flex-col rounded-lg border border-base-300 bg-base-100 p-4 shadow-xl">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="text-sm font-semibold">Plan Studio</div>
                   <button
                     className="btn btn-xs btn-ghost"
-                    onClick={() => setShowInspectPlanModal(false)}
+                    onClick={() => {
+                      setShowInspectPlanModal(false);
+                      setEditingRemainingPlan(false);
+                      setRemainingPlanDraftSteps(remainingPlanTail);
+                      setEditingRemainingStepIndex(null);
+                    }}
                     type="button"
                   >
                     Close
                   </button>
                 </div>
-                <div className="mb-2 text-xs text-base-content/80 whitespace-pre-wrap">{approvedPlan.summary}</div>
+                <div className="mb-2 text-xs whitespace-pre-wrap text-base-content/75">{approvedPlan.summary}</div>
+                <div className="mb-3 flex gap-2">
+                  <button
+                    className={`btn btn-xs ${!editingRemainingPlan ? 'btn-primary' : 'btn-ghost'}`}
+                    onClick={() => setEditingRemainingPlan(false)}
+                    type="button"
+                  >
+                    Overview
+                  </button>
+                  <button
+                    className={`btn btn-xs ${editingRemainingPlan ? 'btn-warning' : 'btn-ghost'}`}
+                    onClick={() => {
+                      setRemainingPlanDraftSteps(remainingPlanTail);
+                      setEditingRemainingStepIndex(null);
+                      setEditingRemainingPlan(true);
+                    }}
+                    type="button"
+                  >
+                    Edit Remaining
+                  </button>
+                </div>
                 {inspectPlanLoading ? (
-                  <div className="mb-2 text-xs text-base-content/70">Assessing progress with model...</div>
+                  <div className="mb-2 text-xs text-base-content/60">Assessing plan progress...</div>
                 ) : null}
                 {inspectPlanError ? (
-                  <div className="mb-2 text-xs text-warning">LLM assessment error: {inspectPlanError}</div>
+                  <div className="mb-2 text-xs text-warning">Plan assessment error: {inspectPlanError}</div>
                 ) : null}
-                <div className="mb-3 rounded-md border border-base-300 bg-base-200 px-3 py-2 text-xs text-base-content/80">
-                  <div>Completed: {inspectPlanView.completedCount}/{approvedPlan.steps.length}</div>
-                  <div>
-                    Current:{' '}
-                    {inspectPlanView.isFullyCompleted
-                      ? 'Done'
-                      : inspectPlanView.currentStepNumber > 0
-                        ? `Step ${inspectPlanView.currentStepNumber}`
-                        : 'Unclear'}
-                  </div>
-                </div>
-                <div className="mb-3 flex-1 space-y-2 overflow-y-auto pr-1">
-                  {approvedPlan.steps.map((line, idx) => {
-                    const progress = inspectPlanView.steps[idx];
-                    const statusLabel = progress?.status || 'pending';
-                    const statusClass = statusLabel === 'completed'
-                      ? 'badge badge-success badge-xs'
-                      : statusLabel === 'current'
-                        ? 'badge badge-info badge-xs'
-                        : 'badge badge-ghost badge-xs';
-                    return (
-                      <div key={`inspect-plan-${idx}`} className="grid grid-cols-[64px_1fr] items-start gap-2">
-                        <div className="pt-1 text-xs font-semibold text-base-content/80">Step {idx + 1}</div>
-                        <div className="rounded-md bg-base-200 px-3 py-2 text-xs text-base-content/90">
-                          <div className="mb-1">
-                            <span className={statusClass}>{statusLabel}</span>
+                {!editingRemainingPlan ? (
+                  <div className="space-y-3 overflow-y-auto pr-1">
+                    {approvedPlan.steps.map((step, idx) => {
+                      const progress = inspectPlanView.steps[idx];
+                      const linkedActualSteps = taskNodes
+                        .map((node, nodeIndex) => ({ node, nodeIndex }))
+                        .filter(({ nodeIndex }) => taskNodePlanIndices[nodeIndex] === idx);
+                      return (
+                        <div key={`inspect-plan-${idx}`} className="rounded-lg border border-base-300 bg-base-100/80 px-3 py-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-xs font-semibold uppercase tracking-[0.12em] text-base-content/50">
+                              Plan {idx + 1}
+                            </div>
+                            {progress ? (
+                              <span
+                                className={`badge badge-xs ${
+                                  progress.status === 'completed'
+                                    ? 'badge-success'
+                                    : progress.status === 'current'
+                                      ? 'badge-info'
+                                      : 'badge-ghost'
+                                }`}
+                              >
+                                {progress.status}
+                              </span>
+                            ) : null}
                           </div>
-                          <div className="whitespace-pre-wrap">{line}</div>
+                          <div className="mt-2 text-sm leading-6 text-base-content">{step}</div>
                           {progress?.reason ? (
-                            <div className="mt-1 text-[11px] text-base-content/70 whitespace-pre-wrap">
-                              reason: {progress.reason}
+                            <div className="mt-2 text-xs leading-5 text-base-content/65">
+                              {progress.reason}
+                            </div>
+                          ) : null}
+                          {linkedActualSteps.length > 0 ? (
+                            <div className="mt-3 border-t border-base-300 pt-2 text-xs leading-5 text-base-content/65">
+                              {linkedActualSteps.length === 1
+                                ? `1 executed step is currently mapped here.`
+                                : `${linkedActualSteps.length} executed steps are currently mapped here.`}
                             </div>
                           ) : null}
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="overflow-y-auto pr-1">
+                    <div className="mb-3 text-xs text-base-content/70">
+                      Steps before {currentPlanStepIndex + 1} stay fixed. Double-click a step to edit it, drag to reorder it, or remove steps you no longer want.
+                    </div>
+                    <div className="space-y-2">
+                      {remainingPlanDraftSteps.map((step, idx) => (
+                        <div
+                          key={`remaining-step-${idx}`}
+                          className={`grid grid-cols-[64px_1fr_auto] items-start gap-2 rounded-md border border-transparent p-1 transition ${draggedRemainingStepIndex === idx ? 'bg-base-200/70' : 'hover:border-base-300/80'}`}
+                          draggable
+                          onDragStart={() => setDraggedRemainingStepIndex(idx)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={() => {
+                            if (draggedRemainingStepIndex === null) return;
+                            moveRemainingPlanStep(draggedRemainingStepIndex, idx);
+                            setDraggedRemainingStepIndex(null);
+                          }}
+                          onDragEnd={() => setDraggedRemainingStepIndex(null)}
+                        >
+                          <div className="pt-2 text-xs font-semibold text-base-content/70">
+                            Step {remainingPlanPrefix.length + idx + 1}
+                          </div>
+                          {editingRemainingStepIndex === idx ? (
+                            <textarea
+                              autoFocus
+                              className="textarea textarea-bordered min-h-[5rem] w-full resize-y text-xs"
+                              value={step}
+                              onBlur={() => setEditingRemainingStepIndex(null)}
+                              onChange={(e) => handleRemainingPlanStepChange(idx, e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Escape') {
+                                  setEditingRemainingStepIndex(null);
+                                }
+                              }}
+                              rows={3}
+                            />
+                          ) : (
+                            <button
+                              type="button"
+                              onDoubleClick={() => setEditingRemainingStepIndex(idx)}
+                              className="min-h-[5rem] rounded-md border border-base-300 bg-base-200/60 px-3 py-2 text-left text-xs text-base-content/90 transition hover:border-warning/40 hover:bg-base-200"
+                              title="Double-click to edit this step"
+                            >
+                              {step.trim() || 'Double-click to add this step.'}
+                            </button>
+                          )}
+                          <div className="pt-1">
+                            <button
+                              className="btn btn-ghost btn-xs text-error hover:bg-error/10"
+                              onClick={() => handleRemainingPlanStepRemove(idx)}
+                              type="button"
+                              aria-label={`Delete step ${remainingPlanPrefix.length + idx + 1}`}
+                            >
+                              <FontAwesomeIcon icon={faTrash} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                      <button
+                        className="flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-base-300 px-3 py-2 text-xs font-medium text-base-content/70 transition hover:border-warning/40 hover:text-base-content"
+                        onClick={handleRemainingPlanStepAdd}
+                        type="button"
+                      >
+                        <FontAwesomeIcon icon={faPlus} />
+                        Add Step
+                      </button>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button className="btn btn-xs btn-warning" onClick={handleRemainingPlanSubmit} type="button">
+                        Save Remaining Plan
+                      </button>
+                      <button
+                        className="btn btn-xs btn-ghost"
+                        onClick={() => {
+                          setEditingRemainingPlan(false);
+                          setRemainingPlanDraftSteps(remainingPlanTail);
+                          setEditingRemainingStepIndex(null);
+                        }}
+                        type="button"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           ) : null}
+
 
           <div className="pb-1">
             <PromptForm

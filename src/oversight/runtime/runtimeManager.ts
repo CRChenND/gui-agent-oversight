@@ -402,7 +402,7 @@ class OversightRuntimeManager {
       traceExpansionWindowMs: 8000,
       inactivityExitSteps: 3,
       intentRefreshEverySteps: 3,
-      softPauseDurationMs: 2500,
+      softPauseDurationMs: 0,
       intentRefreshAutoConfirmMs: 1500,
     };
 
@@ -665,7 +665,10 @@ class OversightRuntimeManager {
       });
     }
 
-    const timeoutMs = Math.max(2000, Math.min(3000, config.softPauseDurationMs));
+    const timeoutMs = Math.max(0, Number(config.softPauseDurationMs || 0));
+    if (timeoutMs <= 0) {
+      return { allowed: true };
+    }
     const startedAt = Date.now();
     const endsAt = startedAt + timeoutMs;
 

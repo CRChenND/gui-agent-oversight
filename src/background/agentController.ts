@@ -5,8 +5,10 @@ import { ExecutionCallbacks } from "../agent/ExecutionEngine";
 import { contextTokenCount } from "../agent/TokenManager";
 import { registerThinkingDispatch } from "../agent/thinking/thinkingEmitter";
 import { createProvider } from "../models/providers/factory";
+import { setCurrentPage } from "../agent/PageContextManager";
 import {
   AGENT_FOCUS_MECHANISM_ID,
+  DEFAULT_STRUCTURAL_AMPLIFICATION_STEP_DELAY_MS,
   INTERVENTION_GATE_MECHANISM_ID,
   MONITORING_MECHANISM_ID,
   STRUCTURAL_AMPLIFICATION_MECHANISM_ID,
@@ -44,6 +46,7 @@ import {
   signalStreamingComplete
 } from "./streamingManager";
 import { 
+  attachToTab,
   getCurrentTabId, 
   getTabState, 
   setTabState, 
@@ -273,6 +276,39 @@ export async function assessPlanProgress(args: {
 
   const raw = await collectModelText(systemPrompt, [{ role: 'user', content: userPrompt }]);
   return parsePlanProgressAssessment(raw, planSteps.length);
+}
+
+export async function updateApprovedPlanGuidance(args: {
+  tabId?: number;
+  windowId?: number;
+  editedPlan: string;
+}): Promise<void> {
+  const windowId = args.windowId ?? (args.tabId ? getWindowForTab(args.tabId) : undefined);
+  if (!windowId) {
+    throw new Error('No window available for approved plan update.');
+  }
+
+  const agent = getAgentForWindow(windowId);
+  if (!agent) {
+    throw new Error(`No active agent for window ${windowId}.`);
+  }
+
+  const promptManager = (agent as any).promptManager;
+  if (typeof (agent as any).updateApprovedPlanGuidanceDuringRun === 'function') {
+    (agent as any).updateApprovedPlanGuidanceDuringRun(args.editedPlan || '');
+  } else if (promptManager && typeof promptManager.setApprovedPlanGuidance === 'function') {
+    promptManager.setApprovedPlanGuidance(args.editedPlan || '');
+  } else {
+    throw new Error('Prompt manager unavailable for approved plan update.');
+  }
+
+  const tabId = args.tabId ?? getCurrentTabId() ?? undefined;
+  if (tabId) {
+    sendUIMessage('updateOutput', {
+      type: 'system',
+      content: '✏️ Updated remaining plan guidance. The agent will use this revised plan for next steps.',
+    }, tabId, windowId);
+  }
 }
 
 /**
@@ -693,9 +729,6 @@ export async function executePrompt(
         }, targetTabId);
       }
       
-      // Import the attachToTab function dynamically to avoid circular dependencies
-      const { attachToTab } = await import('./tabManager');
-      
       // Attach to the tab
       const attachResult = await attachToTab(targetTabId);
       
@@ -751,7 +784,6 @@ export async function executePrompt(
     
     // Update PageContextManager with the new page
     try {
-      const { setCurrentPage } = await import('../agent/PageContextManager');
       setCurrentPage(updatedTabState.page);
       logWithTimestamp(`Updated PageContextManager with page for tab ${targetTabId} in executePrompt`);
     } catch (error) {
@@ -821,6 +853,9 @@ export async function executePrompt(
     const monitoringParameters = parameterSettings[MONITORING_MECHANISM_ID] || {};
     const interventionParameters = parameterSettings[INTERVENTION_GATE_MECHANISM_ID] || {};
     const structuralParameters = parameterSettings[STRUCTURAL_AMPLIFICATION_MECHANISM_ID] || {};
+    const enableStructuralAmplification =
+      mechanismSettings[STRUCTURAL_AMPLIFICATION_MECHANISM_ID] &&
+      structuralParameters.enableStructuralAmplification !== false;
     const rawControlMode = mechanismStorage[controlModeKey];
     const rawGatePolicy = mechanismStorage[gatePolicyKey];
     const controlMode =
@@ -898,6 +933,12 @@ export async function executePrompt(
     
     // Create callbacks for the agent
     let currentToolCall: { stepId: string; toolName: string; toolInput: string } | null = null;
+    const latestThinkingByStepId = new Map<string, string>();
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const getThinkingTypingDurationMs = (thinking: string) => {
+      const normalized = thinking.trim();
+      return Math.ceil(normalized.length / 2) * 18;
+    };
 
     const callbacks: ExecutionCallbacks = {
       onLlmChunk: (chunk) => {
@@ -1092,6 +1133,8 @@ export async function executePrompt(
           toolName,
           toolInput,
           enableAgentFocus,
+          thinking: latestThinkingByStepId.get(stepId) || '',
+          enableThinkingOverlay: enableStructuralAmplification,
         });
 
         if (useStreaming) {
@@ -1101,6 +1144,11 @@ export async function executePrompt(
           // Start a new segment for after the tool execution
           startNewSegment(getCurrentSegmentId(), targetTabId, windowId);
         }
+      },
+      onAfterToolStart: async ({ stepId, thinking }) => {
+        if (!enableStructuralAmplification) return;
+        const resolvedThinking = (thinking || latestThinkingByStepId.get(stepId) || '').trim();
+        await wait(getThinkingTypingDurationMs(resolvedThinking) + DEFAULT_STRUCTURAL_AMPLIFICATION_STEP_DELAY_MS);
       },
       onComplete: () => {
         // Get the window ID for this tab
@@ -1176,6 +1224,7 @@ export async function executePrompt(
 
     registerThinkingDispatch((event) => {
       if (event.kind !== 'agent_thinking') return;
+      latestThinkingByStepId.set(event.stepId, event.thinking.rationale || event.thinking.goal || '');
       void handleAgentThinking({
         tabId: targetTabId,
         windowId: updatedTabState.windowId,

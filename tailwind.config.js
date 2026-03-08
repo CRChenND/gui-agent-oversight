@@ -16,6 +16,7 @@ export default {
     base: true,
     styled: true,
     utils: true,
+    exclude: ["properties", "radialprogress"],
     logs: true,
   }
 }

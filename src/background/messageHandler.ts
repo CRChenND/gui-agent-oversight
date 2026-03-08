@@ -4,10 +4,12 @@ import { cancelExecution } from './agentController';
 import { clearMessageHistory } from './agentController';
 import { initializeAgent } from './agentController';
 import { assessPlanProgress } from './agentController';
+import { getAgentStatus, updateApprovedPlanGuidance } from './agentController';
 import { attachToTab, getTabState, getWindowForTab, forceResetPlaywright } from './tabManager';
+import { clearAttentionOverlay } from './attentionTracker';
 import { getOversightRuntimeManager } from '../oversight/runtime/runtimeManager';
 import { BackgroundMessage } from './types';
-import { logWithTimestamp, handleError } from './utils';
+import { logWithTimestamp, handleError, sendUIMessage } from './utils';
 
 /**
  * Handle messages from the UI
@@ -63,6 +65,26 @@ export function handleMessage(
         
       case 'approvalResponse':
         handleApprovalResponse(message.requestId, message.approved);
+        if (message.tabId) {
+          const page = getTabState(message.tabId)?.page;
+          if (page) {
+            void clearAttentionOverlay(page).catch((error) => {
+              logWithTimestamp(
+                `Failed to clear attention overlay after approval response: ${error instanceof Error ? error.message : String(error)}`,
+                'warn'
+              );
+            });
+          }
+        }
+        sendUIMessage(
+          'approvalResolved',
+          {
+            requestId: message.requestId,
+            approved: message.approved,
+          },
+          message.tabId,
+          message.windowId
+        );
         sendResponse({ success: true });
         return true;
         
@@ -129,6 +151,9 @@ export function handleMessage(
         return true;
       case 'planReviewDecision':
         handlePlanReviewDecision(message, sendResponse);
+        return true;
+      case 'updateApprovedPlan':
+        handleUpdateApprovedPlan(message, sendResponse);
         return true;
       case 'runtimeInteractionSignal':
         handleRuntimeInteractionSignal(message, sendResponse);
@@ -197,6 +222,7 @@ function isBackgroundMessage(message: any): message is BackgroundMessage {
       message.action === 'releaseControl' ||
       message.action === 'resolveEscalation' ||
       message.action === 'planReviewDecision' ||
+      message.action === 'updateApprovedPlan' ||
       message.action === 'runtimeInteractionSignal' ||
       message.action === 'softPauseDecision' ||
       message.action === 'exitAmplifiedMode' ||
@@ -289,6 +315,22 @@ function handlePlanReviewDecision(
     })
     .then((resolved) => sendResponse({ success: resolved }))
     .catch((error) => sendResponse({ success: false, error: String(error) }));
+}
+
+function handleUpdateApprovedPlan(
+  message: { tabId?: number; windowId?: number; editedPlan?: string },
+  sendResponse: (response?: any) => void
+): void {
+  void updateApprovedPlanGuidance({
+      tabId: message.tabId,
+      windowId: message.windowId,
+      editedPlan: typeof message.editedPlan === 'string' ? message.editedPlan : '',
+    })
+    .then(() => sendResponse({ success: true }))
+    .catch((error) => {
+      const errorMessage = handleError(error, 'updating approved plan');
+      sendResponse({ success: false, error: errorMessage });
+    });
 }
 
 function handleRuntimeInteractionSignal(
@@ -546,8 +588,6 @@ async function handleCheckAgentStatus(
       return;
     }
     
-    // Get the agent status from agentController using dynamic import
-    const { getAgentStatus } = await import('./agentController');
     const status = getAgentStatus(windowId);
     
     // Send the status back to the UI

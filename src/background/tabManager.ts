@@ -1,5 +1,6 @@
 import { crx } from 'playwright-crx';
 import { BrowserAgent } from '../agent/AgentCore';
+import { resetPageContext, setCurrentPage } from '../agent/PageContextManager';
 import { TabState, WindowState } from './types';
 import { logWithTimestamp, handleError } from './utils';
 
@@ -385,7 +386,6 @@ export async function attachToTab(tabId: number, windowId?: number, retryCount: 
       
       // Update PageContextManager with the new page
       try {
-        const { setCurrentPage } = await import('../agent/PageContextManager');
         setCurrentPage(page);
         logWithTimestamp(`Updated PageContextManager with page for tab ${tabId}`);
       } catch (error) {
@@ -666,27 +666,16 @@ export function setupTabListeners(): void {
       
       // Cancel any ongoing execution for this tab
       try {
-        // Import messageHandler to handle the cancellation message
-        const { handleMessage } = await import('./messageHandler');
-        
-        // Create a cancellation message similar to what the UI would send
-        const cancelMessage = {
+        chrome.runtime.sendMessage({
           action: 'cancelExecution',
           tabId
-        };
-        
-        // Use the same message handler that the UI uses
-        handleMessage(
-          cancelMessage,
-          {}, // Empty sender object
-          (response) => {
-            if (response && response.success) {
-              logWithTimestamp(`Successfully cancelled execution for closed tab ${tabId}`);
-            } else {
-              logWithTimestamp(`Failed to cancel execution for closed tab ${tabId}`, 'warn');
-            }
+        }, (response) => {
+          if (response && response.success) {
+            logWithTimestamp(`Successfully cancelled execution for closed tab ${tabId}`);
+          } else {
+            logWithTimestamp(`Failed to cancel execution for closed tab ${tabId}`, 'warn');
           }
-        );
+        });
       } catch (error) {
         logWithTimestamp(`Error cancelling execution for closed tab: ${error instanceof Error ? error.message : String(error)}`, 'warn');
       }
@@ -698,7 +687,6 @@ export function setupTabListeners(): void {
       
       // Reset PageContextManager
       try {
-        const { resetPageContext } = await import('../agent/PageContextManager');
         resetPageContext();
         logWithTimestamp(`Reset PageContextManager for closed tab ${tabId}`);
       } catch (error) {
@@ -719,28 +707,17 @@ export function setupTabListeners(): void {
     // Cancel execution for each tab in the window
     if (tabsInWindow.length > 0) {
       try {
-        // Import messageHandler to handle the cancellation message
-        const { handleMessage } = await import('./messageHandler');
-        
         for (const tabId of tabsInWindow) {
-          // Create a cancellation message similar to what the UI would send
-          const cancelMessage = {
+          chrome.runtime.sendMessage({
             action: 'cancelExecution',
             tabId
-          };
-          
-          // Use the same message handler that the UI uses
-          handleMessage(
-            cancelMessage,
-            {}, // Empty sender object
-            (response) => {
-              if (response && response.success) {
-                logWithTimestamp(`Successfully cancelled execution for tab ${tabId} in closed window ${windowId}`);
-              } else {
-                logWithTimestamp(`Failed to cancel execution for tab ${tabId} in closed window ${windowId}`, 'warn');
-              }
+          }, (response) => {
+            if (response && response.success) {
+              logWithTimestamp(`Successfully cancelled execution for tab ${tabId} in closed window ${windowId}`);
+            } else {
+              logWithTimestamp(`Failed to cancel execution for tab ${tabId} in closed window ${windowId}`, 'warn');
             }
-          );
+          });
         }
       } catch (error) {
         logWithTimestamp(`Error cancelling executions for closed window: ${error instanceof Error ? error.message : String(error)}`, 'warn');
