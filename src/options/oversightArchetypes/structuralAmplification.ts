@@ -42,7 +42,7 @@ parameterSettings[STRUCTURAL_AMPLIFICATION_MECHANISM_ID].resolutionWindowMs = 15
 export const structuralAmplificationArchetype = defineArchetype({
   id: 'structural-amplification',
   name: 'Structural Amplification',
-  description: 'User-amplified escalation that temporarily tightens oversight around deliberative moments.',
+  description: 'The page shows what the agent is focusing on and thinking, and oversight gets stronger when you pause or inspect more closely.',
   authorityModel: 'Baseline delegation with user-driven escalation into tighter oversight.',
   visibilityStructure: 'Context-sensitive expansion from selective exposure to richer trace and rationale scaffolds.',
   oversightRhythm: 'Adaptive amplification triggered by repeated inspection or pause behavior.',

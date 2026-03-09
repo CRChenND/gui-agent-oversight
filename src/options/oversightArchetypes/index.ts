@@ -18,7 +18,7 @@ export const BUILTIN_OVERSIGHT_ARCHETYPES: OversightArchetype[] = [
 ];
 
 export function getDefaultOversightArchetype(): OversightArchetype {
-  return BUILTIN_OVERSIGHT_ARCHETYPES[0];
+  return structuralAmplificationArchetype;
 }
 
 export function getOversightArchetypeById(

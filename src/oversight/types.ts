@@ -61,6 +61,8 @@ export type OversightEvent =
       stepId: string;
       toolName: string;
       toolInput: string;
+      planStepIndex?: number;
+      stepDescription?: string;
       focusType: AttentionFocusType;
       focusLabel: string;
     }

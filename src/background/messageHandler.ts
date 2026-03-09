@@ -1,4 +1,4 @@
-import { handleApprovalResponse } from '../agent/approvalManager';
+import { clearApprovalSeries, handleApprovalResponse } from '../agent/approvalManager';
 import { executePrompt } from './agentController';
 import { cancelExecution } from './agentController';
 import { clearMessageHistory } from './agentController';
@@ -64,7 +64,7 @@ export function handleMessage(
       // token usage UI removed
         
       case 'approvalResponse':
-        handleApprovalResponse(message.requestId, message.approved);
+        handleApprovalResponse(message.requestId, message.approved, message.approvalMode || 'once');
         if (message.tabId) {
           const page = getTabState(message.tabId)?.page;
           if (page) {
@@ -407,6 +407,7 @@ function handleExecutePrompt(
   message: Extract<BackgroundMessage, { action: 'executePrompt' }>,
   sendResponse: (response?: any) => void
 ): void {
+  clearApprovalSeries();
   // Use the tabId from the message if available
   if (message.tabId) {
     executePrompt(message.prompt, message.tabId, false, message.taskContext);
@@ -426,6 +427,7 @@ function handleCancelExecution(
   sendResponse: (response?: any) => void
 ): void {
   cancelExecution(message.tabId);
+  clearApprovalSeries();
   sendResponse({ success: true });
 }
 
@@ -439,6 +441,7 @@ async function handleClearHistory(
   sendResponse: (response?: any) => void
 ): Promise<void> {
   await clearMessageHistory(message.tabId, message.windowId);
+  clearApprovalSeries();
 
   sendResponse({ success: true });
 }

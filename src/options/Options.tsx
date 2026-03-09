@@ -265,8 +265,20 @@ export function Options() {
     setOversightSettings(nextState.settings);
     setOversightParameterSettings(nextState.parameterSettings);
     setSelectedArchetypeId(archetype.id);
-    setSaveStatus(`Applied archetype: ${archetype.name}`);
-    setTimeout(() => setSaveStatus(''), 2000);
+    setIsSaving(true);
+    setSaveStatus('');
+    chrome.storage.sync.set({
+      [OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY]: archetype.id,
+      ...buildOversightStoragePatch(nextState.settings),
+      ...buildOversightParameterStoragePatch(nextState.parameterSettings),
+    }, () => {
+      setIsSaving(false);
+      setSaveStatus(`Activated archetype: ${archetype.name}`);
+      chrome.runtime.sendMessage({
+        action: 'providerConfigChanged'
+      }).catch(err => console.error('Error sending message:', err));
+      setTimeout(() => setSaveStatus(''), 2000);
+    });
   };
 
   return (

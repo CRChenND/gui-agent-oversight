@@ -1,7 +1,7 @@
 import type { OversightEvent } from '../oversight/types';
 
 // Define message types
-export type MessageType = 'system' | 'llm' | 'screenshot';
+export type MessageType = 'system' | 'user' | 'llm' | 'screenshot';
 
 export interface Message {
   type: MessageType;
@@ -25,6 +25,8 @@ export interface ChromeMessage {
   toolName?: string;
   toolInput?: string;
   reason?: string;
+  approvalVariant?: 'default' | 'action-confirmation' | 'supervisory' | 'supervisory-plan-step';
+  planStepIndex?: number;
   
   status?: 'attached' | 'detached' | 'running' | 'idle' | 'error';
   lastHeartbeat?: number;

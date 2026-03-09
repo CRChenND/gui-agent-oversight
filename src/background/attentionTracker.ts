@@ -18,6 +18,7 @@ export interface AttentionTarget {
     title: string;
     message: string;
     approveLabel?: string;
+    approveSeriesLabel?: string;
     rejectLabel?: string;
   };
 }
@@ -218,7 +219,7 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
     root.appendChild(cardStack);
 
     const sharedCardStyles = (card: HTMLDivElement) => {
-      card.style.maxWidth = "320px";
+      card.style.maxWidth = "min(320px, calc(100vw - 24px))";
       card.style.minWidth = "220px";
       card.style.background = "linear-gradient(180deg, rgba(17, 24, 39, 0.96) 0%, rgba(31, 41, 55, 0.96) 100%)";
       card.style.color = "#f9fafb";
@@ -297,11 +298,15 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
           body.style.color = "rgba(255, 255, 255, 0.88)";
           body.style.fontSize = "12px";
           body.style.lineHeight = "1.5";
+          body.style.maxHeight = "132px";
+          body.style.overflowY = "auto";
+          body.style.paddingRight = "2px";
           card.appendChild(body);
 
           const actions = document.createElement("div");
           actions.style.display = "flex";
-          actions.style.justifyContent = "flex-end";
+          actions.style.flexWrap = "wrap";
+          actions.style.justifyContent = "stretch";
           actions.style.gap = "8px";
           actions.style.marginTop = "12px";
 
@@ -316,6 +321,7 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
           rejectButton.style.fontWeight = "700";
           rejectButton.style.cursor = "pointer";
           rejectButton.style.boxShadow = "0 8px 18px rgba(225, 29, 72, 0.28)";
+          rejectButton.style.flex = "1 1 92px";
 
           const approveButton = document.createElement("button");
           approveButton.textContent = payload.approval.approveLabel || "Approve";
@@ -328,22 +334,39 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
           approveButton.style.fontWeight = "700";
           approveButton.style.cursor = "pointer";
           approveButton.style.boxShadow = "0 8px 18px rgba(22, 163, 74, 0.28)";
+          approveButton.style.flex = "1 1 92px";
+
+          const approveSeriesButton = document.createElement("button");
+          approveSeriesButton.textContent = payload.approval.approveSeriesLabel || "Approve Similar";
+          approveSeriesButton.style.border = "1px solid rgba(45, 212, 191, 0.35)";
+          approveSeriesButton.style.background = "rgba(20, 184, 166, 0.16)";
+          approveSeriesButton.style.color = "#ccfbf1";
+          approveSeriesButton.style.borderRadius = "9999px";
+          approveSeriesButton.style.padding = "7px 12px";
+          approveSeriesButton.style.fontSize = "12px";
+          approveSeriesButton.style.fontWeight = "700";
+          approveSeriesButton.style.cursor = "pointer";
+          approveSeriesButton.style.flex = "1 1 120px";
 
           const setPendingState = () => {
             rejectButton.disabled = true;
             approveButton.disabled = true;
+            approveSeriesButton.disabled = true;
             rejectButton.style.opacity = "0.65";
             approveButton.style.opacity = "0.65";
+            approveSeriesButton.style.opacity = "0.65";
             rejectButton.style.cursor = "default";
             approveButton.style.cursor = "default";
+            approveSeriesButton.style.cursor = "default";
           };
 
-          const submitDecision = (approved: boolean) => {
+          const submitDecision = (approved: boolean, approvalMode: "once" | "series" = "once") => {
             setPendingState();
             (window as Window & {
               __morphApprovalDecision__?: {
                 requestId: string;
                 approved: boolean;
+                approvalMode?: "once" | "series";
                 tabId?: number;
                 windowId?: number;
                 at: number;
@@ -351,6 +374,7 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
             }).__morphApprovalDecision__ = {
               requestId: payload.approval!.requestId,
               approved,
+              approvalMode,
               tabId: payload.approval!.tabId,
               windowId: payload.approval!.windowId,
               at: Date.now(),
@@ -358,10 +382,12 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
             root.remove();
           };
 
-          rejectButton.addEventListener("click", () => submitDecision(false));
-          approveButton.addEventListener("click", () => submitDecision(true));
+          rejectButton.addEventListener("click", () => submitDecision(false, "once"));
+          approveButton.addEventListener("click", () => submitDecision(true, "once"));
+          approveSeriesButton.addEventListener("click", () => submitDecision(true, "series"));
 
           actions.appendChild(rejectButton);
+          actions.appendChild(approveSeriesButton);
           actions.appendChild(approveButton);
           card.appendChild(actions);
           cardStack.appendChild(card);
@@ -381,7 +407,7 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
         left = Math.max(12, anchorRect.left - cardWidth - 14);
       }
 
-      const estimatedHeight = approvalCard ? 248 : 132;
+      const estimatedHeight = approvalCard ? 320 : 132;
       let top = anchorRect.top + anchorRect.height + 10;
       if (top + estimatedHeight > viewportHeight - 12) {
         top = Math.max(12, anchorRect.top + anchorRect.height - estimatedHeight);
@@ -496,19 +522,20 @@ export async function waitForOverlayApprovalDecision(
   page: Page,
   requestId: string,
   timeoutMs = 5 * 60 * 1000
-): Promise<{ requestId: string; approved: boolean; tabId?: number; windowId?: number } | null> {
+): Promise<{ requestId: string; approved: boolean; approvalMode?: 'once' | 'series'; tabId?: number; windowId?: number } | null> {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
     try {
       const payload = await page.evaluate<
-        { requestId: string; approved: boolean; tabId?: number; windowId?: number } | null,
+        { requestId: string; approved: boolean; approvalMode?: 'once' | 'series'; tabId?: number; windowId?: number } | null,
         string
       >((targetRequestId: string) => {
         const decision = (window as Window & {
           __morphApprovalDecision__?: {
             requestId: string;
             approved: boolean;
+            approvalMode?: 'once' | 'series';
             tabId?: number;
             windowId?: number;
           };

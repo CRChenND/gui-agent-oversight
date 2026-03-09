@@ -1,6 +1,5 @@
 import React from 'react';
 import type { OversightArchetype } from '../../oversightArchetypes';
-import { SaveButton } from '../SaveButton';
 
 interface ArchetypesTabProps {
   archetypes: OversightArchetype[];
@@ -8,7 +7,6 @@ interface ArchetypesTabProps {
   onApplyArchetype: (archetype: OversightArchetype) => void;
   isSaving: boolean;
   saveStatus: string;
-  handleSave: () => void;
 }
 
 export function ArchetypesTab({
@@ -17,7 +15,6 @@ export function ArchetypesTab({
   onApplyArchetype,
   isSaving,
   saveStatus,
-  handleSave,
 }: ArchetypesTabProps) {
   return (
     <div className="space-y-6">
@@ -53,14 +50,11 @@ export function ArchetypesTab({
             })}
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <SaveButton
-              isSaving={isSaving}
-              saveStatus={saveStatus}
-              handleSave={handleSave}
-              isDisabled={false}
-            />
-          </div>
+          {isSaving || saveStatus ? (
+            <div className="text-sm text-base-content/70">
+              {isSaving ? 'Activating archetype...' : saveStatus}
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

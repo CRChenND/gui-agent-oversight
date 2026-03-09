@@ -15,11 +15,12 @@ import {
   mapStorageToOversightParameterSettings,
   mapStorageToOversightSettings,
 } from '../oversight/registry';
-import { OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY } from '../options/oversightArchetypes';
+import { getDefaultOversightArchetype, OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY } from '../options/oversightArchetypes';
 import { ApprovalRequest } from './components/ApprovalRequest';
 import { MessageDisplay } from './components/MessageDisplay';
 import { OutputHeader } from './components/OutputHeader';
 import { PromptForm } from './components/PromptForm';
+import { SupervisoryPlanBlocks } from './components/SupervisoryPlanBlocks';
 import { TaskExecutionGraph } from './components/TaskExecutionGraph';
 import { useChromeMessaging } from './hooks/useChromeMessaging';
 import { useMessageManagement } from './hooks/useMessageManagement';
@@ -28,7 +29,7 @@ import { useTabManagement } from './hooks/useTabManagement';
 
 export function SidePanel() {
   const [activePanel, setActivePanel] = useState<'conversation' | 'oversight'>('conversation');
-  const [selectedArchetypeId, setSelectedArchetypeId] = useState('risk-gated');
+  const [selectedArchetypeId, setSelectedArchetypeId] = useState(getDefaultOversightArchetype().id);
   const [currentPrompt, setCurrentPrompt] = useState('');
   const [mechanismSettings, setMechanismSettings] = useState(createDefaultOversightMechanismSettings);
   const [mechanismParameterSettings, setMechanismParameterSettings] = useState(createDefaultOversightParameterSettings);
@@ -43,6 +44,8 @@ export function SidePanel() {
     toolName: string;
     toolInput: string;
     reason: string;
+    approvalVariant?: 'default' | 'action-confirmation' | 'supervisory' | 'supervisory-plan-step';
+    planStepIndex?: number;
   }>>([]);
   const [haltReason, setHaltReason] = useState<string | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<{
@@ -115,6 +118,15 @@ export function SidePanel() {
   const [draggedRemainingStepIndex, setDraggedRemainingStepIndex] = useState<number | null>(null);
   const [editingPlanStepIndex, setEditingPlanStepIndex] = useState<number | null>(null);
   const [editingRemainingStepIndex, setEditingRemainingStepIndex] = useState<number | null>(null);
+  const [supervisoryActualSteps, setSupervisoryActualSteps] = useState<Array<{
+    stepId: string;
+    toolName: string;
+    focusLabel: string;
+    thinking?: string;
+    stepDescription?: string;
+    planStepIndex?: number;
+    timestamp: number;
+  }>>([]);
   const [showApprovalOverlay, setShowApprovalOverlay] = useState(true);
   const [softPauseNow, setSoftPauseNow] = useState(Date.now());
   const lastApprovalPromptTsRef = useRef(0);
@@ -132,14 +144,14 @@ export function SidePanel() {
     };
     const loadFeatureFlags = async () => {
       const result = await chrome.storage.sync.get({
-        [OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY]: 'risk-gated',
+        [OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY]: getDefaultOversightArchetype().id,
         ...getOversightStorageQueryDefaults(),
         ...getOversightParameterStorageQueryDefaults(),
       });
       setSelectedArchetypeId(
         typeof result[OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY] === 'string'
           ? result[OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY]
-          : 'risk-gated'
+          : getDefaultOversightArchetype().id
       );
       setMechanismSettings(mapStorageToOversightSettings(result as Record<string, unknown>));
       setMechanismParameterSettings(mapStorageToOversightParameterSettings(result as Record<string, unknown>));
@@ -177,6 +189,7 @@ export function SidePanel() {
     setIsProcessing,
     outputRef,
     addMessage,
+    addUserMessage,
     addSystemMessage,
     updateStreamingChunk,
     finalizeStreamingSegment,
@@ -223,7 +236,10 @@ export function SidePanel() {
 
   const enableAgentFocus = mechanismSettings[AGENT_FOCUS_MECHANISM_ID];
   const enableTaskGraph = mechanismSettings[TASK_GRAPH_MECHANISM_ID];
+  const isRiskGatedArchetype = selectedArchetypeId === 'risk-gated';
   const isStructuralAmplificationArchetype = selectedArchetypeId === 'structural-amplification';
+  const isActionConfirmationArchetype = selectedArchetypeId === 'action-confirmation';
+  const isSupervisoryCoExecutionArchetype = selectedArchetypeId === 'supervisory-co-execution';
   const monitoringParams = mechanismParameterSettings[MONITORING_MECHANISM_ID] || {};
   const interventionParams = mechanismParameterSettings[INTERVENTION_GATE_MECHANISM_ID] || {};
   const taskGraphParams = mechanismParameterSettings[TASK_GRAPH_MECHANISM_ID] || {};
@@ -296,6 +312,11 @@ export function SidePanel() {
     let currentPlanIndex = 0;
 
     return nodes.map((node) => {
+      if (typeof node.planStepIndex === 'number' && node.planStepIndex >= 0 && node.planStepIndex < planSteps.length) {
+        currentPlanIndex = node.planStepIndex;
+        return node.planStepIndex;
+      }
+
       const nodeText = `${node.toolName} ${node.focusLabel} ${node.thinking || ''}`.trim();
       const nodeTokens = tokenize(nodeText);
       if (nodeTokens.length === 0) {
@@ -397,11 +418,66 @@ export function SidePanel() {
     });
 
     // Send approval to the background script
-    approveRequest(requestId);
+    approveRequest(requestId, 'once');
     // Remove the request from the list
     setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
-    // Add a system message to indicate approval
-    addSystemMessage(`✅ Approved action: ${requestId}`);
+    setHaltReason(null);
+  };
+
+  const handleApproveSeries = (requestId: string) => {
+    const request = approvalRequests.find((req) => req.requestId === requestId);
+    const stepId = request?.stepId || requestId;
+    void logHumanTelemetry('human_intervention', {
+      action: 'approval_accepted',
+      requestId,
+      stepId,
+      toolName: request?.toolName,
+      toolInput: request?.toolInput,
+      reason: request?.reason,
+      mode: 'series',
+    });
+    void logHumanTelemetry('oversight_signal', {
+      kind: 'intervention_decision',
+      stepId,
+      decision: 'approve',
+      mode: 'series',
+    });
+    handleOversightEvent({
+      kind: 'intervention_decision',
+      stepId,
+      decision: 'approve',
+    });
+
+    approveRequest(requestId, 'series');
+    setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
+    setHaltReason(null);
+  };
+
+  const handleApproveSite = (requestId: string) => {
+    const request = approvalRequests.find((req) => req.requestId === requestId);
+    const stepId = request?.stepId || requestId;
+    void logHumanTelemetry('human_intervention', {
+      action: 'approval_accepted',
+      requestId,
+      stepId,
+      toolName: request?.toolName,
+      toolInput: request?.toolInput,
+      reason: request?.reason,
+      mode: 'site',
+    });
+    void logHumanTelemetry('oversight_signal', {
+      kind: 'intervention_decision',
+      stepId,
+      decision: 'approve',
+      mode: 'site',
+    });
+    handleOversightEvent({
+      kind: 'intervention_decision',
+      stepId,
+      decision: 'approve',
+    });
+    approveRequest(requestId, 'site');
+    setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
     setHaltReason(null);
   };
 
@@ -437,15 +513,14 @@ export function SidePanel() {
     rejectRequest(requestId);
     // Remove the request from the list
     setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
-    // Add a system message to indicate rejection
-    addSystemMessage(`❌ Rejected action: ${requestId}`);
   };
 
-  const sendApprovalDecision = useCallback((requestId: string, approved: boolean) => {
+  const sendApprovalDecision = useCallback((requestId: string, approved: boolean, approvalMode: 'once' | 'series' | 'site' = 'once') => {
     chrome.runtime.sendMessage({
       action: 'approvalResponse',
       requestId,
       approved,
+      approvalMode,
       tabId: tabId || undefined,
       windowId: windowId || undefined,
     });
@@ -482,7 +557,6 @@ export function SidePanel() {
     // Dismissing a pending approval also rejects it to avoid blocking execution.
     sendApprovalDecision(requestId, false);
     setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
-    addSystemMessage(`⚠️ Dismissed warning: ${requestId} (auto-rejected)`);
   };
 
   const handleApprovalResolved = useCallback((payload: { requestId: string; approved: boolean }) => {
@@ -530,6 +604,22 @@ export function SidePanel() {
           content.content.startsWith('🕹️ tool:')) {
         return;
       }
+      if (
+        content?.type === 'system' &&
+        typeof content.content === 'string' &&
+        content.content.startsWith('Executing prompt: ')
+      ) {
+        return;
+      }
+      if (
+        typeof content?.content === 'string' &&
+        (
+          content.content.startsWith('⚠️ This action requires approval:') ||
+          content.content.startsWith('✅ Action approved by user. Executing...')
+        )
+      ) {
+        return;
+      }
       if (typeof content?.content === 'string' && content.content.includes('Execution stopped by post-action review policy')) {
         setHaltReason('Stopped by post-action review policy');
       }
@@ -575,15 +665,17 @@ export function SidePanel() {
     },
     onRequestApproval: (request) => {
       const now = Date.now();
+      const isSupervisoryPrompt =
+        request.approvalVariant === 'supervisory' || request.approvalVariant === 'supervisory-plan-step';
       approvalPromptWindowRef.current = approvalPromptWindowRef.current.filter((ts) => now - ts < 60000);
 
-      if (approvalPromptWindowRef.current.length >= interruptTopK) {
+      if (!isSupervisoryPrompt && approvalPromptWindowRef.current.length >= interruptTopK) {
         sendApprovalDecision(request.requestId, true);
         addSystemMessage(`ℹ️ Auto-approved ${request.requestId} due to interruptTopK.`);
         return;
       }
 
-      if (interruptCooldownMs > 0 && now - lastApprovalPromptTsRef.current < interruptCooldownMs) {
+      if (!isSupervisoryPrompt && interruptCooldownMs > 0 && now - lastApprovalPromptTsRef.current < interruptCooldownMs) {
         sendApprovalDecision(request.requestId, true);
         addSystemMessage(`ℹ️ Auto-approved ${request.requestId} due to interrupt cooldown.`);
         return;
@@ -602,7 +694,7 @@ export function SidePanel() {
           setShowApprovalOverlay(true);
         }
 
-        if (persistenceMs > 0 && !isStructuralAmplificationArchetype) {
+        if (persistenceMs > 0 && !isStructuralAmplificationArchetype && !isSupervisoryPrompt) {
           window.setTimeout(() => {
             setApprovalRequests((prev) => {
               const exists = prev.some((item) => item.requestId === request.requestId);
@@ -676,6 +768,32 @@ export function SidePanel() {
       if (event.kind === 'intent_refresh_confirmed') {
         addSystemMessage('Intent refresh confirmed: Yes.');
       }
+      if (isSupervisoryCoExecutionArchetype && event.kind === 'tool_started') {
+        setSupervisoryActualSteps((prev) => [
+          ...prev,
+          {
+            stepId: event.stepId,
+            toolName: event.toolName,
+            focusLabel: event.focusLabel,
+            stepDescription: event.stepDescription,
+            thinking: event.stepDescription,
+            planStepIndex: event.planStepIndex,
+            timestamp: event.timestamp,
+          },
+        ]);
+      }
+      if (isSupervisoryCoExecutionArchetype && event.kind === 'agent_thinking') {
+        setSupervisoryActualSteps((prev) =>
+          prev.map((step) =>
+            step.stepId === event.stepId
+              ? {
+                  ...step,
+                  thinking: event.thinking.rationale || event.thinking.goal,
+                }
+              : step
+          )
+        );
+      }
       handleOversightEvent(event);
     },
     onRuntimeStateUpdate: (status) => {
@@ -691,7 +809,7 @@ export function SidePanel() {
         setIsProcessing(false);
       }
     },
-    onPlanReviewRequired: (payload) => {
+    onPlanReviewRequired: isActionConfirmationArchetype ? undefined : (payload) => {
       setPlanReviewRequest(payload);
       setEditedPlanSteps((payload.plan || []).filter((step) => step.trim().length > 0));
       setEditingPlanStepIndex(null);
@@ -931,6 +1049,7 @@ export function SidePanel() {
     setIsProcessing(true);
     setCurrentPrompt(prompt);
     setHaltReason(null);
+    setSupervisoryActualSteps([]);
     setApprovedPlan(null);
     setInspectPlanProgress(null);
     setInspectPlanError(null);
@@ -938,8 +1057,7 @@ export function SidePanel() {
     setTabStatus('running');
     resetRunState();
 
-    // Add a system message to indicate a new prompt
-    addSystemMessage(`New prompt: "${prompt}"`);
+    addUserMessage(prompt);
     setActivePanel(isStructuralAmplificationArchetype ? 'oversight' : 'conversation');
 
     try {
@@ -992,10 +1110,13 @@ export function SidePanel() {
     clearMessages();
     clearHistory();
     clearOversightState();
+    setSupervisoryActualSteps([]);
+    setCurrentPrompt('');
     setHaltReason(null);
     setApprovedPlan(null);
     setInspectPlanProgress(null);
     setInspectPlanError(null);
+    setApprovalRequests([]);
   };
 
 
@@ -1027,16 +1148,90 @@ export function SidePanel() {
   const currentPlanStepIndex = Math.max(0, inspectPlanView.currentStepNumber > 0 ? inspectPlanView.currentStepNumber - 1 : inspectPlanView.completedCount);
   const remainingPlanPrefix = approvedPlanSteps.slice(0, currentPlanStepIndex);
   const remainingPlanTail = approvedPlanSteps.slice(currentPlanStepIndex);
-  const taskNodePlanIndices = useMemo(
-    () => computePlanStepAssignments(approvedPlanSteps, taskNodes),
-    [approvedPlanSteps, taskNodes, computePlanStepAssignments]
+  const supervisoryPlanIndices = useMemo(
+    () => supervisoryActualSteps.map((step) => (typeof step.planStepIndex === 'number' ? step.planStepIndex : null)),
+    [supervisoryActualSteps]
   );
+  const supervisoryVisibleUntilIndex = useMemo(() => {
+    const maxActualStepIndex = supervisoryActualSteps.reduce(
+      (max, step) => (typeof step.planStepIndex === 'number' ? Math.max(max, step.planStepIndex) : max),
+      -1
+    );
+    const maxPendingApprovalIndex = approvalRequests.reduce(
+      (max, request) =>
+        request.approvalVariant === 'supervisory-plan-step' && typeof request.planStepIndex === 'number'
+          ? Math.max(max, request.planStepIndex)
+          : max,
+      -1
+    );
+    return Math.max(0, maxActualStepIndex, maxPendingApprovalIndex);
+  }, [approvalRequests, supervisoryActualSteps]);
+  const supervisoryConversationMessages = useMemo(
+    () =>
+      messages.filter((message) => {
+        if (
+          message.type === 'system' &&
+          /^(🧭 Plan review required before execution\.|✅ Plan order updated and approved\.|✅ Plan approved\. Execution continues\.|✏️ Plan edited by user\. Applying guidance:)/.test(
+            message.content || ''
+          )
+        ) {
+          return false;
+        }
+        if (
+          message.type === 'user' &&
+          /^(Plan approved\. Follow this plan throughout the task|Follow this approved plan guidance for the full task)/.test(
+            message.content || ''
+          )
+        ) {
+          return false;
+        }
+        if (message.type !== 'llm') return true;
+        return !/<thinking_summary>|<tool>|<requires_approval>/i.test(message.content || '');
+      }),
+    [messages]
+  );
+  const riskGatedConversationMessages = useMemo(
+    () =>
+      messages.filter((message) => {
+        if (message.type === 'user') return true;
+        if (message.type === 'screenshot') return true;
+        if (
+          message.type === 'llm' &&
+          typeof message.content === 'string' &&
+          !/<thinking_summary>|<tool>|<requires_approval>/i.test(message.content)
+        ) {
+          return message.content.trim().length > 0;
+        }
+        return false;
+      }),
+    [messages]
+  );
+  const supervisoryLeadingMessages = useMemo(() => {
+    if (!isSupervisoryCoExecutionArchetype) return messages;
+    const firstUserIndex = supervisoryConversationMessages.findIndex((message) => message.type === 'user');
+    if (firstUserIndex < 0) return [];
+    return supervisoryConversationMessages.slice(0, firstUserIndex + 1);
+  }, [isSupervisoryCoExecutionArchetype, messages, supervisoryConversationMessages]);
+  const supervisoryTrailingMessages = useMemo(() => {
+    if (!isSupervisoryCoExecutionArchetype) return messages;
+    const firstUserIndex = supervisoryConversationMessages.findIndex((message) => message.type === 'user');
+    if (firstUserIndex < 0) return supervisoryConversationMessages;
+    return supervisoryConversationMessages.slice(firstUserIndex + 1);
+  }, [isSupervisoryCoExecutionArchetype, messages, supervisoryConversationMessages]);
+  const supervisoryStreamingSegments = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(streamingSegments).filter(([, content]) => !/<thinking_summary>|<tool>|<requires_approval>/i.test(content))
+      ),
+    [streamingSegments]
+  );
+  const riskGatedStreamingSegments = useMemo(() => ({} as Record<number, string>), []);
 
   return (
-    <div className="morph-shell flex h-screen flex-col bg-base-200/60">
+    <div className="morph-shell flex h-screen flex-col overflow-x-hidden bg-base-200/60">
       {hasConfiguredProviders ? (
         <>
-          <div className="morph-surface flex min-h-0 flex-1 flex-col overflow-hidden bg-base-100">
+          <div className="morph-surface flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-hidden bg-base-100">
             <OutputHeader
               onOpenOptions={navigateToOptions}
               onClearHistory={handleClearHistory}
@@ -1112,18 +1307,51 @@ export function SidePanel() {
             {!isStructuralAmplificationArchetype && activePanel === 'conversation' && (
               <div
                 ref={outputRef}
-                className="morph-scroll min-h-0 flex-1 overflow-auto"
+                className="morph-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
               >
+                {isSupervisoryCoExecutionArchetype ? (
+                  <MessageDisplay
+                    messages={supervisoryLeadingMessages}
+                    streamingSegments={{}}
+                    isStreaming={false}
+                    conversationStyle="chat"
+                  />
+                ) : null}
+                {isSupervisoryCoExecutionArchetype && approvedPlan ? (
+                  <SupervisoryPlanBlocks
+                    planSteps={approvedPlanSteps}
+                    taskNodes={supervisoryActualSteps}
+                    taskNodePlanIndices={supervisoryPlanIndices}
+                    visibleUntilIndex={supervisoryVisibleUntilIndex}
+                  />
+                ) : null}
                 <MessageDisplay
-                  messages={messages}
-                  streamingSegments={streamingSegments}
+                  messages={
+                    isSupervisoryCoExecutionArchetype
+                      ? supervisoryTrailingMessages
+                      : isRiskGatedArchetype
+                        ? riskGatedConversationMessages
+                        : messages
+                  }
+                  streamingSegments={
+                    isSupervisoryCoExecutionArchetype
+                      ? supervisoryStreamingSegments
+                      : isRiskGatedArchetype
+                        ? riskGatedStreamingSegments
+                        : streamingSegments
+                  }
                   isStreaming={isStreaming}
+                  conversationStyle={
+                    isRiskGatedArchetype || isActionConfirmationArchetype || isSupervisoryCoExecutionArchetype
+                      ? 'chat'
+                      : 'default'
+                  }
                 />
               </div>
             )}
 
             {isStructuralAmplificationArchetype && activePanel === 'oversight' && (
-              <div className="morph-scroll min-h-0 flex-1 overflow-auto">
+              <div className="morph-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
                 {currentPrompt ? (
                   <div className="mx-3 mb-3 rounded-2xl border border-base-300 bg-base-100/90 px-3 py-3">
                     <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-base-content/45">
@@ -1160,7 +1388,7 @@ export function SidePanel() {
 
           {shouldShowOverlay ? (
             <div className="pointer-events-none fixed inset-x-4 bottom-24 z-30">
-              <div className="pointer-events-auto max-h-72 overflow-y-auto">
+              <div className={`pointer-events-auto overflow-y-auto ${isActionConfirmationArchetype ? 'max-h-[34rem]' : 'max-h-72'}`}>
                 {approvalRequests.map(req => (
                   <ApprovalRequest
                     key={req.requestId}
@@ -1169,12 +1397,19 @@ export function SidePanel() {
                     toolInput={req.toolInput}
                     reason={req.reason}
                     onApprove={handleApprove}
+                    onApproveSeries={
+                      req.approvalVariant === 'default'
+                        ? handleApproveSeries
+                        : undefined
+                    }
+                    onApproveSite={req.approvalVariant === 'action-confirmation' ? handleApproveSite : undefined}
                     onReject={handleReject}
                     onDismiss={handleDismissWarning}
                     onEdit={undefined}
                     onRetry={undefined}
                     onRollback={undefined}
                     compact={informationDensity === 'compact'}
+                    variant={req.approvalVariant || 'default'}
                   />
                 ))}
               </div>
@@ -1325,9 +1560,6 @@ export function SidePanel() {
                   <div className="space-y-3 overflow-y-auto pr-1">
                     {approvedPlan.steps.map((step, idx) => {
                       const progress = inspectPlanView.steps[idx];
-                      const linkedActualSteps = taskNodes
-                        .map((node, nodeIndex) => ({ node, nodeIndex }))
-                        .filter(({ nodeIndex }) => taskNodePlanIndices[nodeIndex] === idx);
                       return (
                         <div key={`inspect-plan-${idx}`} className="rounded-lg border border-base-300 bg-base-100/80 px-3 py-3">
                           <div className="flex items-center justify-between gap-2">
@@ -1352,13 +1584,6 @@ export function SidePanel() {
                           {progress?.reason ? (
                             <div className="mt-2 text-xs leading-5 text-base-content/65">
                               {progress.reason}
-                            </div>
-                          ) : null}
-                          {linkedActualSteps.length > 0 ? (
-                            <div className="mt-3 border-t border-base-300 pt-2 text-xs leading-5 text-base-content/65">
-                              {linkedActualSteps.length === 1
-                                ? `1 executed step is currently mapped here.`
-                                : `${linkedActualSteps.length} executed steps are currently mapped here.`}
                             </div>
                           ) : null}
                         </div>

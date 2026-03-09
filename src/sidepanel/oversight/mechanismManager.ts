@@ -174,10 +174,14 @@ const taskGraphMechanism: OversightMechanism = {
         stepId: event.stepId,
         toolName: event.toolName,
         focusLabel: event.focusLabel || 'Focus updated',
+        planStepIndex: typeof event.planStepIndex === 'number' ? event.planStepIndex : undefined,
+        stepDescription: typeof event.stepDescription === 'string' ? event.stepDescription : undefined,
         thinking:
-          state.thinkingByStepId[event.stepId]?.rationale ||
-          state.thinkingByStepId[event.stepId]?.goal ||
-          ctx.getLatestThinking(),
+          typeof event.stepDescription === 'string' && event.stepDescription.trim().length > 0
+            ? event.stepDescription
+            : state.thinkingByStepId[event.stepId]?.rationale ||
+              state.thinkingByStepId[event.stepId]?.goal ||
+              ctx.getLatestThinking(),
         status: 'active',
         timestamp: event.timestamp,
       });

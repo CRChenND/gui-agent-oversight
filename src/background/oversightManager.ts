@@ -64,31 +64,66 @@ function describeApprovalAction(toolName: string, toolInput: string): string {
   return 'Run this next step';
 }
 
-function describeApprovalConsequence(actionTitle: string): string {
-  const action = actionTitle.charAt(0).toLowerCase() + actionTitle.slice(1);
-  return `If you approve, the agent will ${action} now. If you reject, it will stop here and this step will not happen.`;
+function extractPlainTarget(toolInput: string): string {
+  const trimmed = toolInput.trim();
+  const quoted = trimmed.match(/["']([^"']+)["']/)?.[1]?.trim();
+  if (quoted) return quoted;
+  const selector = trimmed.split(',')[0]?.trim();
+  return selector || trimmed || 'this part of the page';
 }
 
-function humanizeApprovalReason(reason: string, actionTitle: string): string {
-  const normalized = reason.replace(/\s+/g, ' ').trim();
-  let rationale: string;
+function describeApprovalProsAndCons(args: {
+  toolName: string;
+  toolInput: string;
+  actionTitle: string;
+  thinking?: string;
+}): { pro: string; con: string } {
+  const { toolName, toolInput, actionTitle, thinking } = args;
+  const target = extractPlainTarget(toolInput);
+  const tool = toolName.toLowerCase();
 
-  if (!normalized) {
-    rationale = 'This step could meaningfully affect the page, so the agent is waiting for your decision.';
-  } else if (/step_through/i.test(normalized)) {
-    rationale = 'This setup asks you to confirm each step before the agent continues.';
-  } else if (/post-action review/i.test(normalized)) {
-    rationale = 'The agent has already done this step and wants to make sure it should keep going.';
-  } else if (/sensitive|approval/i.test(normalized)) {
-    rationale = '';
-  } else {
-    rationale = normalized
-      .replace(/Control mode\s+\w+\s+/gi, 'The current oversight setup ')
-      .replace(/requires approval/gi, 'asks for your approval')
-      .replace(/before execution/gi, 'before moving forward');
+  if (tool.includes('type') || tool.includes('fill')) {
+    return {
+      pro: `Approving lets the agent keep filling the form so the task can move forward without more interruption.`,
+      con: `The downside is that it may place information into ${target}, so a wrong field or wrong value could be annoying to undo.`,
+    };
+  }
+  if (tool.includes('click')) {
+    return {
+      pro: `Approving lets the agent move the workflow forward by interacting with ${target}.`,
+      con: `The downside is that a click can change the page immediately, and in some cases it may trigger the wrong next step.`,
+    };
+  }
+  if (tool.includes('navigate')) {
+    return {
+      pro: `Approving lets the agent reach the next page it needs in order to continue the task.`,
+      con: `The downside is that the page may change context, which can make it harder to compare with what you are seeing now.`,
+    };
+  }
+  if (tool.includes('read') || tool.includes('snapshot') || tool.includes('query')) {
+    return {
+      pro: `Approving lets the agent inspect ${target} and gather the information it needs before acting.`,
+      con: `The downside is low, but you may still want to pause if this is not the part of the page you expected it to inspect.`,
+    };
   }
 
-  return `${rationale ? `${rationale} ` : ''}${describeApprovalConsequence(actionTitle)}`;
+  return {
+    pro: `Approving lets the agent continue with ${actionTitle.toLowerCase()} so it can keep working toward your request.`,
+    con: thinking
+      ? `The downside is that it may continue based on its current understanding, and you may want to stop it if that reasoning does not look right.`
+      : `The downside is that the next change will happen immediately, so you may want to reject if this does not look like the step you intended.`,
+  };
+}
+
+export function buildApprovalDecisionCopy(args: {
+  actionTitle: string;
+  toolName: string;
+  toolInput: string;
+  thinking?: string;
+}): string {
+  const { actionTitle, toolName, toolInput, thinking } = args;
+  const { pro, con } = describeApprovalProsAndCons({ toolName, toolInput, actionTitle, thinking });
+  return `If you approve, ${pro} If you reject, the agent will stop here for now. ${con}`;
 }
 
 function resolveStepContext(stepId: string, toolName: string, toolInput: string): StepContextEvent {
@@ -135,11 +170,13 @@ export async function handleToolStarted(args: {
   stepId: string;
   toolName: string;
   toolInput: string;
+  planStepIndex?: number;
+  stepDescription?: string;
   enableAgentFocus: boolean;
   thinking?: string;
   enableThinkingOverlay?: boolean;
 }): Promise<void> {
-  const { tabId, windowId, page, stepId, toolName, toolInput, enableAgentFocus, thinking, enableThinkingOverlay } = args;
+  const { tabId, windowId, page, stepId, toolName, toolInput, planStepIndex, stepDescription, enableAgentFocus, thinking, enableThinkingOverlay } = args;
   const attentionTarget = inferAttentionTarget(toolName, toolInput);
   thinkingByStepId[stepId] = thinking || '';
   const stepContext = resolveStepContext(stepId, toolName, toolInput);
@@ -169,6 +206,8 @@ export async function handleToolStarted(args: {
       stepId,
       toolName,
       toolInput,
+      planStepIndex,
+      stepDescription,
       focusType: attentionTarget.type,
       focusLabel: attentionTarget.label,
     },
@@ -374,8 +413,14 @@ export async function handleApprovalRequested(args: {
           tabId,
           windowId,
           title: actionTitle,
-          message: humanizeApprovalReason(reason, actionTitle),
+          message: buildApprovalDecisionCopy({
+            actionTitle,
+            toolName,
+            toolInput,
+            thinking: thinkingByStepId[stepId],
+          }),
           approveLabel: 'Approve',
+          approveSeriesLabel: 'Approve Similar',
           rejectLabel: 'Reject',
         },
       });

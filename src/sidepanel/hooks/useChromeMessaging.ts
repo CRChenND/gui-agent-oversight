@@ -22,6 +22,8 @@ interface UseChromeMessagingProps {
     toolName: string;
     toolInput: string;
     reason: string;
+    approvalVariant?: 'default' | 'action-confirmation' | 'supervisory' | 'supervisory-plan-step';
+    planStepIndex?: number;
   }) => void;
   onApprovalResolved?: (payload: { requestId: string; approved: boolean }) => void;
   setTabTitle: (title: string) => void;
@@ -271,6 +273,8 @@ export const useChromeMessaging = ({
                 : `legacy_step_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
             toolName: content.toolName,
             toolInput: typeof content.toolInput === 'string' ? content.toolInput : '',
+            planStepIndex: typeof content.planStepIndex === 'number' ? content.planStepIndex : undefined,
+            stepDescription: typeof content.stepDescription === 'string' ? content.stepDescription : undefined,
             focusType: content.focusType || 'none',
             focusLabel: typeof content.focusLabel === 'string' ? content.focusLabel : 'Focus updated'
           });
@@ -298,7 +302,14 @@ export const useChromeMessaging = ({
               stepId: typeof message.stepId === 'string' ? message.stepId : undefined,
               toolName: message.toolName,
               toolInput: message.toolInput,
-              reason: message.reason || 'This action requires approval.'
+              reason: message.reason || 'This action requires approval.',
+              planStepIndex: typeof message.planStepIndex === 'number' ? message.planStepIndex : undefined,
+              approvalVariant:
+                message.approvalVariant === 'action-confirmation' ||
+                message.approvalVariant === 'supervisory' ||
+                message.approvalVariant === 'supervisory-plan-step'
+                  ? message.approvalVariant
+                  : 'default',
             });
           } else {
             console.error('onRequestApproval handler is not defined, cannot process approval request');
@@ -461,11 +472,12 @@ export const useChromeMessaging = ({
     });
   };
 
-  const approveRequest = (requestId: string) => {
+  const approveRequest = (requestId: string, approvalMode: 'once' | 'series' | 'site' = 'once') => {
     chrome.runtime.sendMessage({
       action: 'approvalResponse',
       requestId,
       approved: true,
+      approvalMode,
       tabId,
       windowId
     }, (_response) => {

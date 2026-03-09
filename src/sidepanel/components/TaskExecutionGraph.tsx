@@ -8,6 +8,8 @@ export interface TaskNode {
   stepId: string;
   toolName: string;
   focusLabel: string;
+  planStepIndex?: number;
+  stepDescription?: string;
   thinking?: string;
   status: TaskNodeStatus;
   timestamp: number;
@@ -36,6 +38,7 @@ export interface TaskNode {
 }
 
 type TooltipKind = 'thinking' | 'risk' | 'decision';
+type TooltipPlacement = 'above' | 'below';
 
 interface TaskExecutionGraphProps {
   nodes: TaskNode[];
@@ -76,46 +79,74 @@ function formatToolName(toolName: string): string {
   return toolName.startsWith('browser_') ? toolName.slice('browser_'.length) : toolName;
 }
 
-function summarizeStepTitle(node: TaskNode): string {
-  const source = `${node.thinking || ''} ${node.focusLabel || ''}`.trim();
-  const quoted = Array.from(source.matchAll(/["']([^"']+)["']/g))
+function toTitleCasePhrase(text: string): string {
+  if (!text) return text;
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function compactPhrase(text: string, maxWords = 7): string {
+  const words = text.split(/\s+/).filter(Boolean).slice(0, maxWords);
+  const joined = words.join(' ').trim();
+  return joined.length > 52 ? `${joined.slice(0, 49).trim()}...` : joined;
+}
+
+function extractQuotedTarget(text: string): string | undefined {
+  return Array.from(text.matchAll(/["']([^"']+)["']/g))
     .map((match) => match[1].trim())
-    .filter(Boolean);
+    .find(Boolean);
+}
 
+function cleanActionPhrase(text: string): string {
+  return text
+    .replace(/^i(?:'m| am)\s+(?:going to|about to)\s+/i, '')
+    .replace(/^i\s+(?:will|want to|need to|should)\s+/i, '')
+    .replace(/^the agent\s+(?:will|wants to|needs to)\s+/i, '')
+    .replace(/(?:\s+because|\s+so that|\s+to help|\s+in order to)\b[\s\S]*$/i, '')
+    .replace(/\b(right now|now|next)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[.,;:!?]+$/g, '');
+}
+
+function buildFallbackPhrase(node: TaskNode): string {
   const tool = formatToolName(node.toolName).toLowerCase();
-  const verb =
-    tool.includes('snapshot') || tool.includes('query') || tool.includes('read')
-      ? 'Scan'
-      : tool.includes('click')
-        ? 'Open'
-        : tool.includes('type') || tool.includes('fill')
-          ? 'Fill'
-          : tool.includes('navigate')
-            ? 'Open'
-            : 'Check';
-
-  const rawEntity =
-    quoted[0] ||
+  const source = `${node.thinking || ''} ${node.focusLabel || ''}`.trim();
+  const quotedTarget = extractQuotedTarget(source);
+  const target =
+    quotedTarget ||
     source
       .replace(/^i(?:'m| am)\s+/i, '')
-      .replace(/^i\s+will\s+/i, '')
-      .replace(/^i\s+need\s+to\s+/i, '')
-      .replace(/^now\s+/i, '')
-      .replace(/\b(scroll down|find|locate|open|fill out|fill|type|click|check|scan)\b/gi, '')
+      .replace(/^i\s+(?:will|want to|need to)\s+/i, '')
+      .replace(/\b(scroll down|find|locate|open|fill out|fill|type|click|check|scan)\b/gi, ' ')
       .replace(/\b(the|a|an|section|button|form|page|target|area)\b/gi, ' ')
       .replace(/\s+/g, ' ')
       .trim();
 
-  const entityWords = rawEntity
-    .replace(/[^\w\s"-]/g, ' ')
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 5);
+  if (tool.includes('snapshot') || tool.includes('query') || tool.includes('read')) {
+    return quotedTarget ? `Scan ${quotedTarget}` : `Scan ${target || 'the page'}`;
+  }
+  if (tool.includes('click')) {
+    return quotedTarget ? `Open ${quotedTarget}` : `Click ${target || 'the target'}`;
+  }
+  if (tool.includes('type') || tool.includes('fill')) {
+    return quotedTarget ? `Fill ${quotedTarget}` : `Fill ${target || 'the field'}`;
+  }
+  if (tool.includes('navigate')) {
+    return quotedTarget ? `Open ${quotedTarget}` : `Open the next page`;
+  }
+  return `Check ${target || 'the next step'}`;
+}
 
-  const entity = entityWords.length > 0 ? entityWords.join(' ') : 'next step';
-  const title = `${verb} ${entity}`;
-  const compact = title.split(/\s+/).slice(0, 6).join(' ');
-  return compact.length > 48 ? `${compact.slice(0, 45)}...` : compact;
+function summarizeStepTitle(node: TaskNode): string {
+  const source = (node.thinking || node.focusLabel || '').trim();
+  const primarySentence =
+    source
+      .split(/(?<=[.!?])\s+/)
+      .map((part) => cleanActionPhrase(part))
+      .find((part) => part.length > 6) || '';
+
+  const basePhrase = primarySentence || cleanActionPhrase(node.focusLabel || '') || buildFallbackPhrase(node);
+  return compactPhrase(toTitleCasePhrase(basePhrase));
 }
 
 function getRiskExplanationText(node: TaskNode): string {
@@ -151,7 +182,18 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
   const [activeTooltip, setActiveTooltip] = useState<{
     stepId: string;
     kind: TooltipKind;
+    placement: TooltipPlacement;
   } | null>(null);
+
+  const resolveTooltipPlacement = (element: HTMLElement): TooltipPlacement => {
+    const rect = element.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    return spaceBelow < 220 && spaceAbove > spaceBelow ? 'above' : 'below';
+  };
+
+  const getTooltipPositionClasses = (placement: TooltipPlacement): string =>
+    placement === 'above' ? 'bottom-full mb-2' : 'top-full mt-2';
 
   if (nodes.length === 0) return null;
   const statusClasses: Record<TaskNodeStatus, string> =
@@ -191,14 +233,19 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
           const showThinkingTooltip = activeTooltip?.stepId === node.stepId && activeTooltip.kind === 'thinking';
           const showRiskTooltip = activeTooltip?.stepId === node.stepId && activeTooltip.kind === 'risk';
           const showDecisionTooltip = activeTooltip?.stepId === node.stepId && activeTooltip.kind === 'decision';
+          const tooltipPositionClasses = getTooltipPositionClasses(activeTooltip?.placement || 'below');
 
           return (
             <div
               key={node.id}
               className="relative rounded px-1 py-1 hover:bg-base-200"
-              onMouseEnter={() => {
+              onMouseEnter={(e) => {
                 if (node.thinking) {
-                  setActiveTooltip({ stepId: node.stepId, kind: 'thinking' });
+                  setActiveTooltip({
+                    stepId: node.stepId,
+                    kind: 'thinking',
+                    placement: resolveTooltipPlacement(e.currentTarget as HTMLDivElement),
+                  });
                 }
               }}
               onMouseLeave={() => {
@@ -219,7 +266,7 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                     </div>
                   </div>
                   {showThinkingTooltip && node.thinking ? (
-                    <div className="pointer-events-none absolute left-0 top-full z-20 mt-2 w-72 rounded-2xl border border-base-300 bg-gradient-to-br from-base-100 to-base-200 p-3 shadow-xl">
+                    <div className={`pointer-events-none absolute left-0 z-20 w-72 rounded-2xl border border-base-300 bg-gradient-to-br from-base-100 to-base-200 p-3 shadow-xl ${tooltipPositionClasses}`}>
                       <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-base-content/50">
                         Agent Thinking
                       </div>
@@ -233,8 +280,12 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                       <div className="flex flex-wrap items-center gap-1">
                         <div
                           className="inline-flex"
-                          onMouseEnter={() => {
-                            setActiveTooltip({ stepId: node.stepId, kind: 'risk' });
+                          onMouseEnter={(e) => {
+                            setActiveTooltip({
+                              stepId: node.stepId,
+                              kind: 'risk',
+                              placement: resolveTooltipPlacement(e.currentTarget as HTMLDivElement),
+                            });
                             hoverStartByStepRef.current[node.stepId] = Date.now();
                           }}
                           onMouseLeave={() => {
@@ -257,8 +308,12 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                         {node.intervention.decision ? (
                           <div
                             className="inline-flex"
-                            onMouseEnter={() => {
-                              setActiveTooltip({ stepId: node.stepId, kind: 'decision' });
+                            onMouseEnter={(e) => {
+                              setActiveTooltip({
+                                stepId: node.stepId,
+                                kind: 'decision',
+                                placement: resolveTooltipPlacement(e.currentTarget as HTMLDivElement),
+                              });
                             }}
                             onMouseLeave={() => {
                               setActiveTooltip((current) =>
@@ -273,7 +328,7 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                         ) : null}
                       </div>
                       {showRiskTooltip ? (
-                        <div className="pointer-events-none absolute left-0 top-full z-20 mt-2 w-64 rounded-2xl border border-base-300 bg-gradient-to-br from-base-100 to-base-200 p-3 shadow-xl">
+                        <div className={`pointer-events-none absolute left-0 z-20 w-64 rounded-2xl border border-base-300 bg-gradient-to-br from-base-100 to-base-200 p-3 shadow-xl ${tooltipPositionClasses}`}>
                           <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-base-content/50">
                             Risk Explanation
                           </div>
@@ -283,7 +338,7 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                         </div>
                       ) : null}
                       {showDecisionTooltip ? (
-                        <div className="pointer-events-none absolute left-0 top-full z-20 mt-2 w-64 rounded-2xl border border-base-300 bg-gradient-to-br from-base-100 to-base-200 p-3 shadow-xl">
+                        <div className={`pointer-events-none absolute left-0 z-20 w-64 rounded-2xl border border-base-300 bg-gradient-to-br from-base-100 to-base-200 p-3 shadow-xl ${tooltipPositionClasses}`}>
                           <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-base-content/50">
                             Decision Context
                           </div>

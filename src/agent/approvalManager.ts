@@ -1,5 +1,5 @@
 import { waitForOverlayApprovalDecision } from '../background/attentionTracker';
-import { handleApprovalRequested } from '../background/oversightManager';
+import { buildApprovalDecisionCopy, handleApprovalRequested } from '../background/oversightManager';
 import { getTabState, getWindowForTab } from '../background/tabManager';
 import { sendUIMessage } from '../background/utils';
 import {
@@ -7,14 +7,104 @@ import {
   getOversightStorageQueryDefaults,
   mapStorageToOversightSettings,
 } from '../oversight/registry';
+import { getDefaultOversightArchetype, OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY } from '../options/oversightArchetypes';
 
 // Pending approvals map
 const pendingApprovals = new Map<string, {
-  resolve: (approved: boolean) => void,
-  toolName: string,
-  toolInput: string,
-  reason: string
+  resolve: (approved: boolean) => void;
+  toolName: string;
+  toolInput: string;
+  reason: string;
+  approvalSeriesKey?: string | null;
+  siteApprovalKey?: string | null;
 }>();
+const autoApprovedSeriesKeys = new Set<string>();
+const autoApprovedSiteKeys = new Set<string>();
+
+function buildApprovalSeriesKey(toolName: string, toolInput: string): string | null {
+  const normalizedTool = toolName.toLowerCase();
+  const normalizedInput = toolInput.toLowerCase().replace(/\s+/g, ' ').trim();
+  const quotedTarget = toolInput.match(/["']([^"']+)["']/)?.[1]?.trim().toLowerCase();
+  const selectorTarget = toolInput.split(',')[0]?.trim().toLowerCase();
+  const target = quotedTarget || selectorTarget || normalizedInput;
+
+  if (normalizedTool.includes('type') || normalizedTool.includes('fill')) {
+    return 'series:data-entry';
+  }
+  if (normalizedTool.includes('navigate')) {
+    return 'series:navigation';
+  }
+  if (normalizedTool.includes('click')) {
+    if (/(submit|delete|remove|pay|purchase|checkout|send|confirm|publish)/i.test(target)) {
+      return `series:click:${target}`;
+    }
+    return 'series:ui-click';
+  }
+
+  return `series:${normalizedTool}`;
+}
+
+export function clearApprovalSeries(): void {
+  autoApprovedSeriesKeys.clear();
+  autoApprovedSiteKeys.clear();
+}
+
+export async function requestPlanStepApproval(
+  tabId: number,
+  stepId: string,
+  planStepNumber: number,
+  planStepText: string,
+  windowId?: number
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    const requestId = `plan_step_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    pendingApprovals.set(requestId, {
+      resolve,
+      toolName: 'plan_step',
+      toolInput: planStepText,
+      reason: `Up next in the plan: Step ${planStepNumber}.`,
+    });
+
+    if (!windowId) {
+      try {
+        windowId = getWindowForTab(tabId);
+      } catch (error) {
+        console.error('Error getting window ID for plan-step approval:', error);
+      }
+    }
+
+    chrome.runtime.sendMessage({
+      action: 'requestApproval',
+      tabId,
+      windowId,
+      requestId,
+      stepId,
+      toolName: 'plan_step',
+      toolInput: planStepText,
+      reason: `The next part of the plan is Step ${planStepNumber}: ${planStepText}`,
+      approvalVariant: 'supervisory-plan-step',
+      planStepIndex: planStepNumber - 1,
+    }, () => {
+      if (chrome.runtime.lastError) {
+        console.error('Error sending plan-step approval request:', chrome.runtime.lastError);
+        pendingApprovals.delete(requestId);
+        resolve(false);
+      }
+    });
+  });
+}
+
+async function resolveSiteApprovalKey(tabId: number): Promise<string | null> {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab.url) return null;
+    const origin = new URL(tab.url).origin;
+    return origin && origin !== 'null' ? `site:${origin}` : null;
+  } catch (error) {
+    console.warn('Failed to resolve site approval key:', error);
+    return null;
+  }
+}
 
 /**
  * Requests approval from the user for a tool execution
@@ -35,86 +125,155 @@ export async function requestApproval(
 ): Promise<boolean> {
   return new Promise((resolve) => {
     const requestId = generateUniqueId();
-    pendingApprovals.set(requestId, { resolve, toolName, toolInput, reason });
-    
-    // Get the window ID if not provided
-    if (!windowId) {
-      try {
-        // Try to get the window ID from the tab manager
-        windowId = getWindowForTab(tabId);
-      } catch (error) {
-        console.error('Error getting window ID for tab:', error);
+    const approvalSeriesKey = buildApprovalSeriesKey(toolName, toolInput);
+    void resolveSiteApprovalKey(tabId).then((siteApprovalKey) => {
+      if (siteApprovalKey && autoApprovedSiteKeys.has(siteApprovalKey)) {
+        resolve(true);
+        return;
       }
-    }
+      if (approvalSeriesKey && autoApprovedSeriesKeys.has(approvalSeriesKey)) {
+        resolve(true);
+        return;
+      }
 
-    void chrome.storage.sync
-      .get(getOversightStorageQueryDefaults())
-      .then((result) => {
-        const oversightSettings = mapStorageToOversightSettings(result as Record<string, unknown>);
-        const enableAgentFocus = Boolean(oversightSettings[AGENT_FOCUS_MECHANISM_ID]);
-        const page = getTabState(tabId)?.page;
-
-        if (enableAgentFocus && page) {
-          void waitForOverlayApprovalDecision(page, requestId).then((decision) => {
-            if (!decision || !pendingApprovals.has(requestId)) return;
-            handleApprovalResponse(requestId, decision.approved);
-            sendUIMessage(
-              'approvalResolved',
-              {
-                requestId,
-                approved: decision.approved,
-              },
-              tabId,
-              windowId
-            );
-          });
-        }
-
-        return handleApprovalRequested({
-          stepId,
-          requestId,
-          tabId,
-          windowId,
-          page,
-          toolName,
-          toolInput,
-          reason,
-          enableAgentFocus,
-        });
-      })
-      .catch((error) => {
-        console.warn('Failed to load oversight settings for approval overlay:', error);
-        return handleApprovalRequested({
-          stepId,
-          requestId,
-          tabId,
-          windowId,
-          page: getTabState(tabId)?.page,
-          toolName,
-          toolInput,
-          reason,
-          enableAgentFocus: false,
-        });
+      pendingApprovals.set(requestId, {
+        resolve,
+        toolName,
+        toolInput,
+        reason,
+        approvalSeriesKey,
+        siteApprovalKey,
       });
-    
-    // Send approval request to UI with a callback to handle errors
-    chrome.runtime.sendMessage({
-      action: 'requestApproval',
-      tabId,
-      windowId, // Include window ID in the message
-      requestId,
-      stepId,
-      toolName,
-      toolInput,
-      reason
-    }, (_response) => {
-      // Handle any potential errors
-      if (chrome.runtime.lastError) {
-        console.error('Error sending approval request:', chrome.runtime.lastError);
-        // If there's an error, resolve with false (reject the action)
-        resolve(false);
+
+      if (!windowId) {
+        try {
+          windowId = getWindowForTab(tabId);
+        } catch (error) {
+          console.error('Error getting window ID for tab:', error);
+        }
       }
-      // Don't resolve here - wait for the handleApprovalResponse call
+
+      void chrome.storage.sync
+        .get({
+          ...getOversightStorageQueryDefaults(),
+          [OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY]: getDefaultOversightArchetype().id,
+        })
+        .then((result) => {
+          const oversightSettings = mapStorageToOversightSettings(result as Record<string, unknown>);
+          const enableAgentFocus = Boolean(oversightSettings[AGENT_FOCUS_MECHANISM_ID]);
+          const selectedArchetypeId =
+            typeof result[OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY] === 'string'
+              ? result[OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY]
+              : getDefaultOversightArchetype().id;
+          const allowPageApprovalOverlay = selectedArchetypeId === 'structural-amplification';
+          const page = getTabState(tabId)?.page;
+          const actionTitle = toolName.includes('click')
+            ? `Interact with "${toolInput.match(/["']([^"']+)["']/)?.[1]?.trim() || 'this item'}"`
+            : toolName.includes('type') || toolName.includes('fill')
+              ? 'Enter information'
+              : toolName.includes('navigate')
+                ? 'Open the next page'
+                : 'Continue with the next action';
+          const displayReason = buildApprovalDecisionCopy({
+            actionTitle,
+            toolName,
+            toolInput,
+            thinking: reason,
+          });
+
+          if (allowPageApprovalOverlay && enableAgentFocus && page) {
+            void waitForOverlayApprovalDecision(page, requestId).then((decision) => {
+              if (!decision || !pendingApprovals.has(requestId)) return;
+              handleApprovalResponse(requestId, decision.approved, decision.approvalMode || 'once');
+              sendUIMessage(
+                'approvalResolved',
+                {
+                  requestId,
+                  approved: decision.approved,
+                },
+                tabId,
+                windowId
+              );
+            });
+          }
+
+          void handleApprovalRequested({
+            stepId,
+            requestId,
+            tabId,
+            windowId,
+            page,
+            toolName,
+            toolInput,
+            reason,
+            enableAgentFocus: allowPageApprovalOverlay && enableAgentFocus,
+          });
+
+          chrome.runtime.sendMessage({
+            action: 'requestApproval',
+            tabId,
+            windowId,
+            requestId,
+            stepId,
+            toolName,
+            toolInput,
+            reason: displayReason,
+            approvalVariant:
+              selectedArchetypeId === 'action-confirmation'
+                ? 'action-confirmation'
+                : selectedArchetypeId === 'supervisory-co-execution'
+                  ? 'supervisory'
+                  : 'default',
+          }, (_response) => {
+            if (chrome.runtime.lastError) {
+              console.error('Error sending approval request:', chrome.runtime.lastError);
+              resolve(false);
+            }
+          });
+        })
+        .catch((error) => {
+          console.warn('Failed to load oversight settings for approval overlay:', error);
+          const fallbackReason = buildApprovalDecisionCopy({
+            actionTitle:
+              toolName.includes('click')
+                ? `Interact with "${toolInput.match(/["']([^"']+)["']/)?.[1]?.trim() || 'this item'}"`
+                : toolName.includes('type') || toolName.includes('fill')
+                  ? 'Enter information'
+                  : toolName.includes('navigate')
+                    ? 'Open the next page'
+                    : 'Continue with the next action',
+            toolName,
+            toolInput,
+            thinking: reason,
+          });
+          void handleApprovalRequested({
+            stepId,
+            requestId,
+            tabId,
+            windowId,
+            page: getTabState(tabId)?.page,
+            toolName,
+            toolInput,
+            reason,
+            enableAgentFocus: false,
+          });
+          chrome.runtime.sendMessage({
+            action: 'requestApproval',
+            tabId,
+            windowId,
+            requestId,
+            stepId,
+            toolName,
+            toolInput,
+            reason: fallbackReason,
+            approvalVariant: 'default',
+          }, (_response) => {
+            if (chrome.runtime.lastError) {
+              console.error('Error sending approval request:', chrome.runtime.lastError);
+              resolve(false);
+            }
+          });
+        });
     });
   });
 }
@@ -124,9 +283,19 @@ export async function requestApproval(
  * @param requestId The ID of the approval request
  * @param approved Whether the request was approved
  */
-export function handleApprovalResponse(requestId: string, approved: boolean): void {
+export function handleApprovalResponse(
+  requestId: string,
+  approved: boolean,
+  approvalMode: 'once' | 'series' | 'site' = 'once'
+): void {
   const pendingApproval = pendingApprovals.get(requestId);
   if (pendingApproval) {
+    if (approved && approvalMode === 'series' && pendingApproval.approvalSeriesKey) {
+      autoApprovedSeriesKeys.add(pendingApproval.approvalSeriesKey);
+    }
+    if (approved && approvalMode === 'site' && pendingApproval.siteApprovalKey) {
+      autoApprovedSiteKeys.add(pendingApproval.siteApprovalKey);
+    }
     pendingApproval.resolve(approved);
     pendingApprovals.delete(requestId);
   } else {

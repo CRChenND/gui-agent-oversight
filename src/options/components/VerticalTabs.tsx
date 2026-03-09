@@ -161,7 +161,6 @@ export function VerticalTabs(props: VerticalTabsProps) {
             onApplyArchetype={props.applyArchetype}
             isSaving={props.isSaving}
             saveStatus={props.saveStatus}
-            handleSave={props.handleSave}
           />
         );
       default:

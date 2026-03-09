@@ -46,6 +46,10 @@ export const useMessageManagement = () => {
     addMessage({ type: 'system', content });
   };
 
+  const addUserMessage = (content: string) => {
+    addMessage({ type: 'user', content });
+  };
+
   const updateStreamingChunk = (content: string) => {
     setIsStreaming(true);
     setStreamingSegments(prev => ({
@@ -93,6 +97,7 @@ export const useMessageManagement = () => {
     setIsProcessing,
     outputRef,
     addMessage,
+    addUserMessage,
     addSystemMessage,
     updateStreamingChunk,
     finalizeStreamingSegment,

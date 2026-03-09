@@ -76,6 +76,7 @@ export interface ApprovalResponseMessage {
   action: 'approvalResponse';
   requestId: string;
   approved: boolean;
+  approvalMode?: 'once' | 'series' | 'site';
   tabId?: number;
   windowId?: number;
 }
@@ -197,6 +198,8 @@ export interface RequestApprovalMessage {
   toolName: string;
   toolInput: string;
   reason: string;
+  approvalVariant?: 'default' | 'action-confirmation' | 'supervisory' | 'supervisory-plan-step';
+  planStepIndex?: number;
   tabId?: number;
   windowId?: number;
 }

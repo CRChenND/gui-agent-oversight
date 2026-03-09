@@ -5,9 +5,14 @@ import remarkGfm from 'remark-gfm';
 interface LlmContentProps {
   content: string;
   stepStartIndex?: number;
+  conversationStyle?: 'default' | 'chat';
 }
 
-export const LlmContent: React.FC<LlmContentProps> = ({ content, stepStartIndex = 1 }) => {
+export const LlmContent: React.FC<LlmContentProps> = ({
+  content,
+  stepStartIndex = 1,
+  conversationStyle = 'default',
+}) => {
   // Extract structured step metadata tags for prettier rendering in conversation.
   const stepMetadata: Array<{ thinkingSummary: string }> = [];
   const metadataThinkingRegex = /<thinking_summary>([\s\S]*?)<\/thinking_summary>/gi;
@@ -93,9 +98,20 @@ export const LlmContent: React.FC<LlmContentProps> = ({ content, stepStartIndex 
     }
   }
   
+  const isChatStyle = conversationStyle === 'chat';
+  const plainThinkingBlocks = stepMetadata
+    .map((item) => item.thinkingSummary.trim())
+    .filter(Boolean);
+  const textParts = parts.filter((part) => part.type === 'text' && part.content.trim().length > 0);
+  const hasRenderableText = textParts.length > 0 || plainThinkingBlocks.length > 0;
+
+  if (isChatStyle && !hasRenderableText) {
+    return null;
+  }
+
   return (
     <>
-      {actionChips.length > 0 ? (
+      {!isChatStyle && actionChips.length > 0 ? (
         <div className="mb-2 flex flex-wrap items-center gap-1.5">
           {actionChips.map((chip) => (
             <span key={`chip-${chip}`} className="badge badge-ghost badge-sm">
@@ -104,7 +120,7 @@ export const LlmContent: React.FC<LlmContentProps> = ({ content, stepStartIndex 
           ))}
         </div>
       ) : null}
-      {stepMetadata.map((item, index) => {
+      {!isChatStyle && stepMetadata.map((item, index) => {
         return (
           <div key={`step-meta-${index}`} className="mb-2 rounded border border-base-300 bg-base-200 p-3 text-sm">
             <div className="mb-1 flex items-center justify-between">
@@ -116,6 +132,19 @@ export const LlmContent: React.FC<LlmContentProps> = ({ content, stepStartIndex 
           </div>
         );
       })}
+      {isChatStyle
+        ? plainThinkingBlocks.map((thinking, index) => (
+            <ReactMarkdown
+              key={`thinking-${index}`}
+              remarkPlugins={[remarkGfm]}
+              components={{
+                p: ({node, ...props}) => <p className="mb-2" {...props} />,
+              }}
+            >
+              {thinking}
+            </ReactMarkdown>
+          ))
+        : null}
       {parts.map((part, index) => {
         if (part.type === 'text') {
           // Render regular text with markdown

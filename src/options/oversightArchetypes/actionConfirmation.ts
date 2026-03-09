@@ -32,7 +32,7 @@ parameterSettings[INTERVENTION_GATE_MECHANISM_ID].userActionOptions = 'basic';
 export const actionConfirmationArchetype = defineArchetype({
   id: 'action-confirmation',
   name: 'Action-Confirmation Oversight',
-  description: 'Human veto by default with explicit confirmation at every action boundary.',
+  description: 'The agent explains each next action in the chat, and you must agree before it does anything.',
   authorityModel: 'Human must approve every action before execution.',
   visibilityStructure: 'Minimal intent summary per action rather than persistent trace exposure.',
   oversightRhythm: 'Mandatory per-action confirmation without automated risk classification.',

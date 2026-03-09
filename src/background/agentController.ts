@@ -1,5 +1,6 @@
 // Import provider-specific types
 import Anthropic from "@anthropic-ai/sdk";
+import { requestPlanStepApproval } from "../agent/approvalManager";
 import { BrowserAgent, createBrowserAgent, executePromptWithFallback, needsReinitialization } from "../agent/AgentCore";
 import { ExecutionCallbacks } from "../agent/ExecutionEngine";
 import { contextTokenCount } from "../agent/TokenManager";
@@ -22,6 +23,7 @@ import { getOversightRuntimeManager } from "../oversight/runtime/runtimeManager"
 import { getOversightSessionManager } from "../oversight/session/sessionManager";
 import { ScreenshotManager } from "../tracking/screenshotManager";
 import { ConfigManager } from "./configManager";
+import { getDefaultOversightArchetype, OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY } from "../options/oversightArchetypes";
 import {
   handleRiskSignal,
   handleAgentThinking,
@@ -796,14 +798,6 @@ export async function executePrompt(
         const currentUrl = await updatedTabState.page.url();
         const currentTitle = await updatedTabState.page.title();
         
-        // Add a more explicit system message about the current page
-        const pageContextMessage = `Current page: ${currentUrl} (${currentTitle}) - Consider this context when executing commands. If asked to summarize, create tables, or analyze options without specific references, assume the request refers to content on this page.`;
-        
-        sendUIMessage('updateOutput', {
-          type: 'system',
-          content: pageContextMessage
-        }, targetTabId);
-        
         // Set the current page context in the PromptManager
         // This will be included in the system prompt
         const updatedWindowId = updatedTabState.windowId;
@@ -846,6 +840,7 @@ export async function executePrompt(
       [controlModeKey]: 'risky_only',
       [gatePolicyKey]: 'impact',
       [planReviewEnabledKey]: true,
+      [OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY]: getDefaultOversightArchetype().id,
     });
     const mechanismSettings = mapStorageToOversightSettings(mechanismStorage as Record<string, unknown>);
     const parameterSettings = mapStorageToOversightParameterSettings(mechanismStorage as Record<string, unknown>);
@@ -866,7 +861,16 @@ export async function executePrompt(
       rawGatePolicy === 'never' || rawGatePolicy === 'always' || rawGatePolicy === 'impact' || rawGatePolicy === 'adaptive'
         ? rawGatePolicy
         : 'impact';
-    const planReviewEnabled = mechanismStorage[planReviewEnabledKey] !== false;
+    const selectedArchetypeId =
+      typeof mechanismStorage[OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY] === 'string'
+        ? mechanismStorage[OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY]
+        : getDefaultOversightArchetype().id;
+    const enableFocusThinkingOverlay =
+      enableStructuralAmplification || selectedArchetypeId === 'risk-gated';
+    const planReviewEnabled =
+      mechanismStorage[planReviewEnabledKey] !== false &&
+      selectedArchetypeId !== 'action-confirmation' &&
+      selectedArchetypeId !== 'risk-gated';
     const runtimeManager = getOversightRuntimeManager();
     runtimeManager.initializeRun({
       tabId: targetTabId,
@@ -901,6 +905,9 @@ export async function executePrompt(
         escalationPersistenceMs: 300000,
       },
     });
+    if (!planReviewEnabled) {
+      await runtimeManager.setExecutionPhase(updatedTabState.windowId, 'execution', 'plan_review_not_required');
+    }
     
     // Reset streaming buffer and segment ID
     resetStreamingState();
@@ -1111,6 +1118,9 @@ export async function executePrompt(
           isRetrying: true
         }, targetTabId);
       },
+      onPlanGenerated: ({ summary, steps }) => {
+        if (selectedArchetypeId !== 'supervisory-co-execution') return;
+      },
       onSegmentComplete: (segment) => {
         if (useStreaming) {
           // Get the window ID for this tab
@@ -1123,7 +1133,7 @@ export async function executePrompt(
           incrementSegmentId();
         }
       },
-      onToolStart: (stepId, toolName, toolInput) => {
+      onToolStart: (stepId, toolName, toolInput, planStepIndex, stepDescription) => {
         currentToolCall = { stepId, toolName, toolInput };
         void handleToolStarted({
           tabId: targetTabId,
@@ -1132,9 +1142,11 @@ export async function executePrompt(
           stepId,
           toolName,
           toolInput,
+          planStepIndex,
+          stepDescription,
           enableAgentFocus,
           thinking: latestThinkingByStepId.get(stepId) || '',
-          enableThinkingOverlay: enableStructuralAmplification,
+          enableThinkingOverlay: enableFocusThinkingOverlay,
         });
 
         if (useStreaming) {
@@ -1188,14 +1200,25 @@ export async function executePrompt(
         
         sendUIMessage('processingComplete', null, targetTabId, windowId);
       },
-      onPlanReviewRequired: async (payload) => {
-        const windowId = getWindowForTab(targetTabId);
-        if (!planReviewEnabled) {
-          await runtimeManager.setExecutionPhase(windowId, 'execution', 'plan_review_disabled');
-          return { decision: 'approve' as const };
-        }
-        return runtimeManager.requestPlanReview(windowId, payload);
-      },
+      onPlanReviewRequired: planReviewEnabled
+        ? async (payload) => {
+            const windowId = getWindowForTab(targetTabId);
+            return runtimeManager.requestPlanReview(windowId, payload);
+          }
+        : undefined,
+      onPlanStepApprovalRequired:
+        selectedArchetypeId === 'supervisory-co-execution'
+          ? async (payload) => {
+              const approved = await requestPlanStepApproval(
+                targetTabId,
+                payload.stepId,
+                payload.planStepIndex + 1,
+                payload.planStepText,
+                updatedTabState.windowId
+              );
+              return { decision: approved ? 'accept' as const : 'reject' as const };
+            }
+          : undefined,
       onWaitForExecutionPermission: async () => {
         const windowId = getWindowForTab(targetTabId);
         return runtimeManager.waitUntilExecutable(windowId);

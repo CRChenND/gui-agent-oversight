@@ -6,6 +6,8 @@ import type { OversightTelemetryEvent } from './types';
 const TELEMETRY_STORAGE_KEY = 'oversight.telemetry.sessions';
 const TELEMETRY_REDACTION_LEVEL_KEY = 'telemetry.redactionLevel';
 const TELEMETRY_REDACTION_MAX_TEXT_KEY = 'telemetry.redactionMaxTextLength';
+const MAX_EVENTS_PER_SESSION = 400;
+const MAX_STORED_SESSIONS = 12;
 
 type TelemetryStorage = Record<string, OversightTelemetryEvent[]>;
 
@@ -34,6 +36,28 @@ function normalizeTelemetryStorage(value: unknown): TelemetryStorage {
   }
 
   return normalized;
+}
+
+function trimSessionEvents(events: OversightTelemetryEvent[]): OversightTelemetryEvent[] {
+  if (events.length <= MAX_EVENTS_PER_SESSION) {
+    return events;
+  }
+  return events.slice(events.length - MAX_EVENTS_PER_SESSION);
+}
+
+function sortSessionsByLatestTimestamp(storage: TelemetryStorage): Array<[string, OversightTelemetryEvent[]]> {
+  return Object.entries(storage).sort((a, b) => {
+    const latestA = a[1][a[1].length - 1]?.timestamp ?? 0;
+    const latestB = b[1][b[1].length - 1]?.timestamp ?? 0;
+    return latestB - latestA;
+  });
+}
+
+function trimTelemetryStorage(storage: TelemetryStorage): TelemetryStorage {
+  const trimmedSessions = sortSessionsByLatestTimestamp(storage)
+    .slice(0, MAX_STORED_SESSIONS)
+    .map(([sessionId, events]) => [sessionId, trimSessionEvents(events)] as const);
+  return Object.fromEntries(trimmedSessions);
 }
 
 export class OversightTelemetryLogger {
@@ -69,7 +93,7 @@ export class OversightTelemetryLogger {
     for (const [sessionId, events] of Object.entries(normalized)) {
       const sorted = [...events].sort((a, b) => a.timestamp - b.timestamp);
       const pendingLocal = this.sessionEvents.get(sessionId) ?? [];
-      const merged = [...sorted, ...pendingLocal].sort((a, b) => a.timestamp - b.timestamp);
+      const merged = trimSessionEvents([...sorted, ...pendingLocal].sort((a, b) => a.timestamp - b.timestamp));
       this.sessionEvents.set(sessionId, merged);
       this.flushedCounts.set(sessionId, sorted.length);
     }
@@ -107,7 +131,7 @@ export class OversightTelemetryLogger {
     const current = this.sessionEvents.get(event.sessionId) ?? [];
     current.push(this.sanitizeThinkingPayload(event));
     current.sort((a, b) => a.timestamp - b.timestamp);
-    this.sessionEvents.set(event.sessionId, current);
+    this.sessionEvents.set(event.sessionId, trimSessionEvents(current));
 
     this.flushQueue = this.flushQueue
       .then(async () => {
@@ -130,12 +154,33 @@ export class OversightTelemetryLogger {
       if (pending.length === 0) continue;
 
       const existing = mergedStorage[sessionId] ?? [];
-      mergedStorage[sessionId] = existing.concat(pending).sort((a, b) => a.timestamp - b.timestamp);
-      this.flushedCounts.set(sessionId, events.length);
+      mergedStorage[sessionId] = trimSessionEvents(existing.concat(pending).sort((a, b) => a.timestamp - b.timestamp));
+      this.flushedCounts.set(sessionId, mergedStorage[sessionId].length);
       this.sessionEvents.set(sessionId, mergedStorage[sessionId]);
     }
 
-    await chrome.storage.local.set({ [TELEMETRY_STORAGE_KEY]: mergedStorage });
+    const trimmedStorage = trimTelemetryStorage(mergedStorage);
+    try {
+      await chrome.storage.local.set({ [TELEMETRY_STORAGE_KEY]: trimmedStorage });
+    } catch (error) {
+      const aggressivelyTrimmed = trimTelemetryStorage(
+        Object.fromEntries(
+          sortSessionsByLatestTimestamp(trimmedStorage).map(([sessionId, events]) => [
+            sessionId,
+            events.slice(Math.max(0, events.length - Math.min(120, MAX_EVENTS_PER_SESSION))),
+          ])
+        )
+      );
+      await chrome.storage.local.set({ [TELEMETRY_STORAGE_KEY]: aggressivelyTrimmed });
+      for (const [sessionId, events] of Object.entries(aggressivelyTrimmed)) {
+        this.sessionEvents.set(sessionId, events);
+        this.flushedCounts.set(sessionId, events.length);
+      }
+      console.warn(
+        'Telemetry storage was trimmed to recover from a flush failure:',
+        error instanceof Error ? error.message : String(error)
+      );
+    }
   }
 
   getSessionEvents(sessionId: string): OversightTelemetryEvent[] {
