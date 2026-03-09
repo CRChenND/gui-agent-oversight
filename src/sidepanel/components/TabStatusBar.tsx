@@ -82,7 +82,6 @@ export const TabStatusBar: React.FC<TabStatusBarProps> = ({
           tabStatus === 'idle' ? 'Agent Idle' :
           tabStatus === 'error' ? 'Agent Error' : 'Unknown'
         }></div>
-        {/* Current website display removed per request */}
       </div>
     </div>
   );

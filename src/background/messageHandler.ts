@@ -88,10 +88,6 @@ export function handleMessage(
         sendResponse({ success: true });
         return true;
         
-      // reflectAndLearn removed per request
-        
-      // token usage updates removed
-        
       case 'updateOutput':
         // Just pass through output updates
         // This allows components to send UI updates
@@ -198,10 +194,7 @@ function isBackgroundMessage(message: any): message is BackgroundMessage {
       message.action === 'clearHistory' ||
       message.action === 'initializeTab' ||
       message.action === 'switchToTab' ||
-      // message.action === 'getTokenUsage' ||
       message.action === 'approvalResponse' ||
-      // 'reflectAndLearn' action removed
-      // message.action === 'tokenUsageUpdated' ||
       message.action === 'updateOutput' ||  // Add support for output updates
       message.action === 'providerConfigChanged' ||  // Add support for provider config changes
       message.action === 'oversightEvent' ||
@@ -523,15 +516,6 @@ function handleSwitchToTab(
   }
   sendResponse({ success: true });
 }
-
-/**
- * Handle the getTokenUsage message
- * @param message The message to handle
- * @param sendResponse The function to send a response
- */
-// getTokenUsage handler removed
-
-// reflectAndLearn handler removed
 
 /**
  * Handle the forceResetPlaywright message

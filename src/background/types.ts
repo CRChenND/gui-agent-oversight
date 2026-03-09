@@ -65,13 +65,6 @@ export interface SwitchToTabMessage {
   windowId?: number;
 }
 
-export interface GetTokenUsageMessage {
-  action: 'getTokenUsage';
-  tabId?: number;
-  windowId?: number;
-}
-// GetTokenUsageMessage no longer used
-
 export interface ApprovalResponseMessage {
   action: 'approvalResponse';
   requestId: string;
@@ -80,8 +73,6 @@ export interface ApprovalResponseMessage {
   tabId?: number;
   windowId?: number;
 }
-
-// ReflectAndLearnMessage removed per request
 
 // UI Message types
 export interface UpdateOutputMessage {
@@ -168,18 +159,6 @@ export interface UpdateScreenshotMessage {
   tabId?: number;
   windowId?: number;
 }
-
-export interface TokenUsageUpdatedMessage {
-  action: 'tokenUsageUpdated';
-  content: {
-    inputTokens: number;
-    outputTokens: number;
-    cost: number;
-  };
-  tabId?: number;
-  windowId?: number;
-}
-// TokenUsageUpdatedMessage no longer used
 
 export interface ProviderConfigChangedMessage {
   action: 'providerConfigChanged';
@@ -324,9 +303,7 @@ export type BackgroundMessage =
   | ClearHistoryMessage
   | InitializeTabMessage
   | SwitchToTabMessage
-  | GetTokenUsageMessage
   | ApprovalResponseMessage
-  // | TokenUsageUpdatedMessage
   | UpdateOutputMessage
   | ProviderConfigChangedMessage
   | OversightEventMessage
@@ -421,7 +398,6 @@ export type UIMessage =
   | RateLimitMessage
   | FallbackStartedMessage
   | UpdateScreenshotMessage
-  | TokenUsageUpdatedMessage
   | ProviderConfigChangedMessage
   | RequestApprovalMessage
   | TabStatusChangedMessage

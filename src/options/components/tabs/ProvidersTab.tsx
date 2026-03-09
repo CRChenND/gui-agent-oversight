@@ -246,8 +246,6 @@ export function ProvidersTab({
           </div>
         </div>
       </div>
-      
-      {/* Model Pricing Table removed per request */}
     </div>
   );
 }

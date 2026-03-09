@@ -298,51 +298,6 @@ export function SidePanel() {
   const interruptCooldownMs = Math.max(0, Number(interventionParams.interruptCooldownMs || 0));
   const interruptTopK = Math.max(1, Number(interventionParams.interruptTopK || 999));
   const approvedPlanSteps = approvedPlan?.steps || [];
-  const computePlanStepAssignments = useCallback((planSteps: string[], nodes: typeof taskNodes) => {
-    if (planSteps.length === 0 || nodes.length === 0) return [] as Array<number | null>;
-
-    const tokenize = (value: string) =>
-      value
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, ' ')
-        .split(/\s+/)
-        .filter((token) => token.length > 2);
-
-    const planTokens = planSteps.map((step) => new Set(tokenize(step)));
-    let currentPlanIndex = 0;
-
-    return nodes.map((node) => {
-      if (typeof node.planStepIndex === 'number' && node.planStepIndex >= 0 && node.planStepIndex < planSteps.length) {
-        currentPlanIndex = node.planStepIndex;
-        return node.planStepIndex;
-      }
-
-      const nodeText = `${node.toolName} ${node.focusLabel} ${node.thinking || ''}`.trim();
-      const nodeTokens = tokenize(nodeText);
-      if (nodeTokens.length === 0) {
-        return currentPlanIndex < planSteps.length ? currentPlanIndex : planSteps.length - 1;
-      }
-
-      let bestIndex = currentPlanIndex;
-      let bestScore = -1;
-
-      for (let idx = currentPlanIndex; idx < planTokens.length; idx += 1) {
-        const tokens = planTokens[idx];
-        let score = 0;
-        for (const token of nodeTokens) {
-          if (tokens.has(token)) score += 1;
-        }
-        if (idx === currentPlanIndex) score += 0.25;
-        if (score > bestScore) {
-          bestScore = score;
-          bestIndex = idx;
-        }
-      }
-
-      currentPlanIndex = bestIndex;
-      return bestIndex;
-    });
-  }, [taskNodes]);
 
   const handleDownloadTaskGraph = useCallback(() => {
     if (taskNodes.length === 0) return;
