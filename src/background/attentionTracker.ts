@@ -165,6 +165,91 @@ export async function clearAttentionOverlay(page: Page): Promise<void> {
   });
 }
 
+export async function canAnchorAttentionTargetInViewport(page: Page, target: AttentionTarget): Promise<boolean> {
+  if (target.type === "coordinates") {
+    return (
+      typeof target.x === "number" &&
+      typeof target.y === "number" &&
+      target.x >= 0 &&
+      target.y >= 0 &&
+      target.x <= 100000 &&
+      target.y <= 100000
+    );
+  }
+
+  if (target.type !== "selector" && target.type !== "text") {
+    return false;
+  }
+
+  try {
+    return await page.evaluate((payload: AttentionTarget) => {
+      function isVisibleInViewport(element: Element | null): boolean {
+        if (!element) return false;
+        const htmlElement = element as HTMLElement;
+        const rect = htmlElement.getBoundingClientRect();
+        if (rect.width < 4 || rect.height < 4) return false;
+        return rect.bottom >= 0 && rect.right >= 0 && rect.top <= window.innerHeight && rect.left <= window.innerWidth;
+      }
+
+      function resolveVisibleTextTarget(text: string): Element | null {
+        const needle = text.trim().toLowerCase();
+        if (!needle) return null;
+
+        const elements = Array.from(
+          document.querySelectorAll(
+            "button, a, input, textarea, select, label, [role='button'], [role='link'], p, span, div"
+          )
+        );
+        let best: { element: Element; score: number } | null = null;
+
+        for (const element of elements) {
+          if (!isVisibleInViewport(element)) continue;
+          const htmlElement = element as HTMLElement;
+          const rawText =
+            (
+              htmlElement.innerText ||
+              htmlElement.textContent ||
+              htmlElement.getAttribute("aria-label") ||
+              htmlElement.getAttribute("placeholder") ||
+              ""
+            ).trim();
+          if (!rawText) continue;
+
+          const haystack = rawText.toLowerCase();
+          if (!haystack.includes(needle)) continue;
+
+          let score = 0;
+          if (haystack === needle) score += 100;
+          if (haystack.startsWith(needle)) score += 30;
+          score -= Math.max(0, haystack.length - needle.length);
+
+          if (!best || score > best.score) {
+            best = { element, score };
+          }
+        }
+
+        return best?.element ?? null;
+      }
+
+      if (payload.type === "selector" && payload.selector) {
+        try {
+          return isVisibleInViewport(document.querySelector(payload.selector));
+        } catch {
+          return false;
+        }
+      }
+
+      if (payload.type === "text" && payload.text) {
+        return isVisibleInViewport(resolveVisibleTextTarget(payload.text));
+      }
+
+      return false;
+    }, target);
+  } catch {
+    return false;
+  }
+}
+
 export async function renderAttentionOverlay(page: Page, target: AttentionTarget): Promise<void> {
   if (
     target.type !== "selector" &&
@@ -179,11 +264,13 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
 
   await page.evaluate((payload: AttentionTarget) => {
     const OVERLAY_ID = "__morph_attention_overlay__";
+    const renderToken = `overlay_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const old = document.getElementById(OVERLAY_ID);
     if (old) old.remove();
 
     const root = document.createElement("div");
     root.id = OVERLAY_ID;
+    root.setAttribute("data-render-token", renderToken);
     root.style.position = "fixed";
     root.style.inset = "0";
     root.style.zIndex = "2147483647";
@@ -512,7 +599,9 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
     if (!payload.approval) {
       setTimeout(() => {
         const current = document.getElementById(OVERLAY_ID);
-        if (current) current.remove();
+        if (current?.getAttribute("data-render-token") === renderToken) {
+          current.remove();
+        }
       }, 6000);
     }
   }, target);

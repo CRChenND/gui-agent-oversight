@@ -6,7 +6,7 @@ import type { OversightTelemetryEvent } from '../oversight/telemetry/types';
 import type { AgentThinkingSummary, OversightEvent, StepContextEvent } from '../oversight/types';
 import { inferRiskAssessment } from '../oversight/riskAssessment';
 import { getOversightRuntimeManager } from '../oversight/runtime/runtimeManager';
-import { clearAttentionOverlay, inferAttentionTarget, renderAttentionOverlay } from './attentionTracker';
+import { canAnchorAttentionTargetInViewport, clearAttentionOverlay, inferAttentionTarget, renderAttentionOverlay } from './attentionTracker';
 import { sendUIMessage, logWithTimestamp } from './utils';
 
 function emitOversightEvent(event: OversightEvent, tabId: number, windowId?: number): void {
@@ -175,8 +175,22 @@ export async function handleToolStarted(args: {
   enableAgentFocus: boolean;
   thinking?: string;
   enableThinkingOverlay?: boolean;
+  selectedArchetypeId?: string;
 }): Promise<void> {
-  const { tabId, windowId, page, stepId, toolName, toolInput, planStepIndex, stepDescription, enableAgentFocus, thinking, enableThinkingOverlay } = args;
+  const {
+    tabId,
+    windowId,
+    page,
+    stepId,
+    toolName,
+    toolInput,
+    planStepIndex,
+    stepDescription,
+    enableAgentFocus,
+    thinking,
+    enableThinkingOverlay,
+    selectedArchetypeId,
+  } = args;
   const attentionTarget = inferAttentionTarget(toolName, toolInput);
   thinkingByStepId[stepId] = thinking || '';
   const stepContext = resolveStepContext(stepId, toolName, toolInput);
@@ -232,10 +246,24 @@ export async function handleToolStarted(args: {
 
   if (enableAgentFocus && page) {
     try {
-      await renderAttentionOverlay(page, {
+      const thinkingText = enableThinkingOverlay ? thinking : undefined;
+      let overlayTarget = {
         ...attentionTarget,
-        thinking: enableThinkingOverlay ? thinking : undefined,
-      });
+        thinking: thinkingText,
+      };
+
+      if (selectedArchetypeId === 'risk-gated') {
+        const canAnchor = await canAnchorAttentionTargetInViewport(page, attentionTarget);
+        if (!canAnchor) {
+          overlayTarget = {
+            type: 'none',
+            label: attentionTarget.label,
+            thinking: thinkingText,
+          };
+        }
+      }
+
+      await renderAttentionOverlay(page, overlayTarget);
     } catch (error) {
       logWithTimestamp(
         `Failed to render attention overlay: ${error instanceof Error ? error.message : String(error)}`,

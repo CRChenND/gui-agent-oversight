@@ -1147,6 +1147,7 @@ export async function executePrompt(
           enableAgentFocus,
           thinking: latestThinkingByStepId.get(stepId) || '',
           enableThinkingOverlay: enableFocusThinkingOverlay,
+          selectedArchetypeId,
         });
 
         if (useStreaming) {
