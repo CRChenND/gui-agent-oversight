@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { badgeClassName } from './badgeStyles';
 
 interface LlmContentProps {
   content: string;
@@ -114,7 +115,7 @@ export const LlmContent: React.FC<LlmContentProps> = ({
       {!isChatStyle && actionChips.length > 0 ? (
         <div className="mb-2 flex flex-wrap items-center gap-1.5">
           {actionChips.map((chip) => (
-            <span key={`chip-${chip}`} className="badge badge-ghost badge-sm">
+            <span key={`chip-${chip}`} className={badgeClassName('neutral')}>
               {chip}
             </span>
           ))}

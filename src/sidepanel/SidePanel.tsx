@@ -20,6 +20,7 @@ import { ApprovalRequest } from './components/ApprovalRequest';
 import { MessageDisplay } from './components/MessageDisplay';
 import { OutputHeader } from './components/OutputHeader';
 import { PromptForm } from './components/PromptForm';
+import { badgeClassName } from './components/badgeStyles';
 import { SupervisoryPlanBlocks } from './components/SupervisoryPlanBlocks';
 import { TaskExecutionGraph } from './components/TaskExecutionGraph';
 import { useChromeMessaging } from './hooks/useChromeMessaging';
@@ -1523,13 +1524,13 @@ export function SidePanel() {
                             </div>
                             {progress ? (
                               <span
-                                className={`badge badge-xs ${
+                                className={badgeClassName(
                                   progress.status === 'completed'
-                                    ? 'badge-success'
+                                    ? 'success'
                                     : progress.status === 'current'
-                                      ? 'badge-info'
-                                      : 'badge-ghost'
-                                }`}
+                                      ? 'info'
+                                      : 'neutral'
+                                )}
                               >
                                 {progress.status}
                               </span>

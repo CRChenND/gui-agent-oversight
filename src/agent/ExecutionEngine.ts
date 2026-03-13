@@ -28,6 +28,8 @@ const MAX_OUTPUT_TOKENS = 1024;  // max tokens for LLM response
 type LlmImpact = 'low' | 'medium' | 'high';
 type ControlMode = 'approve_all' | 'risky_only' | 'step_through';
 type TimingPolicy = 'pre_action' | 'pre_navigation' | 'post_action';
+type ApprovedPlan = { summary: string; steps: string[] };
+type PlanStepDisposition = 'current' | 'next' | 'out_of_plan';
 
 /**
  * Callback interface for execution
@@ -151,6 +153,11 @@ export class ExecutionEngine {
   private errorHandler: ErrorHandler;
   private adaptiveGateState: AdaptiveGateState = INITIAL_ADAPTIVE_GATE_STATE;
   private liveMessages: any[] | null = null;
+  private currentTaskPrompt = '';
+  private approvedPlanState: ApprovedPlan | null = null;
+  private currentPlanStepIndex = 0;
+  private highestAcceptedPlanStepIndex = -1;
+  private lastCompletionCheckPlanStepIndex = 0;
 
   constructor(
     llmProvider: LLMProvider,
@@ -167,14 +174,9 @@ export class ExecutionEngine {
   updateApprovedPlanGuidanceDuringRun(text: string): void {
     const normalized = text.trim();
     this.promptManager.setApprovedPlanGuidance(normalized);
-    if (!normalized || !this.liveMessages) return;
-    this.liveMessages.push({
-      role: 'user',
-      content:
-        'Updated plan guidance replaces every earlier approved plan instruction. ' +
-        'Ignore the old plan and follow this revised plan for all remaining steps:\n' +
-        normalized,
-    });
+    this.applyApprovedPlanText(normalized);
+    if (!normalized) return;
+    this.rewriteLiveMessagesForApprovedPlan(normalized);
   }
 
   /**
@@ -245,6 +247,57 @@ export class ExecutionEngine {
     }
 
     return messages;
+  }
+
+  private isPlanControlMessage(message: any): boolean {
+    if (!message || message.role !== 'user' || typeof message.content !== 'string') return false;
+    const content = message.content.trim();
+    return (
+      /^follow this approved plan guidance for the full task:/i.test(content) ||
+      /^plan approved\. follow this plan throughout the task/i.test(content) ||
+      /^updated plan guidance replaces every earlier approved plan instruction\./i.test(content) ||
+      /^original user request is background context only\./i.test(content) ||
+      /^approved plan override:/i.test(content)
+    );
+  }
+
+  private isStandaloneOriginalPromptMessage(message: any): boolean {
+    return (
+      !!message &&
+      message.role === 'user' &&
+      typeof message.content === 'string' &&
+      this.currentTaskPrompt.length > 0 &&
+      message.content.trim() === this.currentTaskPrompt.trim()
+    );
+  }
+
+  private rewriteLiveMessagesForApprovedPlan(planText: string): void {
+    if (!this.liveMessages) return;
+
+    const preservedMessages = this.liveMessages.filter(
+      (message) => !this.isPlanControlMessage(message) && !this.isStandaloneOriginalPromptMessage(message)
+    );
+
+    const rewrittenMessages = [...preservedMessages];
+    if (this.currentTaskPrompt.trim()) {
+      rewrittenMessages.push({
+        role: 'user',
+        content:
+          'Original user request is background context only. Use it to understand the goal and constraints, ' +
+          'but do not treat it as the active execution instruction if it conflicts with the approved plan:\n' +
+          this.currentTaskPrompt.trim(),
+      });
+    }
+    rewrittenMessages.push({
+      role: 'user',
+      content:
+        'Approved plan override:\n' +
+        'The latest approved plan is authoritative for all remaining execution steps. ' +
+        'If any earlier user instruction conflicts with this plan on sequencing or scope, follow the approved plan.\n' +
+        planText,
+    });
+
+    this.liveMessages = trimHistory(rewrittenMessages);
   }
 
   private async getInterventionGateConfig(): Promise<{
@@ -442,20 +495,73 @@ export class ExecutionEngine {
       .filter((token) => token.length > 2);
   }
 
+  private resetApprovedPlanState(): void {
+    this.approvedPlanState = null;
+    this.currentPlanStepIndex = 0;
+    this.highestAcceptedPlanStepIndex = -1;
+    this.lastCompletionCheckPlanStepIndex = 0;
+  }
+
+  private setApprovedPlanState(plan: ApprovedPlan | null): void {
+    if (!plan || plan.steps.length === 0) {
+      this.resetApprovedPlanState();
+      return;
+    }
+
+    this.approvedPlanState = {
+      summary: plan.summary,
+      steps: Array.from(new Set(plan.steps.map((step) => this.cleanPlanStepText(step)).filter((step) => this.isDescriptivePlanStep(step)))),
+    };
+    if (this.approvedPlanState.steps.length === 0) {
+      this.resetApprovedPlanState();
+      return;
+    }
+
+    this.currentPlanStepIndex = Math.max(0, Math.min(this.currentPlanStepIndex, this.approvedPlanState.steps.length - 1));
+    this.highestAcceptedPlanStepIndex = Math.max(
+      this.currentPlanStepIndex,
+      Math.min(this.highestAcceptedPlanStepIndex, this.approvedPlanState.steps.length - 1)
+    );
+    this.lastCompletionCheckPlanStepIndex = Math.max(
+      0,
+      Math.min(this.lastCompletionCheckPlanStepIndex, this.approvedPlanState.steps.length - 1)
+    );
+  }
+
+  private applyApprovedPlanText(text: string): void {
+    const normalized = text.trim();
+    if (!normalized) {
+      this.resetApprovedPlanState();
+      return;
+    }
+
+    const parsed = this.extractPlanFromPlannerOutput(normalized);
+    const hasExplicitSummary = /^\s*plan summary:/im.test(normalized);
+    const nextPlan: ApprovedPlan | null =
+      parsed.steps.length > 0
+        ? {
+            summary:
+              (hasExplicitSummary ? parsed.summary : '') || this.approvedPlanState?.summary || 'Approved plan.',
+            steps: parsed.steps,
+          }
+        : null;
+    this.setApprovedPlanState(nextPlan);
+  }
+
   private inferPlanStepIndex(args: {
     planSteps: string[];
     currentPlanIndex: number;
     toolName: string;
     toolInput: string;
     thinking: string;
-  }): number {
+  }): { disposition: PlanStepDisposition; index: number } {
     const { planSteps, currentPlanIndex, toolName, toolInput, thinking } = args;
-    if (planSteps.length === 0) return 0;
+    if (planSteps.length === 0) return { disposition: 'current', index: 0 };
     const normalizedCurrentIndex = Math.max(0, Math.min(currentPlanIndex, planSteps.length - 1));
     const stepText = [toolName, toolInput, thinking].join(' ');
     const stepTokens = this.tokenizePlanText(stepText);
     if (stepTokens.length === 0) {
-      return normalizedCurrentIndex;
+      return { disposition: 'current', index: normalizedCurrentIndex };
     }
 
     const scorePlanStep = (planStepText: string, bias = 0): number => {
@@ -470,15 +576,18 @@ export class ExecutionEngine {
     const currentScore = scorePlanStep(planSteps[normalizedCurrentIndex], 0.75);
     const nextIndex = Math.min(planSteps.length - 1, normalizedCurrentIndex + 1);
     if (nextIndex === normalizedCurrentIndex) {
-      return normalizedCurrentIndex;
+      return currentScore >= 1 ? { disposition: 'current', index: normalizedCurrentIndex } : { disposition: 'out_of_plan', index: normalizedCurrentIndex };
     }
 
     const nextScore = scorePlanStep(planSteps[nextIndex]);
-    const shouldAdvance =
-      nextScore >= 2 &&
-      (nextScore >= currentScore + 1.5 || (currentScore < 1 && nextScore >= 3));
-
-    return shouldAdvance ? nextIndex : normalizedCurrentIndex;
+    const bestScore = Math.max(currentScore, nextScore);
+    if (bestScore < 1.5) {
+      return { disposition: 'out_of_plan', index: normalizedCurrentIndex };
+    }
+    if (nextScore >= 2 && (nextScore >= currentScore + 1.5 || (currentScore < 1 && nextScore >= 3))) {
+      return { disposition: 'next', index: nextIndex };
+    }
+    return { disposition: 'current', index: normalizedCurrentIndex };
   }
 
   private async inferPlanStepIndexWithModel(args: {
@@ -487,35 +596,40 @@ export class ExecutionEngine {
     toolName: string;
     toolInput: string;
     thinking: string;
-  }): Promise<number> {
+  }): Promise<{ disposition: PlanStepDisposition; index: number }> {
     const { planSteps, currentPlanIndex, toolName, toolInput, thinking } = args;
     const normalizedCurrentIndex = Math.max(0, Math.min(currentPlanIndex, planSteps.length - 1));
     const nextIndex = Math.min(planSteps.length - 1, normalizedCurrentIndex + 1);
-    if (nextIndex === normalizedCurrentIndex) {
-      return normalizedCurrentIndex;
-    }
 
     try {
       const decisionText = await this.collectModelText(
-        'You classify whether an agent action belongs to the CURRENT plan step or the NEXT plan step. Reply with exactly one word: CURRENT or NEXT.',
+        'You classify whether an agent action belongs to the CURRENT plan step, the NEXT plan step, or is OUT_OF_PLAN. Reply with exactly one token: CURRENT, NEXT, or OUT_OF_PLAN.',
         [
           {
             role: 'user',
             content: [
               `Current plan step: ${planSteps[normalizedCurrentIndex]}`,
-              `Next plan step: ${planSteps[nextIndex]}`,
+              `Next plan step: ${planSteps[nextIndex] ?? '(none)'}`,
               `Tool: ${toolName}`,
               `Tool input: ${toolInput}`,
               `Action description: ${thinking}`,
-              'Return only CURRENT or NEXT.',
+              'If the action introduces work outside these steps, return OUT_OF_PLAN.',
+              'Return only CURRENT, NEXT, or OUT_OF_PLAN.',
             ].join('\n'),
           },
         ]
       );
 
       const normalizedDecision = decisionText.trim().toUpperCase();
-      if (normalizedDecision.startsWith('NEXT')) return nextIndex;
-      if (normalizedDecision.startsWith('CURRENT')) return normalizedCurrentIndex;
+      if (normalizedDecision.startsWith('OUT_OF_PLAN')) {
+        return { disposition: 'out_of_plan', index: normalizedCurrentIndex };
+      }
+      if (normalizedDecision.startsWith('NEXT') && nextIndex !== normalizedCurrentIndex) {
+        return { disposition: 'next', index: nextIndex };
+      }
+      if (normalizedDecision.startsWith('CURRENT')) {
+        return { disposition: 'current', index: normalizedCurrentIndex };
+      }
     } catch (error) {
       console.warn('Plan-step classification fallback triggered:', error);
     }
@@ -627,11 +741,13 @@ export class ExecutionEngine {
     const adapter = new CallbackAdapter(callbacks, isStreaming);
     const adaptedCallbacks = adapter.adaptedCallbacks;
 
-    // Reset cancel flag at the start of execution
-    this.errorHandler.resetCancel();
-    this.adaptiveGateState = { ...INITIAL_ADAPTIVE_GATE_STATE };
-    try {
+      // Reset cancel flag at the start of execution
+      this.errorHandler.resetCancel();
+      this.adaptiveGateState = { ...INITIAL_ADAPTIVE_GATE_STATE };
+      this.resetApprovedPlanState();
+      try {
       // Initialize messages with the prompt
+      this.currentTaskPrompt = prompt;
       let messages = this.initializeMessages(prompt, initialMessages);
       this.liveMessages = messages;
       this.promptManager.setApprovedPlanGuidance('');
@@ -639,10 +755,6 @@ export class ExecutionEngine {
       let done = false;
       let step = 0;
       let planReviewed = false;
-      let approvedPlan: { summary: string; steps: string[] } | null = null;
-      let currentPlanStepIndex = 0;
-      let highestAcceptedPlanStepIndex = -1;
-      let lastCompletionCheckPlanStepIndex = 0;
 
       if (!planReviewed && adaptedCallbacks.onPlanReviewRequired) {
         const generatedPlan = await this.generateTaskPlan(prompt, messages);
@@ -665,42 +777,26 @@ export class ExecutionEngine {
           done = true;
         } else if (planReview.decision === 'edit') {
           const editText = planReview.editedPlan?.trim() || 'Plan edited by user.';
-          approvedPlan = {
-            summary: generatedPlan.summary,
-            steps: editText
-              .split(/\n+/)
-              .map((line) => line.replace(/^step\s*\d+\s*:\s*/i, '').trim())
-              .filter((line) => this.isDescriptivePlanStep(line)),
-          };
-          highestAcceptedPlanStepIndex = approvedPlan.steps.length > 0 ? 0 : -1;
-          currentPlanStepIndex = 0;
-          lastCompletionCheckPlanStepIndex = 0;
           this.promptManager.setApprovedPlanGuidance(editText);
+          this.applyApprovedPlanText(editText);
+          if (this.approvedPlanState && !/^\s*plan summary:/im.test(editText)) {
+            this.setApprovedPlanState({
+              summary: generatedPlan.summary,
+              steps: this.approvedPlanState.steps,
+            });
+          }
           adaptedCallbacks.onToolOutput(`✏️ Plan edited by user. Applying guidance: ${editText}`);
-          messages.push({
-            role: 'user',
-            content: `Follow this approved plan guidance for the full task:\n${editText}`,
-          });
-          messages = trimHistory(messages);
-          this.liveMessages = messages;
+          this.rewriteLiveMessagesForApprovedPlan(editText);
+          messages = this.liveMessages ?? messages;
         } else {
           const approvedPlanText = [
             `Plan Summary: ${generatedPlan.summary}`,
             ...generatedPlan.steps.map((step, index) => `Step ${index + 1}: ${step}`),
           ].join('\n');
-          approvedPlan = generatedPlan;
-          highestAcceptedPlanStepIndex = approvedPlan.steps.length > 0 ? 0 : -1;
-          currentPlanStepIndex = 0;
-          lastCompletionCheckPlanStepIndex = 0;
+          this.setApprovedPlanState(generatedPlan);
           this.promptManager.setApprovedPlanGuidance(approvedPlanText);
-          messages.push({
-            role: 'user',
-            content:
-              `Plan approved. Follow this plan throughout the task unless new observations require explicit correction:\n` +
-              approvedPlanText,
-          });
-          messages = trimHistory(messages);
-          this.liveMessages = messages;
+          this.rewriteLiveMessagesForApprovedPlan(approvedPlanText);
+          messages = this.liveMessages ?? messages;
         }
       } else if (adaptedCallbacks.onPlanStepApprovalRequired) {
         const generatedPlan = await this.generateTaskPlan(prompt, messages);
@@ -708,23 +804,14 @@ export class ExecutionEngine {
           summary: generatedPlan.summary,
           steps: generatedPlan.steps,
         });
-        approvedPlan = generatedPlan;
-        highestAcceptedPlanStepIndex = approvedPlan.steps.length > 0 ? 0 : -1;
-        currentPlanStepIndex = 0;
-        lastCompletionCheckPlanStepIndex = 0;
+        this.setApprovedPlanState(generatedPlan);
         const approvedPlanText = [
           `Plan Summary: ${generatedPlan.summary}`,
           ...generatedPlan.steps.map((stepText, index) => `Step ${index + 1}: ${stepText}`),
         ].join('\n');
         this.promptManager.setApprovedPlanGuidance(approvedPlanText);
-        messages.push({
-          role: 'user',
-          content:
-            `Follow this plan throughout the task unless new observations require explicit correction:\n` +
-            approvedPlanText,
-        });
-        messages = trimHistory(messages);
-        this.liveMessages = messages;
+        this.rewriteLiveMessagesForApprovedPlan(approvedPlanText);
+        messages = this.liveMessages ?? messages;
       }
 
       while (!done && step++ < MAX_STEPS && !this.errorHandler.isExecutionCancelled()) {
@@ -1018,28 +1105,70 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             }
           }
 
-          let resolvedPlanStepIndex = currentPlanStepIndex;
+          let resolvedPlanStepIndex = this.currentPlanStepIndex;
           const stepDescription =
             modelMetadata.thinkingSummary ||
             thinking.rationale ||
             thinking.goal ||
             '';
-          if (approvedPlan?.steps.length && adaptedCallbacks.onPlanStepApprovalRequired) {
-            const inferredPlanStepIndex = await this.inferPlanStepIndexWithModel({
-              planSteps: approvedPlan.steps,
-              currentPlanIndex: currentPlanStepIndex,
+          if (this.approvedPlanState?.steps.length) {
+            const planMatch = await this.inferPlanStepIndexWithModel({
+              planSteps: this.approvedPlanState.steps,
+              currentPlanIndex: this.currentPlanStepIndex,
               toolName,
               toolInput,
               thinking: stepDescription,
             });
-            currentPlanStepIndex = inferredPlanStepIndex;
-            resolvedPlanStepIndex = inferredPlanStepIndex;
+            if (planMatch.disposition === 'out_of_plan') {
+              const currentStepText = this.approvedPlanState.steps[this.currentPlanStepIndex] || '(unknown current step)';
+              const nextStepText =
+                this.approvedPlanState.steps[Math.min(this.approvedPlanState.steps.length - 1, this.currentPlanStepIndex + 1)] ||
+                '(no next step)';
+              adaptedCallbacks.onToolOutput('❌ Planned action rejected: the proposed tool call is outside the approved plan.');
+              messages.push(
+                { role: 'assistant', content: accumulatedText },
+                {
+                  role: 'user',
+                  content:
+                    `Stop. Your proposed action is outside the approved plan.\n` +
+                    `Current approved step: ${currentStepText}\n` +
+                    `Next approved step: ${nextStepText}\n` +
+                    `Do not execute actions outside the approved plan. Wait for a plan update or propose an action that strictly completes the current or next approved step.`,
+                }
+              );
+              messages = trimHistory(messages);
+              this.liveMessages = messages;
+              done = true;
+              continue;
+            }
 
-            if (inferredPlanStepIndex > highestAcceptedPlanStepIndex) {
+            this.currentPlanStepIndex = planMatch.index;
+            resolvedPlanStepIndex = planMatch.index;
+
+            if (planMatch.index > 0 && planMatch.index > this.lastCompletionCheckPlanStepIndex) {
+              const completedSteps = this.approvedPlanState.steps
+                .slice(0, planMatch.index)
+                .map((stepText, index) => `${index + 1}. ${stepText}`)
+                .join('\n');
+              messages.push({
+                role: 'user',
+                content:
+                  `Before starting plan step ${planMatch.index + 1}, first verify that these earlier plan steps are already completed on the page and do not repeat them unless the page clearly shows they still need work:\n` +
+                  completedSteps,
+              });
+              messages = trimHistory(messages);
+              this.liveMessages = messages;
+              this.lastCompletionCheckPlanStepIndex = planMatch.index;
+            }
+
+            if (
+              adaptedCallbacks.onPlanStepApprovalRequired &&
+              planMatch.index > this.highestAcceptedPlanStepIndex
+            ) {
               const planStepApproval = await adaptedCallbacks.onPlanStepApprovalRequired({
                 stepId,
-                planStepIndex: inferredPlanStepIndex,
-                planStepText: approvedPlan.steps[inferredPlanStepIndex],
+                planStepIndex: planMatch.index,
+                planStepText: this.approvedPlanState.steps[planMatch.index],
                 thinking: stepDescription,
                 toolName,
                 toolInput,
@@ -1048,29 +1177,14 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
                 adaptedCallbacks.onToolOutput('❌ Plan step rejected by user. Execution stopped.');
                 messages.push(
                   { role: 'assistant', content: accumulatedText },
-                  { role: 'user', content: `The user rejected plan step ${inferredPlanStepIndex + 1}. Stop execution.` }
+                  { role: 'user', content: `The user rejected plan step ${planMatch.index + 1}. Stop execution.` }
                 );
                 messages = trimHistory(messages);
                 this.liveMessages = messages;
                 done = true;
                 continue;
               }
-              highestAcceptedPlanStepIndex = inferredPlanStepIndex;
-              if (inferredPlanStepIndex > 0 && inferredPlanStepIndex > lastCompletionCheckPlanStepIndex) {
-                const completedSteps = approvedPlan.steps
-                  .slice(0, inferredPlanStepIndex)
-                  .map((stepText, index) => `${index + 1}. ${stepText}`)
-                  .join('\n');
-                messages.push({
-                  role: 'user',
-                  content:
-                    `Before starting plan step ${inferredPlanStepIndex + 1}, first verify that these earlier plan steps are already completed on the page and do not repeat them unless the page clearly shows they still need work:\n` +
-                    completedSteps,
-                });
-                messages = trimHistory(messages);
-                this.liveMessages = messages;
-                lastCompletionCheckPlanStepIndex = inferredPlanStepIndex;
-              }
+              this.highestAcceptedPlanStepIndex = planMatch.index;
             }
           }
 
@@ -1079,7 +1193,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               stepId,
               toolName,
               toolInput,
-              approvedPlan?.steps.length && adaptedCallbacks.onPlanStepApprovalRequired ? resolvedPlanStepIndex : undefined,
+              this.approvedPlanState?.steps.length ? resolvedPlanStepIndex : undefined,
               stepDescription
             );
           }
@@ -1300,9 +1414,11 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
         );
       }
       this.liveMessages = null;
+      this.currentTaskPrompt = '';
       adaptedCallbacks.onComplete();
     } catch (err: any) {
       this.liveMessages = null;
+      this.currentTaskPrompt = '';
       // Check if this is a retryable error (rate limit or overloaded)
       if (this.errorHandler.isRetryableError(err)) {
         console.log("Retryable error detected:", err);
