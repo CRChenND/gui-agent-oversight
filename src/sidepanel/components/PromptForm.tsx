@@ -25,6 +25,12 @@ export const PromptForm: React.FC<PromptFormProps> = ({
   tabStatus
 }) => {
   const [prompt, setPrompt] = useState('');
+  const actionButtonCount =
+    (isProcessing ? 1 : 0) +
+    (canPause ? 1 : 0) +
+    (canResume ? 1 : 0) +
+    (!isProcessing ? 1 : 0);
+  const textRightPaddingClass = actionButtonCount >= 3 ? 'pr-28' : actionButtonCount === 2 ? 'pr-20' : 'pr-14';
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,7 +43,7 @@ export const PromptForm: React.FC<PromptFormProps> = ({
     <form onSubmit={handleSubmit} className="relative">
       <div className="morph-composer w-full bg-base-100">
         <TextareaAutosize
-          className="textarea textarea-ghost w-full pr-40 text-sm focus:outline-none"
+          className={`textarea textarea-ghost w-full text-sm focus:outline-none ${textRightPaddingClass}`}
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {

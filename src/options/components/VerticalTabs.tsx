@@ -1,8 +1,6 @@
 import React, { useState } from 'react';
 import { Model } from './ModelList';
 import { OllamaModel } from './OllamaModelList';
-import type { OversightArchetype } from '../oversightArchetypes';
-import { ArchetypesTab } from './tabs/ArchetypesTab';
 import { ProvidersTab } from './tabs/ProvidersTab';
 
 interface VerticalTabsProps {
@@ -77,10 +75,6 @@ interface VerticalTabsProps {
   // Global knowledge
   globalKnowledgeText?: string;
   setGlobalKnowledgeText?: (val: string) => void;
-  // Oversight archetypes
-  archetypes: OversightArchetype[];
-  selectedArchetypeId: string;
-  applyArchetype: (archetype: OversightArchetype) => void;
 }
 
 export function VerticalTabs(props: VerticalTabsProps) {
@@ -88,7 +82,6 @@ export function VerticalTabs(props: VerticalTabsProps) {
 
   const tabs = [
     { id: 'providers', label: 'LLM Configuration', icon: '🤖' },
-    { id: 'archetypes', label: 'Archetypes', icon: '🛡️' },
   ];
 
   const renderProvidersTab = () => (
@@ -153,16 +146,6 @@ export function VerticalTabs(props: VerticalTabsProps) {
     switch (activeTab) {
       case 'providers':
         return renderProvidersTab();
-      case 'archetypes':
-        return (
-          <ArchetypesTab
-            archetypes={props.archetypes}
-            selectedArchetypeId={props.selectedArchetypeId}
-            onApplyArchetype={props.applyArchetype}
-            isSaving={props.isSaving}
-            saveStatus={props.saveStatus}
-          />
-        );
       default:
         return renderProvidersTab();
     }

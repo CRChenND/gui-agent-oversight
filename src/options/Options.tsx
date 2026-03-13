@@ -20,13 +20,10 @@ import {
   mapStorageToOversightSettings,
 } from '../oversight/registry';
 import {
-  BUILTIN_OVERSIGHT_ARCHETYPES,
-  cloneArchetypeState,
   getDefaultOversightArchetype,
   getOversightArchetypeById,
   inferOversightArchetypeId,
   OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY,
-  type OversightArchetype,
 } from './oversightArchetypes';
 
 // Import components
@@ -38,7 +35,7 @@ export function Options() {
   // Model pricing tab removed
   
   // Provider selection
-  const [provider, setProvider] = useState('anthropic');
+  const [provider, setProvider] = useState('openrouter');
   
   // Anthropic settings
   const [anthropicApiKey, setAnthropicApiKey] = useState('');
@@ -91,7 +88,7 @@ export function Options() {
   // Load saved settings when component mounts
   useEffect(() => {
     chrome.storage.sync.get({
-      provider: 'anthropic',
+      provider: 'openrouter',
       anthropicApiKey: '',
       anthropicModelId: anthropicDefaultModelId,
       anthropicBaseUrl: '',
@@ -260,27 +257,6 @@ export function Options() {
     setOpenaiCompatibleModels(models => models.map((m, i) => i === idx ? { ...m, [field]: value } : m));
   };
 
-  const applyArchetype = (archetype: OversightArchetype) => {
-    const nextState = cloneArchetypeState(archetype);
-    setOversightSettings(nextState.settings);
-    setOversightParameterSettings(nextState.parameterSettings);
-    setSelectedArchetypeId(archetype.id);
-    setIsSaving(true);
-    setSaveStatus('');
-    chrome.storage.sync.set({
-      [OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY]: archetype.id,
-      ...buildOversightStoragePatch(nextState.settings),
-      ...buildOversightParameterStoragePatch(nextState.parameterSettings),
-    }, () => {
-      setIsSaving(false);
-      setSaveStatus(`Activated archetype: ${archetype.name}`);
-      chrome.runtime.sendMessage({
-        action: 'providerConfigChanged'
-      }).catch(err => console.error('Error sending message:', err));
-      setTimeout(() => setSaveStatus(''), 2000);
-    });
-  };
-
   return (
     <VerticalTabs
       // Provider selection
@@ -345,9 +321,6 @@ export function Options() {
       handleEditModel={handleEditModel}
       globalKnowledgeText={globalKnowledgeText}
       setGlobalKnowledgeText={setGlobalKnowledgeText}
-      archetypes={BUILTIN_OVERSIGHT_ARCHETYPES}
-      selectedArchetypeId={selectedArchetypeId}
-      applyArchetype={applyArchetype}
     />
   );
 }

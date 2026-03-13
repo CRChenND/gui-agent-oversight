@@ -28,7 +28,7 @@ export class ConfigManager {
   
   async getProviderConfig(): Promise<ProviderConfig> {
     const result = await chrome.storage.sync.get({
-      provider: 'anthropic',
+      provider: 'openrouter',
       anthropicApiKey: '',
       anthropicModelId: 'claude-3-7-sonnet-20250219',
       anthropicBaseUrl: '',
@@ -184,7 +184,7 @@ export class ConfigManager {
   async updateProviderAndModel(provider: string, modelId: string): Promise<void> {
     // Get current config
     const result = await chrome.storage.sync.get({
-      provider: 'anthropic',
+      provider: 'openrouter',
       anthropicModelId: 'claude-3-7-sonnet-20250219',
       openaiModelId: 'gpt-4o',
       geminiModelId: 'gemini-1.5-pro',

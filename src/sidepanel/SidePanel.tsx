@@ -8,6 +8,8 @@ import {
   INTERVENTION_GATE_MECHANISM_ID,
   MONITORING_MECHANISM_ID,
   TASK_GRAPH_MECHANISM_ID,
+  buildOversightParameterStoragePatch,
+  buildOversightStoragePatch,
   createDefaultOversightParameterSettings,
   createDefaultOversightMechanismSettings,
   getOversightParameterStorageQueryDefaults,
@@ -15,7 +17,13 @@ import {
   mapStorageToOversightParameterSettings,
   mapStorageToOversightSettings,
 } from '../oversight/registry';
-import { getDefaultOversightArchetype, OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY } from '../options/oversightArchetypes';
+import {
+  BUILTIN_OVERSIGHT_ARCHETYPES,
+  cloneArchetypeState,
+  getDefaultOversightArchetype,
+  getOversightArchetypeById,
+  OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY,
+} from '../options/oversightArchetypes';
 import { ApprovalRequest } from './components/ApprovalRequest';
 import { MessageDisplay } from './components/MessageDisplay';
 import { OutputHeader } from './components/OutputHeader';
@@ -34,6 +42,7 @@ export function SidePanel() {
   const [currentPrompt, setCurrentPrompt] = useState('');
   const [mechanismSettings, setMechanismSettings] = useState(createDefaultOversightMechanismSettings);
   const [mechanismParameterSettings, setMechanismParameterSettings] = useState(createDefaultOversightParameterSettings);
+  const [isApplyingArchetype, setIsApplyingArchetype] = useState(false);
 
   // State for tab status
   const [tabStatus, setTabStatus] = useState<'attached' | 'detached' | 'unknown' | 'running' | 'idle' | 'error'>('unknown');
@@ -299,6 +308,33 @@ export function SidePanel() {
   const interruptCooldownMs = Math.max(0, Number(interventionParams.interruptCooldownMs || 0));
   const interruptTopK = Math.max(1, Number(interventionParams.interruptTopK || 999));
   const approvedPlanSteps = approvedPlan?.steps || [];
+
+  const handleApplyArchetype = useCallback((archetypeId: string) => {
+    const archetype = getOversightArchetypeById(archetypeId);
+    if (!archetype || archetype.id === selectedArchetypeId) {
+      return;
+    }
+
+    const nextState = cloneArchetypeState(archetype);
+    setSelectedArchetypeId(archetype.id);
+    setMechanismSettings(nextState.settings);
+    setMechanismParameterSettings(nextState.parameterSettings);
+    setIsApplyingArchetype(true);
+
+    chrome.storage.sync.set(
+      {
+        [OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY]: archetype.id,
+        ...buildOversightStoragePatch(nextState.settings),
+        ...buildOversightParameterStoragePatch(nextState.parameterSettings),
+      },
+      () => {
+        setIsApplyingArchetype(false);
+        chrome.runtime.sendMessage({
+          action: 'providerConfigChanged'
+        }).catch(err => console.error('Error sending message:', err));
+      }
+    );
+  }, [selectedArchetypeId]);
 
   const handleDownloadTaskGraph = useCallback(() => {
     if (taskNodes.length === 0) return;
@@ -1195,6 +1231,30 @@ export function SidePanel() {
               canDownloadTaskGraph={taskNodes.length > 0}
               isProcessing={isProcessing}
             />
+            <div className="border-b border-base-300 px-3 py-3">
+              <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/50">
+                Oversight Regime
+              </label>
+              <div className="flex items-start gap-3">
+                <select
+                  className="select select-bordered select-sm w-full"
+                  value={selectedArchetypeId}
+                  onChange={(e) => handleApplyArchetype(e.target.value)}
+                  disabled={isApplyingArchetype}
+                >
+                  {BUILTIN_OVERSIGHT_ARCHETYPES.map((archetype) => (
+                    <option key={archetype.id} value={archetype.id}>
+                      {archetype.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {isApplyingArchetype ? (
+                <div className="mt-1 text-xs text-base-content/60">
+                  Switching oversight regime...
+                </div>
+              ) : null}
+            </div>
             <div className="px-3 pt-2">
               <div className="flex items-start justify-between gap-2">
                 {shouldShowBadge ? (
