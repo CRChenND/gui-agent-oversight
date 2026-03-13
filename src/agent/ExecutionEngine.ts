@@ -24,6 +24,9 @@ import {
 
 // Constants
 const MAX_STEPS = 50;            // prevent infinite loops
+
+const TASK_COMPLETE_REGEX = /<task_status>\s*complete\s*<\/task_status>/i;
+const FINAL_RESPONSE_REGEX = /<final_response>([\s\S]*?)<\/final_response>/i;
 const MAX_OUTPUT_TOKENS = 1024;  // max tokens for LLM response
 type LlmImpact = 'low' | 'medium' | 'high';
 type ControlMode = 'approve_all' | 'risky_only' | 'step_through';
@@ -158,6 +161,35 @@ export class ExecutionEngine {
   private currentPlanStepIndex = 0;
   private highestAcceptedPlanStepIndex = -1;
   private lastCompletionCheckPlanStepIndex = 0;
+
+  private parseTaskCompletion(text: string): { complete: boolean; finalResponse: string | null } {
+    if (!TASK_COMPLETE_REGEX.test(text)) {
+      return { complete: false, finalResponse: null };
+    }
+
+    const finalResponseMatch = text.match(FINAL_RESPONSE_REGEX);
+    const finalResponse = finalResponseMatch?.[1]?.trim() || null;
+    return { complete: true, finalResponse };
+  }
+
+  private getPendingPlanCompletionReason(): string | null {
+    if (!this.approvedPlanState?.steps.length) {
+      return null;
+    }
+
+    const lastPlanStepIndex = this.approvedPlanState.steps.length - 1;
+    if (this.currentPlanStepIndex < lastPlanStepIndex) {
+      const nextStepText = this.approvedPlanState.steps[this.currentPlanStepIndex + 1] || '(unknown next step)';
+      return `Approved plan step ${this.currentPlanStepIndex + 2} is still pending: ${nextStepText}`;
+    }
+
+    if (this.highestAcceptedPlanStepIndex >= 0 && this.highestAcceptedPlanStepIndex < lastPlanStepIndex) {
+      const pendingApprovalStep = this.approvedPlanState.steps[this.highestAcceptedPlanStepIndex + 1] || '(unknown step)';
+      return `Approved plan step ${this.highestAcceptedPlanStepIndex + 2} has not been accepted/executed yet: ${pendingApprovalStep}`;
+    }
+
+    return null;
+  }
 
   constructor(
     llmProvider: LLMProvider,
@@ -951,9 +983,48 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
           }
 
           if (!toolMatch) {
-            // no tool tag ⇒ task complete
-            done = true;
-            break;
+            const completion = this.parseTaskCompletion(accumulatedText);
+            if (completion.complete) {
+              const pendingPlanReason = this.getPendingPlanCompletionReason();
+              if (pendingPlanReason) {
+                messages.push(
+                  { role: 'assistant', content: accumulatedText },
+                  {
+                    role: 'user',
+                    content:
+                      `Completion rejected because the approved plan is not finished yet. ${pendingPlanReason}\n` +
+                      'Do not output <task_status>complete</task_status> yet. Continue with the next observation or action needed to finish the remaining approved plan steps.',
+                  }
+                );
+                messages = trimHistory(messages);
+                this.liveMessages = messages;
+                continue;
+              }
+
+              if (completion.finalResponse) {
+                adaptedCallbacks.onLlmOutput(completion.finalResponse);
+              } else {
+                adaptedCallbacks.onLlmOutput('Task completed.');
+              }
+              done = true;
+              break;
+            }
+
+            messages.push(
+              { role: 'assistant', content: accumulatedText },
+              {
+                role: 'user',
+                content:
+                  'You stopped without a valid tool call or completion marker. ' +
+                  'Do not end with plain-text summary alone. ' +
+                  'If the task is fully completed and verified on the page, respond with ' +
+                  '<task_status>complete</task_status> and <final_response>...</final_response>. ' +
+                  'Otherwise continue with the next observation or action using the required tool-call XML.',
+              }
+            );
+            messages = trimHistory(messages);
+            this.liveMessages = messages;
+            continue;
           }
 
           // Extract tool information from the complete tool call
@@ -965,9 +1036,19 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             toolInput = toolInputRaw.trim();
             llmRequiresApproval = requiresApprovalRaw.trim().toLowerCase() === 'true';
           } else {
-            // No valid tool call found, task is complete
-            done = true;
-            break;
+            messages.push(
+              { role: 'assistant', content: accumulatedText },
+              {
+                role: 'user',
+                content:
+                  'No valid tool call was found. Either emit a complete tool call with all required tags, ' +
+                  'or explicitly mark verified completion with <task_status>complete</task_status> ' +
+                  'and <final_response>...</final_response>.',
+              }
+            );
+            messages = trimHistory(messages);
+            this.liveMessages = messages;
+            continue;
           }
           const tool = this.toolManager.findTool(toolName);
           const stepId = createStepId(step);
