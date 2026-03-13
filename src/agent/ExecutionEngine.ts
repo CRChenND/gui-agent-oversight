@@ -33,6 +33,14 @@ type ControlMode = 'approve_all' | 'risky_only' | 'step_through';
 type TimingPolicy = 'pre_action' | 'pre_navigation' | 'post_action';
 type ApprovedPlan = { summary: string; steps: string[] };
 type PlanStepDisposition = 'current' | 'next' | 'out_of_plan';
+type PlanEvidenceStatus = 'completed' | 'cancelled' | 'error';
+type PlanExecutionEvidence = {
+  planStepIndex: number;
+  toolName: string;
+  toolInput: string;
+  thinking: string;
+  status: PlanEvidenceStatus;
+};
 
 /**
  * Callback interface for execution
@@ -161,6 +169,7 @@ export class ExecutionEngine {
   private currentPlanStepIndex = 0;
   private highestAcceptedPlanStepIndex = -1;
   private lastCompletionCheckPlanStepIndex = 0;
+  private executedPlanEvidence: PlanExecutionEvidence[] = [];
 
   private parseTaskCompletion(text: string): { complete: boolean; finalResponse: string | null } {
     if (!TASK_COMPLETE_REGEX.test(text)) {
@@ -189,6 +198,127 @@ export class ExecutionEngine {
     }
 
     return null;
+  }
+
+  private parsePlanProgressAssessment(
+    rawText: string,
+    expectedStepCount: number
+  ): {
+    isFullyCompleted: boolean;
+    steps: Array<{ status: 'completed' | 'current' | 'pending'; reason: string }>;
+  } {
+    const fallback = {
+      isFullyCompleted: false,
+      steps: Array.from({ length: expectedStepCount }, () => ({
+        status: 'pending' as const,
+        reason: 'Assessment unavailable.',
+      })),
+    };
+
+    const normalized = rawText.trim();
+    const jsonStart = normalized.indexOf('{');
+    const jsonEnd = normalized.lastIndexOf('}');
+    if (jsonStart < 0 || jsonEnd < jsonStart) {
+      return fallback;
+    }
+
+    try {
+      const parsed = JSON.parse(normalized.slice(jsonStart, jsonEnd + 1)) as {
+        steps?: Array<{ status?: string; reason?: string }>;
+      };
+      const steps = Array.from({ length: expectedStepCount }, (_, index) => {
+        const incoming = parsed.steps?.[index];
+        const status: 'completed' | 'current' | 'pending' =
+          incoming?.status === 'completed' || incoming?.status === 'current' || incoming?.status === 'pending'
+            ? incoming.status
+            : 'pending';
+        const reason =
+          typeof incoming?.reason === 'string' && incoming.reason.trim().length > 0
+            ? incoming.reason.trim()
+            : 'No clear evidence found.';
+        return { status, reason };
+      });
+      return {
+        isFullyCompleted: expectedStepCount > 0 && steps.every((step) => step.status === 'completed'),
+        steps,
+      };
+    } catch {
+      return fallback;
+    }
+  }
+
+  private async assessApprovedPlanCompletion(): Promise<{ allowed: boolean; reason?: string }> {
+    if (!this.approvedPlanState?.steps.length) {
+      return { allowed: true };
+    }
+
+    const evidenceByStep = new Map<number, PlanExecutionEvidence[]>();
+    for (const evidence of this.executedPlanEvidence) {
+      const bucket = evidenceByStep.get(evidence.planStepIndex) || [];
+      bucket.push(evidence);
+      evidenceByStep.set(evidence.planStepIndex, bucket);
+    }
+
+    for (let index = 0; index < this.approvedPlanState.steps.length; index += 1) {
+      const evidence = evidenceByStep.get(index) || [];
+      const hasCompletedEvidence = evidence.some((item) => item.status === 'completed');
+      if (!hasCompletedEvidence) {
+        return {
+          allowed: false,
+          reason: `Approved plan step ${index + 1} has no completed execution evidence yet: ${this.approvedPlanState.steps[index]}`,
+        };
+      }
+    }
+
+    const systemPrompt =
+      'You are an execution-progress evaluator.\n' +
+      'Given an approved plan and observed agent execution steps, determine whether every plan step is completed.\n' +
+      'Rules:\n' +
+      '1) Use only provided evidence.\n' +
+      '2) For each plan step return exactly one status: completed | current | pending.\n' +
+      '3) Mark a step completed only if the evidence strongly supports that the step was actually carried out.\n' +
+      '4) Keep reasons concise and evidence-based.\n' +
+      '5) Return valid JSON only.';
+    const userPrompt = JSON.stringify(
+      {
+        task: 'Assess whether the approved plan is fully completed.',
+        requiredOutputShape: {
+          steps: 'Array<{status: "completed"|"current"|"pending", reason: string}>',
+        },
+        planSteps: this.approvedPlanState.steps.map((step, idx) => ({ stepNumber: idx + 1, text: step })),
+        executionEvidence: this.executedPlanEvidence.map((step, index) => ({
+          index,
+          planStepIndex: step.planStepIndex + 1,
+          status: step.status,
+          toolName: step.toolName,
+          toolInput: step.toolInput,
+          thinking: step.thinking,
+        })),
+      },
+      null,
+      2
+    );
+
+    try {
+      const raw = await this.collectModelText(systemPrompt, [{ role: 'user', content: userPrompt }]);
+      const assessment = this.parsePlanProgressAssessment(raw, this.approvedPlanState.steps.length);
+      if (assessment.isFullyCompleted) {
+        return { allowed: true };
+      }
+      const pendingIndex = assessment.steps.findIndex((step) => step.status !== 'completed');
+      return {
+        allowed: false,
+        reason:
+          pendingIndex >= 0
+            ? `Approved plan step ${pendingIndex + 1} is not yet complete: ${assessment.steps[pendingIndex].reason}`
+            : 'Plan completion assessment did not find enough evidence to finish.',
+      };
+    } catch (error) {
+      return {
+        allowed: false,
+        reason: `Plan completion assessment failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   }
 
   constructor(
@@ -777,6 +907,7 @@ export class ExecutionEngine {
       this.errorHandler.resetCancel();
       this.adaptiveGateState = { ...INITIAL_ADAPTIVE_GATE_STATE };
       this.resetApprovedPlanState();
+      this.executedPlanEvidence = [];
       try {
       // Initialize messages with the prompt
       this.currentTaskPrompt = prompt;
@@ -994,6 +1125,22 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
                     content:
                       `Completion rejected because the approved plan is not finished yet. ${pendingPlanReason}\n` +
                       'Do not output <task_status>complete</task_status> yet. Continue with the next observation or action needed to finish the remaining approved plan steps.',
+                  }
+                );
+                messages = trimHistory(messages);
+                this.liveMessages = messages;
+                continue;
+              }
+
+              const completionAssessment = await this.assessApprovedPlanCompletion();
+              if (!completionAssessment.allowed) {
+                messages.push(
+                  { role: 'assistant', content: accumulatedText },
+                  {
+                    role: 'user',
+                    content:
+                      `Completion rejected because the approved plan still lacks sufficient execution evidence. ${completionAssessment.reason || ''}\n` +
+                      'Do not output <task_status>complete</task_status> yet. Continue with the next observation or action needed to finish and verify the remaining approved plan steps.',
                   }
                 );
                 messages = trimHistory(messages);
@@ -1430,6 +1577,19 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
           }
           if (adaptedCallbacks.onAfterToolCommitted) {
             await adaptedCallbacks.onAfterToolCommitted();
+          }
+
+          if (this.approvedPlanState?.steps.length && typeof resolvedPlanStepIndex === 'number') {
+            this.executedPlanEvidence.push({
+              planStepIndex: Math.max(0, Math.min(resolvedPlanStepIndex, this.approvedPlanState.steps.length - 1)),
+              toolName,
+              toolInput,
+              thinking: stepDescription,
+              status:
+                haltAfterReviewDeny || result.includes('Action cancelled by user.')
+                  ? 'cancelled'
+                  : 'completed',
+            });
           }
 
           // Check for cancellation after tool execution
