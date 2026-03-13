@@ -383,9 +383,10 @@ export const browserScreenshot: ToolFactory = (page: Page) =>
           let buffer;
           try {
             buffer = await activePage.screenshot({ 
-              type: "jpeg", 
-              fullPage, 
-              quality 
+              type: "jpeg",
+              scale: "css",
+              fullPage,
+              quality
             });
           } catch (screenshotError) {
             return `Error taking initial screenshot: ${

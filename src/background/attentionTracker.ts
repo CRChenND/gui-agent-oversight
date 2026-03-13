@@ -192,36 +192,68 @@ export async function canAnchorAttentionTargetInViewport(page: Page, target: Att
       }
 
       function resolveVisibleTextTarget(text: string): Element | null {
-        const needle = text.trim().toLowerCase();
+        function normalizeText(value: string): string {
+          return value.replace(/\s+/g, " ").trim().toLowerCase();
+        }
+
+        function isVisibleCandidate(element: Element | null): element is HTMLElement {
+          if (!(element instanceof HTMLElement)) return false;
+          const rect = element.getBoundingClientRect();
+          if (rect.width < 4 || rect.height < 4) return false;
+          const style = window.getComputedStyle(element);
+          if (style.visibility === "hidden" || style.display === "none") return false;
+          return rect.bottom >= 0 && rect.right >= 0 && rect.top <= window.innerHeight && rect.left <= window.innerWidth;
+        }
+
+        function getElementText(element: HTMLElement): string {
+          const pieces = [
+            element.innerText,
+            element.textContent,
+            element.getAttribute("aria-label"),
+            element.getAttribute("placeholder"),
+            (element as HTMLInputElement).value,
+          ];
+          return pieces.filter((part): part is string => typeof part === "string" && part.trim().length > 0).join(" ");
+        }
+
+        function getClickableCandidate(element: HTMLElement): HTMLElement {
+          return (
+            element.closest(
+              "button, a, label, input, textarea, select, summary, [role='button'], [role='link'], [tabindex]"
+            ) as HTMLElement | null
+          ) || element;
+        }
+
+        const needle = normalizeText(text);
         if (!needle) return null;
 
         const elements = Array.from(
           document.querySelectorAll(
-            "button, a, input, textarea, select, label, [role='button'], [role='link'], p, span, div"
+            "button, a, label, input, textarea, select, option, summary, [role='button'], [role='link'], [tabindex], span, div, p"
           )
         );
-        let best: { element: Element; score: number } | null = null;
+        const visited = new Set<HTMLElement>();
+        let best: { element: HTMLElement; score: number } | null = null;
 
-        for (const element of elements) {
-          if (!isVisibleInViewport(element)) continue;
-          const htmlElement = element as HTMLElement;
-          const rawText =
-            (
-              htmlElement.innerText ||
-              htmlElement.textContent ||
-              htmlElement.getAttribute("aria-label") ||
-              htmlElement.getAttribute("placeholder") ||
-              ""
-            ).trim();
-          if (!rawText) continue;
+        for (const rawElement of elements) {
+          if (!(rawElement instanceof HTMLElement)) continue;
+          const element = getClickableCandidate(rawElement);
+          if (visited.has(element) || !isVisibleCandidate(element)) continue;
+          visited.add(element);
 
-          const haystack = rawText.toLowerCase();
-          if (!haystack.includes(needle)) continue;
+          const haystack = normalizeText(getElementText(element));
+          if (!haystack || !haystack.includes(needle)) continue;
 
+          const rect = element.getBoundingClientRect();
           let score = 0;
-          if (haystack === needle) score += 100;
-          if (haystack.startsWith(needle)) score += 30;
+          if (haystack === needle) score += 120;
+          if (haystack.startsWith(needle)) score += 45;
+          if (haystack.includes(` ${needle} `)) score += 20;
+          if (element !== rawElement) score += 18;
+          if (element.matches("button, a, label, input, textarea, select, summary, [role='button'], [role='link']")) score += 30;
           score -= Math.max(0, haystack.length - needle.length);
+          score -= Math.min(rect.width * rect.height, 200000) / 5000;
+          score -= Math.abs(rect.top + rect.height / 2 - window.innerHeight / 2) / 200;
 
           if (!best || score > best.score) {
             best = { element, score };
@@ -508,29 +540,68 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
     }
 
     function resolveVisibleTextTarget(text: string): Element | null {
-      const needle = text.trim().toLowerCase();
+      function normalizeText(value: string): string {
+        return value.replace(/\s+/g, " ").trim().toLowerCase();
+      }
+
+      function isVisibleCandidate(element: Element | null): element is HTMLElement {
+        if (!(element instanceof HTMLElement)) return false;
+        const rect = element.getBoundingClientRect();
+        if (rect.width < 4 || rect.height < 4) return false;
+        const style = window.getComputedStyle(element);
+        if (style.visibility === "hidden" || style.display === "none") return false;
+        return rect.bottom >= 0 && rect.right >= 0 && rect.top <= window.innerHeight && rect.left <= window.innerWidth;
+      }
+
+      function getElementText(element: HTMLElement): string {
+        const pieces = [
+          element.innerText,
+          element.textContent,
+          element.getAttribute("aria-label"),
+          element.getAttribute("placeholder"),
+          (element as HTMLInputElement).value,
+        ];
+        return pieces.filter((part): part is string => typeof part === "string" && part.trim().length > 0).join(" ");
+      }
+
+      function getClickableCandidate(element: HTMLElement): HTMLElement {
+        return (
+          element.closest(
+            "button, a, label, input, textarea, select, summary, [role='button'], [role='link'], [tabindex]"
+          ) as HTMLElement | null
+        ) || element;
+      }
+
+      const needle = normalizeText(text);
       if (!needle) return null;
 
-      const elements = Array.from(document.querySelectorAll("button, a, input, textarea, select, label, [role='button'], [role='link'], p, span, div"));
-      let best: { element: Element; score: number } | null = null;
+      const elements = Array.from(
+        document.querySelectorAll(
+          "button, a, label, input, textarea, select, option, summary, [role='button'], [role='link'], [tabindex], span, div, p"
+        )
+      );
+      const visited = new Set<HTMLElement>();
+      let best: { element: HTMLElement; score: number } | null = null;
 
-      for (const element of elements) {
-        const htmlElement = element as HTMLElement;
-        const rect = htmlElement.getBoundingClientRect();
-        if (rect.width < 4 || rect.height < 4) continue;
-        if (rect.bottom < 0 || rect.right < 0 || rect.top > window.innerHeight || rect.left > window.innerWidth) continue;
+      for (const rawElement of elements) {
+        if (!(rawElement instanceof HTMLElement)) continue;
+        const element = getClickableCandidate(rawElement);
+        if (visited.has(element) || !isVisibleCandidate(element)) continue;
+        visited.add(element);
 
-        const rawText =
-          (htmlElement.innerText || htmlElement.textContent || htmlElement.getAttribute("aria-label") || htmlElement.getAttribute("placeholder") || "").trim();
-        if (!rawText) continue;
+        const haystack = normalizeText(getElementText(element));
+        if (!haystack || !haystack.includes(needle)) continue;
 
-        const haystack = rawText.toLowerCase();
-        if (!haystack.includes(needle)) continue;
-
+        const rect = element.getBoundingClientRect();
         let score = 0;
-        if (haystack === needle) score += 100;
-        if (haystack.startsWith(needle)) score += 30;
+        if (haystack === needle) score += 120;
+        if (haystack.startsWith(needle)) score += 45;
+        if (haystack.includes(` ${needle} `)) score += 20;
+        if (element !== rawElement) score += 18;
+        if (element.matches("button, a, label, input, textarea, select, summary, [role='button'], [role='link']")) score += 30;
         score -= Math.max(0, haystack.length - needle.length);
+        score -= Math.min(rect.width * rect.height, 200000) / 5000;
+        score -= Math.abs(rect.top + rect.height / 2 - window.innerHeight / 2) / 200;
 
         if (!best || score > best.score) {
           best = { element, score };

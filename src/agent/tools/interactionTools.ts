@@ -3,6 +3,94 @@ import type { Page } from "playwright-crx";
 import { ToolFactory } from "./types";
 import { installDialogListener, lastDialog, resetDialog, withActivePage } from "./utils";
 
+async function clickBestVisibleTextTarget(activePage: Page, target: string, timeoutMs: number): Promise<string> {
+  const handle = await activePage.evaluateHandle((needle: string) => {
+    function normalizeText(value: string): string {
+      return value.replace(/\s+/g, " ").trim().toLowerCase();
+    }
+
+    function isVisible(element: Element | null): element is HTMLElement {
+      if (!(element instanceof HTMLElement)) return false;
+      const rect = element.getBoundingClientRect();
+      if (rect.width < 4 || rect.height < 4) return false;
+      const style = window.getComputedStyle(element);
+      if (style.visibility === "hidden" || style.display === "none") return false;
+      return rect.bottom >= 0 && rect.right >= 0 && rect.top <= window.innerHeight && rect.left <= window.innerWidth;
+    }
+
+    function getElementText(element: HTMLElement): string {
+      const pieces = [
+        element.innerText,
+        element.textContent,
+        element.getAttribute("aria-label"),
+        element.getAttribute("placeholder"),
+        (element as HTMLInputElement).value,
+      ];
+      return pieces.filter((part): part is string => typeof part === "string" && part.trim().length > 0).join(" ");
+    }
+
+    function getClickableCandidate(element: HTMLElement): HTMLElement {
+      return (
+        element.closest(
+          "button, a, label, input, textarea, select, summary, [role='button'], [role='link'], [tabindex]"
+        ) as HTMLElement | null
+      ) || element;
+    }
+
+    const normalizedNeedle = normalizeText(needle);
+    if (!normalizedNeedle) return null;
+
+    const visited = new Set<HTMLElement>();
+    const candidates = Array.from(
+      document.querySelectorAll(
+        "button, a, label, input, textarea, select, option, summary, [role='button'], [role='link'], [tabindex], span, div, p"
+      )
+    );
+
+    let best: { element: HTMLElement; score: number } | null = null;
+
+    for (const rawElement of candidates) {
+      if (!(rawElement instanceof HTMLElement)) continue;
+      const clickable = getClickableCandidate(rawElement);
+      if (visited.has(clickable) || !isVisible(clickable)) continue;
+      visited.add(clickable);
+
+      const haystack = normalizeText(getElementText(clickable));
+      if (!haystack || !haystack.includes(normalizedNeedle)) continue;
+
+      const rect = clickable.getBoundingClientRect();
+      let score = 0;
+      if (haystack === normalizedNeedle) score += 120;
+      if (haystack.startsWith(normalizedNeedle)) score += 45;
+      if (haystack.includes(` ${normalizedNeedle} `)) score += 20;
+      if (clickable !== rawElement) score += 18;
+      if (clickable.matches("button, a, label, input, textarea, select, summary, [role='button'], [role='link']")) score += 30;
+      score -= Math.max(0, haystack.length - normalizedNeedle.length);
+      score -= Math.min(rect.width * rect.height, 200000) / 5000;
+      score -= Math.abs(rect.top + rect.height / 2 - window.innerHeight / 2) / 200;
+
+      if (!best || score > best.score) {
+        best = { element: clickable, score };
+      }
+    }
+
+    return best?.element ?? null;
+  }, target);
+
+  const elementHandle = handle.asElement();
+  if (!elementHandle) {
+    await handle.dispose();
+    throw new Error(`No visible element matched text: ${target}`);
+  }
+
+  try {
+    await elementHandle.click({ timeout: timeoutMs });
+    return `Clicked best visible text target: ${target}`;
+  } finally {
+    await elementHandle.dispose();
+  }
+}
+
 export const browserClick: ToolFactory = (page: Page) =>
   new DynamicTool({
     name: "browser_click",
@@ -24,8 +112,7 @@ export const browserClick: ToolFactory = (page: Page) =>
             return `Clicked selector: ${target}`;
           }
 
-          await activePage.getByText(target, { exact: false }).first().click({ timeout: CLICK_TIMEOUT_MS });
-          return `Clicked element containing text: ${target}`;
+          return await clickBestVisibleTextTarget(activePage, target, CLICK_TIMEOUT_MS);
         });
       } catch (error) {
         return `Error clicking '${input}': ${
