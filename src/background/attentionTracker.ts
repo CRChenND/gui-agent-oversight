@@ -528,6 +528,9 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
         })()
       : null;
 
+    let repositionScheduled = false;
+    let pollingTimer: number | null = null;
+
     function placeCardStack(anchorRect: DOMRect | { left: number; top: number; width: number; height: number }) {
       if (!thinkingCard && !approvalCard) return;
       const viewportWidth = window.innerWidth;
@@ -551,6 +554,26 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
 
       cardStack.style.left = `${left}px`;
       cardStack.style.top = `${top}px`;
+    }
+
+    function showFallbackCards() {
+      box.remove();
+      badge.remove();
+      placeCardStack({ left: 12, top: 44, width: 0, height: 0 });
+    }
+
+    function applyRect(rect: DOMRect | { left: number; top: number; width: number; height: number }) {
+      if (!box.isConnected) root.appendChild(box);
+      if (!badge.isConnected) root.appendChild(badge);
+      box.style.left = `${Math.max(0, rect.left - 4)}px`;
+      box.style.top = `${Math.max(0, rect.top - 4)}px`;
+      box.style.width = `${Math.max(8, rect.width + 8)}px`;
+      box.style.height = `${Math.max(8, rect.height + 8)}px`;
+      box.style.borderRadius = "8px";
+      box.style.boxShadow = "0 0 0 9999px rgba(239, 68, 68, 0.10)";
+      badge.style.left = `${Math.max(8, rect.left)}px`;
+      badge.style.top = `${Math.max(8, rect.top - 28)}px`;
+      placeCardStack(rect);
     }
 
     function resolveVisibleTextTarget(text: string): Element | null {
@@ -625,61 +648,84 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
       return best?.element ?? null;
     }
 
-    if (payload.type === "selector" && payload.selector) {
-      let element: Element | null = null;
-      try {
-        element = document.querySelector(payload.selector);
-      } catch {
-        element = null;
+    function updateOverlayPosition() {
+      if (payload.type === "selector" && payload.selector) {
+        let element: Element | null = null;
+        try {
+          element = document.querySelector(payload.selector);
+        } catch {
+          element = null;
+        }
+
+        if (element instanceof HTMLElement) {
+          applyRect(element.getBoundingClientRect());
+        } else {
+          showFallbackCards();
+        }
+        return;
       }
 
-      if (element) {
-        const rect = element.getBoundingClientRect();
-        box.style.left = `${Math.max(0, rect.left - 4)}px`;
-        box.style.top = `${Math.max(0, rect.top - 4)}px`;
-        box.style.width = `${Math.max(8, rect.width + 8)}px`;
-        box.style.height = `${Math.max(8, rect.height + 8)}px`;
-        badge.style.left = `${Math.max(8, rect.left)}px`;
-        badge.style.top = `${Math.max(8, rect.top - 28)}px`;
-        placeCardStack(rect);
-      } else {
-        box.remove();
-        badge.remove();
-        placeCardStack({ left: 12, top: 44, width: 0, height: 0 });
+      if (payload.type === "text" && payload.text) {
+        const element = resolveVisibleTextTarget(payload.text);
+        if (element instanceof HTMLElement) {
+          applyRect(element.getBoundingClientRect());
+        } else {
+          showFallbackCards();
+        }
+        return;
       }
-    } else if (payload.type === "text" && payload.text) {
-      const element = resolveVisibleTextTarget(payload.text);
-      if (element) {
-        const rect = (element as HTMLElement).getBoundingClientRect();
-        box.style.left = `${Math.max(0, rect.left - 4)}px`;
-        box.style.top = `${Math.max(0, rect.top - 4)}px`;
-        box.style.width = `${Math.max(8, rect.width + 8)}px`;
-        box.style.height = `${Math.max(8, rect.height + 8)}px`;
-        badge.style.left = `${Math.max(8, rect.left)}px`;
-        badge.style.top = `${Math.max(8, rect.top - 28)}px`;
-        placeCardStack(rect);
-      } else {
-        box.remove();
-        badge.remove();
-        placeCardStack({ left: 12, top: 44, width: 0, height: 0 });
+
+      if (payload.type === "coordinates") {
+        if (!box.isConnected) root.appendChild(box);
+        if (!badge.isConnected) root.appendChild(badge);
+        const x = Math.max(0, Number(payload.x) || 0);
+        const y = Math.max(0, Number(payload.y) || 0);
+        box.style.left = `${Math.max(0, x - 14)}px`;
+        box.style.top = `${Math.max(0, y - 14)}px`;
+        box.style.width = "28px";
+        box.style.height = "28px";
+        box.style.borderRadius = "9999px";
+        box.style.boxShadow = "0 0 0 9999px rgba(239, 68, 68, 0.08)";
+        badge.style.left = `${Math.max(8, x + 16)}px`;
+        badge.style.top = `${Math.max(8, y - 12)}px`;
+        placeCardStack({ left: x + 16, top: y - 12, width: 0, height: 0 });
+        return;
       }
-    } else if (payload.type === "coordinates") {
-      const x = Math.max(0, Number(payload.x) || 0);
-      const y = Math.max(0, Number(payload.y) || 0);
-      box.style.left = `${Math.max(0, x - 14)}px`;
-      box.style.top = `${Math.max(0, y - 14)}px`;
-      box.style.width = "28px";
-      box.style.height = "28px";
-      box.style.borderRadius = "9999px";
-      box.style.boxShadow = "0 0 0 9999px rgba(239, 68, 68, 0.08)";
-      badge.style.left = `${Math.max(8, x + 16)}px`;
-      badge.style.top = `${Math.max(8, y - 12)}px`;
-      placeCardStack({ left: x + 16, top: y - 12, width: 0, height: 0 });
-    } else {
-      box.remove();
-      badge.remove();
-      placeCardStack({ left: 12, top: 44, width: 0, height: 0 });
+
+      showFallbackCards();
     }
+
+    function scheduleReposition() {
+      if (repositionScheduled) return;
+      repositionScheduled = true;
+      window.requestAnimationFrame(() => {
+        repositionScheduled = false;
+        updateOverlayPosition();
+      });
+    }
+
+    updateOverlayPosition();
+
+    const scrollListenerOptions = { passive: true, capture: true } as const;
+    const onViewportChanged = () => scheduleReposition();
+    window.addEventListener("scroll", onViewportChanged, scrollListenerOptions);
+    window.addEventListener("resize", onViewportChanged);
+    if (payload.type === "selector" || payload.type === "text") {
+      pollingTimer = window.setInterval(() => {
+        updateOverlayPosition();
+      }, 150);
+    }
+    (
+      root as HTMLElement & {
+        __morphCleanupAttentionOverlay__?: () => void;
+      }
+    ).__morphCleanupAttentionOverlay__ = () => {
+      window.removeEventListener("scroll", onViewportChanged, scrollListenerOptions);
+      window.removeEventListener("resize", onViewportChanged);
+      if (pollingTimer !== null) {
+        window.clearInterval(pollingTimer);
+      }
+    };
 
     if (!payload.approval) {
       setTimeout(() => {
