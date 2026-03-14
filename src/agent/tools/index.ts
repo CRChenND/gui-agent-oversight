@@ -4,6 +4,7 @@ import { browserPressKey, browserKeyboardType } from "./keyboardTools";
 import { browserMoveMouse, browserClickXY, browserDrag } from "./mouseTools";
 import { browserNavigate, browserWaitForNavigation, browserNavigateBack, browserNavigateForward } from "./navigationTools";
 import { browserGetTitle, browserSnapshotDom, browserQuery, browserAccessibleTree, browserReadText, browserScreenshot } from "./observationTools";
+import { browserScroll } from "./scrollTools";
 import {
   browserGetActiveTab,
   browserNavigateTab,
@@ -28,6 +29,7 @@ const tabContextToolFactories: AnyToolFactory[] = [
 ];
 
 const interactionToolFactories: AnyToolFactory[] = [browserClick, browserType, browserHandleDialog];
+const scrollToolFactories: AnyToolFactory[] = [browserScroll];
 const observationToolFactories: AnyToolFactory[] = [
   browserGetTitle,
   browserSnapshotDom,
@@ -44,6 +46,7 @@ const allToolFactories: AnyToolFactory[] = [
   ...navigationToolFactories,
   ...tabContextToolFactories,
   ...interactionToolFactories,
+  ...scrollToolFactories,
   ...observationToolFactories,
   ...mouseToolFactories,
   ...keyboardToolFactories,
@@ -67,6 +70,7 @@ export {
   browserClick,
   browserType,
   browserHandleDialog,
+  browserScroll,
   
   // Observation tools
   browserGetTitle,

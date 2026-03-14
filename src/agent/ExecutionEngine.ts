@@ -1803,7 +1803,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             // If not valid JSON, add as plain text
             const recoveryHint =
               executionProfile === 'structural_amplification' && isRecoverableToolResultError(result)
-                ? '\nThis error looks recoverable. Do not stop the task. Re-observe the page, check whether the target already exists in view, and try an alternative observation or action that still advances the task.'
+                ? '\nThis error looks recoverable. Do not stop the task. If the target is outside the viewport, use browser_scroll (for example: down or page_down) or browser_press_key (for example: PageDown or ArrowDown), then re-observe the page and continue.'
                 : '';
             messages.push({ role: "user", content: `Tool result: ${result}${recoveryHint}` });
           }
