@@ -1163,16 +1163,35 @@ export async function executePrompt(
         const resolvedThinking = (thinking || latestThinkingByStepId.get(stepId) || '').trim();
         await wait(getThinkingTypingDurationMs(resolvedThinking) + DEFAULT_STRUCTURAL_AMPLIFICATION_STEP_DELAY_MS);
       },
-      onComplete: () => {
+      onComplete: (result) => {
         // Get the window ID for this tab
         const windowId = getWindowForTab(targetTabId);
-        void runtimeManager.markRunCompleted(windowId);
-        void handleRunCompleted({
-          tabId: targetTabId,
-          windowId,
-          page: updatedTabState.page,
-          focusLabel: 'Task completed'
-        });
+        if (result?.status === 'completed' || !result) {
+          void runtimeManager.markRunCompleted(windowId);
+          void handleRunCompleted({
+            tabId: targetTabId,
+            windowId,
+            page: updatedTabState.page,
+            focusLabel: 'Task completed'
+          });
+        } else if (result.status === 'cancelled') {
+          void runtimeManager.markRunCancelled(windowId);
+          void handleRunCancelled({
+            tabId: targetTabId,
+            windowId,
+            page: updatedTabState.page,
+            focusLabel: result.reason || 'Execution cancelled'
+          });
+        } else {
+          void runtimeManager.markRunFailed(windowId);
+          void handleRunFailed({
+            tabId: targetTabId,
+            windowId,
+            page: updatedTabState.page,
+            focusLabel: result.status === 'max_steps' ? 'Execution stopped' : 'Execution stopped',
+            error: result.reason || 'Execution stopped before task completion.',
+          });
+        }
         
         // Finalize the last segment if needed FIRST
         // This ensures the final LLM output is not lost

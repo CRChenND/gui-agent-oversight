@@ -34,6 +34,7 @@ type TimingPolicy = 'pre_action' | 'pre_navigation' | 'post_action';
 type ApprovedPlan = { summary: string; steps: string[] };
 type PlanStepDisposition = 'current' | 'next' | 'out_of_plan';
 type PlanEvidenceStatus = 'completed' | 'cancelled' | 'error';
+export type ExecutionTerminalStatus = 'completed' | 'stopped' | 'cancelled' | 'max_steps' | 'failed';
 type PlanExecutionEvidence = {
   planStepIndex: number;
   toolName: string;
@@ -49,7 +50,7 @@ export interface ExecutionCallbacks {
   onLlmChunk?: (s: string) => void;
   onLlmOutput: (s: string) => void;
   onToolOutput: (s: string) => void;
-  onComplete: () => void;
+  onComplete: (result?: { status: ExecutionTerminalStatus; reason?: string }) => void;
   onError?: (error: any) => void;
   onToolStart?: (
     stepId: string,
@@ -142,14 +143,14 @@ class CallbackAdapter {
     }
   }
 
-  private handleComplete(): void {
+  private handleComplete(result?: { status: ExecutionTerminalStatus; reason?: string }): void {
     // In non-streaming mode, emit the full buffer at completion
     if (!this.isStreaming && this.buffer.length > 0) {
       this.originalCallbacks.onLlmOutput(this.buffer);
       this.buffer = '';
     }
 
-    this.originalCallbacks.onComplete();
+    this.originalCallbacks.onComplete(result);
   }
 }
 
@@ -916,6 +917,8 @@ export class ExecutionEngine {
       this.promptManager.setApprovedPlanGuidance('');
 
       let done = false;
+      let terminalStatus: ExecutionTerminalStatus | null = null;
+      let terminalReason: string | undefined;
       let step = 0;
       let planReviewed = false;
 
@@ -937,6 +940,8 @@ export class ExecutionEngine {
         if (planReview.decision === 'reject') {
           adaptedCallbacks.onToolOutput('❌ Plan review rejected. Execution terminated before tool execution.');
           messages.push({ role: 'user', content: 'Plan review rejected by user. Do not execute further actions.' });
+          terminalStatus = 'stopped';
+          terminalReason = 'Plan review rejected by user.';
           done = true;
         } else if (planReview.decision === 'edit') {
           const editText = planReview.editedPlan?.trim() || 'Plan edited by user.';
@@ -1148,18 +1153,20 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
                 continue;
               }
 
-              if (completion.finalResponse) {
-                adaptedCallbacks.onLlmOutput(completion.finalResponse);
-              } else {
-                adaptedCallbacks.onLlmOutput('Task completed.');
-              }
-              done = true;
-              break;
+            if (completion.finalResponse) {
+              adaptedCallbacks.onLlmOutput(completion.finalResponse);
+            } else {
+              adaptedCallbacks.onLlmOutput('Task completed.');
             }
+            terminalStatus = 'completed';
+            done = true;
+            break;
+          }
 
-            messages.push(
-              { role: 'assistant', content: accumulatedText },
-              {
+          adaptedCallbacks.onToolOutput('⚠️ Model stopped after reasoning without a valid tool call. Requesting a corrected XML tool call.');
+          messages.push(
+            { role: 'assistant', content: accumulatedText },
+            {
                 role: 'user',
                 content:
                   'You stopped without a valid tool call or completion marker. ' +
@@ -1308,6 +1315,8 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             const permission = await adaptedCallbacks.onWaitForExecutionPermission();
             if (!permission.allowed) {
               adaptedCallbacks.onToolOutput(`⏸️ Execution blocked: ${permission.reason || 'runtime policy block'}`);
+              terminalStatus = 'stopped';
+              terminalReason = permission.reason || 'Execution blocked by runtime policy.';
               done = true;
               messages.push(
                 { role: "assistant", content: accumulatedText },
@@ -1366,6 +1375,8 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               );
               messages = trimHistory(messages);
               this.liveMessages = messages;
+              terminalStatus = 'stopped';
+              terminalReason = 'Proposed action was outside the approved plan.';
               done = true;
               continue;
             }
@@ -1409,6 +1420,8 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
                 );
                 messages = trimHistory(messages);
                 this.liveMessages = messages;
+                terminalStatus = 'stopped';
+                terminalReason = `Plan step ${planMatch.index + 1} rejected by user.`;
                 done = true;
                 continue;
               }
@@ -1596,6 +1609,8 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
           if (this.errorHandler.isExecutionCancelled()) break;
 
           if (haltAfterReviewDeny) {
+            terminalStatus = 'stopped';
+            terminalReason = 'Execution stopped by post-action review policy.';
             done = true;
             messages.push(
               { role: "assistant", content: accumulatedText },
@@ -1646,17 +1661,23 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
       }
 
       if (this.errorHandler.isExecutionCancelled()) {
+        terminalStatus = 'cancelled';
+        terminalReason = 'Execution cancelled by user.';
         adaptedCallbacks.onLlmOutput(
           `\n\nExecution cancelled by user.`
         );
       } else if (step >= MAX_STEPS) {
+        terminalStatus = 'max_steps';
+        terminalReason = `Exceeded maximum of ${MAX_STEPS} steps.`;
         adaptedCallbacks.onLlmOutput(
           `Stopped: exceeded maximum of ${MAX_STEPS} steps.`
         );
+      } else if (!terminalStatus) {
+        terminalStatus = 'stopped';
       }
       this.liveMessages = null;
       this.currentTaskPrompt = '';
-      adaptedCallbacks.onComplete();
+      adaptedCallbacks.onComplete({ status: terminalStatus, reason: terminalReason });
     } catch (err: any) {
       this.liveMessages = null;
       this.currentTaskPrompt = '';
@@ -1704,7 +1725,10 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
           adaptedCallbacks.onLlmOutput(
             `Maximum retry attempts (${MAX_RETRY_ATTEMPTS}) exceeded. Please try again later.`
           );
-          adaptedCallbacks.onComplete();
+          adaptedCallbacks.onComplete({
+            status: 'failed',
+            reason: `Maximum retry attempts (${MAX_RETRY_ATTEMPTS}) exceeded.`,
+          });
         } else {
           // In streaming mode, re-throw to trigger fallback
           throw err;
@@ -1720,7 +1744,10 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
           throw err;
         } else {
           // Only complete processing if we're not going to fallback
-          adaptedCallbacks.onComplete();
+          adaptedCallbacks.onComplete({
+            status: 'failed',
+            reason: err instanceof Error ? err.message : String(err),
+          });
         }
       }
     }
