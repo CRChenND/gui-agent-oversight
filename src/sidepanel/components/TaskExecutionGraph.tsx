@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { StepImpact } from '../../oversight/types';
 import { badgeClassName, badgeVariants } from './badgeStyles';
 
@@ -38,7 +38,7 @@ export interface TaskNode {
   };
 }
 
-type TooltipKind = 'thinking' | 'risk' | 'decision';
+type TooltipKind = 'thinking' | 'risk';
 type TooltipPlacement = 'above' | 'below';
 
 interface TaskExecutionGraphProps {
@@ -85,13 +85,6 @@ const riskBadgeStyleMap: Record<StepImpact, React.CSSProperties> = {
     backgroundColor: '#fff1f2',
     color: '#be123c',
   },
-};
-
-const decisionBadgeMap: Record<'approve' | 'deny' | 'edit' | 'rollback', string> = {
-  approve: badgeVariants.success,
-  deny: badgeVariants.danger,
-  edit: badgeVariants.warning,
-  rollback: badgeVariants.info,
 };
 
 const tooltipCardClassName =
@@ -191,15 +184,6 @@ function getRiskExplanationText(node: TaskNode): string {
   return 'This step is high risk because it could cause a meaningful action, external effect, or hard-to-undo change.';
 }
 
-function getDecisionExplanationText(node: TaskNode): string {
-  if (!node.intervention) return '';
-  return (
-    node.intervention.reasonText ||
-    node.intervention.impactRationale ||
-    'This step asked for a user decision because it could meaningfully affect the task or page state.'
-  );
-}
-
 export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
   nodes,
   contentGranularity = 'step',
@@ -208,7 +192,6 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
   onRiskLabelHover,
   onThinkingTooltipVisibilityChange,
 }) => {
-  const hoverStartByStepRef = useRef<Record<string, number>>({});
   const [activeTooltip, setActiveTooltip] = useState<{
     stepId: string;
     kind: TooltipKind;
@@ -299,10 +282,9 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
           const intervention = node.intervention;
           const showThinkingTooltip = activeTooltip?.stepId === node.stepId && activeTooltip.kind === 'thinking';
           const showRiskTooltip = activeTooltip?.stepId === node.stepId && activeTooltip.kind === 'risk';
-          const showDecisionTooltip = activeTooltip?.stepId === node.stepId && activeTooltip.kind === 'decision';
           const tooltipPositionClasses = getTooltipPositionClasses(activeTooltip?.placement || 'below');
-          const showInterventionBadges = Boolean(intervention);
-          const showInterventionDetails = Boolean(intervention) && monitoringContentScope !== 'minimal';
+          const showRiskBadge = Boolean(intervention);
+          const showRiskDetails = Boolean(intervention) && monitoringContentScope !== 'minimal';
 
           return (
             <div
@@ -347,35 +329,28 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                       <div className="text-sm font-medium text-base-content">
                         {summarizeStepTitle(node)}
                       </div>
-                      {showInterventionBadges ? (
+                      {showRiskBadge ? (
                         <div
                           className="inline-flex"
                           onMouseEnter={(e) => {
-                            if (!showInterventionDetails) return;
+                            if (!showRiskDetails) return;
                             openTooltip(node.stepId, 'risk', e.currentTarget);
-                            hoverStartByStepRef.current[node.stepId] = Date.now();
                           }}
                           onMouseLeave={() => {
-                            if (!showInterventionDetails) return;
+                            if (!showRiskDetails) return;
                             setActiveTooltip((current) =>
                               current?.stepId === node.stepId && current.kind === 'risk' ? null : current
                             );
-                            const startedAt = hoverStartByStepRef.current[node.stepId];
-                            if (!startedAt) return;
-                            delete hoverStartByStepRef.current[node.stepId];
-                            const durationMs = Date.now() - startedAt;
-                            if (durationMs > 0) {
-                              onRiskLabelHover?.(durationMs);
-                            }
+                            onRiskLabelHover?.(0);
                           }}
                           onClick={(e) => {
-                            if (!showInterventionDetails) return;
+                            if (!showRiskDetails) return;
                             e.stopPropagation();
                             toggleTooltip(node.stepId, 'risk', e.currentTarget);
                           }}
                         >
                           <span
-                            className={`${badgeClassName()} ${riskBadgeMap[intervention!.impact]} ${showInterventionDetails ? 'cursor-help' : ''}`}
+                            className={`${badgeClassName()} ${riskBadgeMap[intervention!.impact]} ${showRiskDetails ? 'cursor-help' : ''}`}
                             style={riskBadgeStyleMap[intervention!.impact]}
                           >
                             risk: {intervention!.impact}
@@ -402,56 +377,14 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                       </div>
                     </div>
                   ) : null}
-                  {showInterventionBadges ? (
-                    <div className="relative mt-1">
-                      <div className="flex flex-wrap items-center gap-1">
-                        {intervention?.decision ? (
-                          <div
-                            className="inline-flex"
-                            onMouseEnter={(e) => {
-                              if (!showInterventionDetails) return;
-                              openTooltip(node.stepId, 'decision', e.currentTarget);
-                            }}
-                            onMouseLeave={() => {
-                              if (!showInterventionDetails) return;
-                              setActiveTooltip((current) =>
-                                current?.stepId === node.stepId && current.kind === 'decision' ? null : current
-                              );
-                            }}
-                            onClick={(e) => {
-                              if (!showInterventionDetails) return;
-                              e.stopPropagation();
-                              toggleTooltip(node.stepId, 'decision', e.currentTarget);
-                            }}
-                          >
-                            <span
-                              className={`${badgeClassName()} ${decisionBadgeMap[intervention.decision]} ${showInterventionDetails ? 'cursor-help' : ''}`}
-                            >
-                              decision:{intervention.decision}
-                            </span>
-                          </div>
-                        ) : null}
+                  {showRiskDetails && showRiskTooltip ? (
+                    <div className={`pointer-events-none w-64 ${tooltipCardClassName} ${tooltipPositionClasses}`}>
+                      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                        Risk Explanation
                       </div>
-                      {showInterventionDetails && showRiskTooltip ? (
-                        <div className={`pointer-events-none w-64 ${tooltipCardClassName} ${tooltipPositionClasses}`}>
-                          <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-                            Risk Explanation
-                          </div>
-                          <div className="text-xs leading-5 text-slate-700">
-                            {getRiskExplanationText(node)}
-                          </div>
-                        </div>
-                      ) : null}
-                      {showInterventionDetails && showDecisionTooltip ? (
-                        <div className={`pointer-events-none w-64 ${tooltipCardClassName} ${tooltipPositionClasses}`}>
-                          <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-                            Decision Context
-                          </div>
-                          <div className="text-xs leading-5 text-slate-700">
-                            {getDecisionExplanationText(node)}
-                          </div>
-                        </div>
-                      ) : null}
+                      <div className="text-xs leading-5 text-slate-700">
+                        {getRiskExplanationText(node)}
+                      </div>
                     </div>
                   ) : null}
                 </div>

@@ -1288,7 +1288,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             ? "The AI assistant has determined this action requires your approval."
             : null;
           const gateReason = promptedByGate
-            ? `Intervention Gate (${gateConfig.policy}) blocked this step because impact is ${riskAssessment.impact}.`
+            ? `Intervention Gate (${gateConfig.policy}) blocked this step.`
             : null;
           const reasonParts = [llmReason, gateReason, ...riskAssessment.reasons].filter(Boolean) as string[];
 
