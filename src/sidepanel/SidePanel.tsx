@@ -312,33 +312,6 @@ export function SidePanel() {
   const interruptTopK = Math.max(1, Number(interventionParams.interruptTopK || 999));
   const approvedPlanSteps = approvedPlan?.steps || [];
 
-  const handleApplyArchetype = useCallback((archetypeId: string) => {
-    const archetype = getOversightArchetypeById(archetypeId);
-    if (!archetype || archetype.id === selectedArchetypeId) {
-      return;
-    }
-
-    const nextState = cloneArchetypeState(archetype);
-    setSelectedArchetypeId(archetype.id);
-    setMechanismSettings(nextState.settings);
-    setMechanismParameterSettings(nextState.parameterSettings);
-    setIsApplyingArchetype(true);
-
-    chrome.storage.sync.set(
-      {
-        [OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY]: archetype.id,
-        ...buildOversightStoragePatch(nextState.settings),
-        ...buildOversightParameterStoragePatch(nextState.parameterSettings),
-      },
-      () => {
-        setIsApplyingArchetype(false);
-        chrome.runtime.sendMessage({
-          action: 'providerConfigChanged'
-        }).catch(err => console.error('Error sending message:', err));
-      }
-    );
-  }, [selectedArchetypeId]);
-
   const handleDownloadTaskGraph = useCallback(() => {
     if (taskNodes.length === 0) return;
 
@@ -979,6 +952,47 @@ export function SidePanel() {
     });
   };
 
+  const clearConversationState = useCallback(() => {
+    clearMessages();
+    clearHistory();
+    clearOversightState();
+    setSupervisoryActualSteps([]);
+    setCurrentPrompt('');
+    setHaltReason(null);
+    setApprovedPlan(null);
+    setInspectPlanProgress(null);
+    setInspectPlanError(null);
+    setApprovalRequests([]);
+  }, [clearHistory, clearMessages, clearOversightState]);
+
+  const handleApplyArchetype = useCallback((archetypeId: string) => {
+    const archetype = getOversightArchetypeById(archetypeId);
+    if (!archetype || archetype.id === selectedArchetypeId) {
+      return;
+    }
+
+    const nextState = cloneArchetypeState(archetype);
+    clearConversationState();
+    setSelectedArchetypeId(archetype.id);
+    setMechanismSettings(nextState.settings);
+    setMechanismParameterSettings(nextState.parameterSettings);
+    setIsApplyingArchetype(true);
+
+    chrome.storage.sync.set(
+      {
+        [OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY]: archetype.id,
+        ...buildOversightStoragePatch(nextState.settings),
+        ...buildOversightParameterStoragePatch(nextState.parameterSettings),
+      },
+      () => {
+        setIsApplyingArchetype(false);
+        chrome.runtime.sendMessage({
+          action: 'providerConfigChanged'
+        }).catch(err => console.error('Error sending message:', err));
+      }
+    );
+  }, [clearConversationState, selectedArchetypeId]);
+
   const handleRemainingPlanStepChange = (index: number, value: string) => {
     setRemainingPlanDraftSteps((prev) => prev.map((step, idx) => (idx === index ? value : step)));
   };
@@ -1102,16 +1116,7 @@ export function SidePanel() {
 
   // Handle clearing history
   const handleClearHistory = () => {
-    clearMessages();
-    clearHistory();
-    clearOversightState();
-    setSupervisoryActualSteps([]);
-    setCurrentPrompt('');
-    setHaltReason(null);
-    setApprovedPlan(null);
-    setInspectPlanProgress(null);
-    setInspectPlanError(null);
-    setApprovalRequests([]);
+    clearConversationState();
   };
 
 
