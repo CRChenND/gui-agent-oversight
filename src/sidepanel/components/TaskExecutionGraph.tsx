@@ -296,10 +296,13 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
       <div className="space-y-2">
         {nodes.map((node, idx) => {
           const isLast = idx === nodes.length - 1;
+          const intervention = node.intervention;
           const showThinkingTooltip = activeTooltip?.stepId === node.stepId && activeTooltip.kind === 'thinking';
           const showRiskTooltip = activeTooltip?.stepId === node.stepId && activeTooltip.kind === 'risk';
           const showDecisionTooltip = activeTooltip?.stepId === node.stepId && activeTooltip.kind === 'decision';
           const tooltipPositionClasses = getTooltipPositionClasses(activeTooltip?.placement || 'below');
+          const showInterventionBadges = Boolean(intervention);
+          const showInterventionDetails = Boolean(intervention) && monitoringContentScope !== 'minimal';
 
           return (
             <div
@@ -344,14 +347,16 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                       <div className="text-sm font-medium text-base-content">
                         {summarizeStepTitle(node)}
                       </div>
-                      {node.intervention && monitoringContentScope !== 'minimal' ? (
+                      {showInterventionBadges ? (
                         <div
                           className="inline-flex"
                           onMouseEnter={(e) => {
+                            if (!showInterventionDetails) return;
                             openTooltip(node.stepId, 'risk', e.currentTarget);
                             hoverStartByStepRef.current[node.stepId] = Date.now();
                           }}
                           onMouseLeave={() => {
+                            if (!showInterventionDetails) return;
                             setActiveTooltip((current) =>
                               current?.stepId === node.stepId && current.kind === 'risk' ? null : current
                             );
@@ -364,15 +369,16 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                             }
                           }}
                           onClick={(e) => {
+                            if (!showInterventionDetails) return;
                             e.stopPropagation();
                             toggleTooltip(node.stepId, 'risk', e.currentTarget);
                           }}
                         >
                           <span
-                            className={`${badgeClassName()} ${riskBadgeMap[node.intervention.impact]} cursor-help`}
-                            style={riskBadgeStyleMap[node.intervention.impact]}
+                            className={`${badgeClassName()} ${riskBadgeMap[intervention!.impact]} ${showInterventionDetails ? 'cursor-help' : ''}`}
+                            style={riskBadgeStyleMap[intervention!.impact]}
                           >
-                            risk: {node.intervention.impact}
+                            risk: {intervention!.impact}
                           </span>
                         </div>
                       ) : null}
@@ -396,32 +402,37 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                       </div>
                     </div>
                   ) : null}
-                  {node.intervention && monitoringContentScope !== 'minimal' ? (
+                  {showInterventionBadges ? (
                     <div className="relative mt-1">
                       <div className="flex flex-wrap items-center gap-1">
-                        {node.intervention.decision ? (
+                        {intervention?.decision ? (
                           <div
                             className="inline-flex"
                             onMouseEnter={(e) => {
+                              if (!showInterventionDetails) return;
                               openTooltip(node.stepId, 'decision', e.currentTarget);
                             }}
                             onMouseLeave={() => {
+                              if (!showInterventionDetails) return;
                               setActiveTooltip((current) =>
                                 current?.stepId === node.stepId && current.kind === 'decision' ? null : current
                               );
                             }}
                             onClick={(e) => {
+                              if (!showInterventionDetails) return;
                               e.stopPropagation();
                               toggleTooltip(node.stepId, 'decision', e.currentTarget);
                             }}
                           >
-                            <span className={`${badgeClassName()} ${decisionBadgeMap[node.intervention.decision]} cursor-help`}>
-                              decision:{node.intervention.decision}
+                            <span
+                              className={`${badgeClassName()} ${decisionBadgeMap[intervention.decision]} ${showInterventionDetails ? 'cursor-help' : ''}`}
+                            >
+                              decision:{intervention.decision}
                             </span>
                           </div>
                         ) : null}
                       </div>
-                      {showRiskTooltip ? (
+                      {showInterventionDetails && showRiskTooltip ? (
                         <div className={`pointer-events-none w-64 ${tooltipCardClassName} ${tooltipPositionClasses}`}>
                           <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
                             Risk Explanation
@@ -431,7 +442,7 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                           </div>
                         </div>
                       ) : null}
-                      {showDecisionTooltip ? (
+                      {showInterventionDetails && showDecisionTooltip ? (
                         <div className={`pointer-events-none w-64 ${tooltipCardClassName} ${tooltipPositionClasses}`}>
                           <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
                             Decision Context

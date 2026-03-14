@@ -3,6 +3,10 @@ import type { Page } from "playwright-crx";
 import { ToolFactory } from "./types";
 import { installDialogListener, lastDialog, resetDialog, withActivePage } from "./utils";
 
+function normalizeTargetText(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
 async function waitForViewportToSettle(activePage: Page, stableMs = 200, timeoutMs = 2500): Promise<void> {
   try {
     await activePage.evaluate(
@@ -76,6 +80,32 @@ type ActionabilityProbe = {
   unobscured: boolean;
 };
 
+async function hasStrictFocusAnchor(
+  activePage: Page,
+  target: { type: "selector"; selector: string } | { type: "text"; text: string }
+): Promise<boolean> {
+  try {
+    return await activePage.evaluate(
+      (payload: { type: "selector"; selector: string } | { type: "text"; text: string }) => {
+        const anchor = (
+          window as Window & {
+            __morphFocusAnchor__?: { type?: string; selector?: string; text?: string };
+          }
+        ).__morphFocusAnchor__;
+        if (!anchor || anchor.type !== payload.type) return false;
+        if (payload.type === "selector") {
+          return typeof anchor.selector === "string" && anchor.selector.trim() === payload.selector.trim();
+        }
+        const normalize = (value: string) => value.replace(/\s+/g, " ").trim().toLowerCase();
+        return typeof anchor.text === "string" && normalize(anchor.text) === normalize(payload.text);
+      },
+      target
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function probeLocatorActionability(locator: ReturnType<Page["locator"]>): Promise<ActionabilityProbe> {
   const handle = await locator.elementHandle();
   if (!handle) {
@@ -119,14 +149,21 @@ async function probeLocatorActionability(locator: ReturnType<Page["locator"]>): 
 async function clickLocatorConservatively(
   activePage: Page,
   locator: ReturnType<Page["locator"]>,
-  timeoutMs: number
+  timeoutMs: number,
+  strictFocusAnchored = false
 ): Promise<void> {
   const initialProbe = await probeLocatorActionability(locator);
+  if (strictFocusAnchored && !initialProbe.inViewport) {
+    throw new Error("Strict focus target is outside the current viewport. Scrolling is forbidden for anchored agent focus.");
+  }
   if (!initialProbe.inViewport) {
     await locator.scrollIntoViewIfNeeded({ timeout: timeoutMs });
   }
 
   const readyProbe = initialProbe.inViewport ? initialProbe : await probeLocatorActionability(locator);
+  if (strictFocusAnchored && (!readyProbe.inViewport || !readyProbe.unobscured || readyProbe.centerX === null || readyProbe.centerY === null)) {
+    throw new Error("Strict focus target is not directly clickable in the current viewport. Scrolling retries are forbidden for anchored agent focus.");
+  }
   if (readyProbe.inViewport && readyProbe.unobscured && readyProbe.centerX !== null && readyProbe.centerY !== null) {
     await clickWithViewportStability(
       activePage,
@@ -220,6 +257,7 @@ async function clickBestVisibleTextTarget(activePage: Page, target: string, time
   }
 
   try {
+    const strictFocusAnchored = await hasStrictFocusAnchor(activePage, { type: "text", text: target });
     const probe = await elementHandle.evaluate((element: Element) => {
       if (!(element instanceof HTMLElement)) {
         return { inViewport: false, centerX: null, centerY: null, unobscured: false };
@@ -246,6 +284,10 @@ async function clickBestVisibleTextTarget(activePage: Page, target: string, time
       const unobscured = Boolean(topElement && (topElement === element || element.contains(topElement)));
       return { inViewport, centerX, centerY, unobscured };
     });
+
+    if (strictFocusAnchored && (!probe.inViewport || !probe.unobscured || probe.centerX === null || probe.centerY === null)) {
+      throw new Error("Strict focus target is not directly clickable in the current viewport. Scrolling retries are forbidden for anchored agent focus.");
+    }
 
     if (probe.inViewport && probe.unobscured && probe.centerX !== null && probe.centerY !== null) {
       await clickWithViewportStability(
@@ -280,7 +322,8 @@ export const browserClick: ToolFactory = (page: Page) =>
 
           if (/[#.[\]>:=]/.test(target)) {
             const locator = activePage.locator(target).first();
-            await clickLocatorConservatively(activePage, locator, CLICK_TIMEOUT_MS);
+            const strictFocusAnchored = await hasStrictFocusAnchor(activePage, { type: "selector", selector: target });
+            await clickLocatorConservatively(activePage, locator, CLICK_TIMEOUT_MS, strictFocusAnchored);
             return `Clicked selector: ${target}`;
           }
 

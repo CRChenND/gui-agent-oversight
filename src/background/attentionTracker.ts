@@ -160,6 +160,11 @@ export function inferAttentionTarget(toolName: string, toolInput: string): Atten
 
 export async function clearAttentionOverlay(page: Page): Promise<void> {
   await page.evaluate(() => {
+    delete (
+      window as Window & {
+        __morphFocusAnchor__?: unknown;
+      }
+    ).__morphFocusAnchor__;
     const existing = document.getElementById("__morph_attention_overlay__");
     if (existing) {
       (
@@ -302,6 +307,12 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
   }
 
   await page.evaluate((payload: AttentionTarget) => {
+    (
+      window as Window & {
+        __morphFocusAnchor__?: AttentionTarget;
+      }
+    ).__morphFocusAnchor__ = payload;
+
     const OVERLAY_ID = "__morph_attention_overlay__";
     const renderToken = `overlay_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const old = document.getElementById(OVERLAY_ID);
