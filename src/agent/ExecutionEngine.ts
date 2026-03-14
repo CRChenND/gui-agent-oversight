@@ -616,7 +616,6 @@ export class ExecutionEngine {
   private parseModelStepMetadata(accumulatedText: string): {
     thinkingSummary?: string;
     impact?: LlmImpact;
-    impactRationale?: string;
     plannedNextStep?: string;
     plannedAlternative?: string;
     plannedRationale?: string;
@@ -625,7 +624,6 @@ export class ExecutionEngine {
     const rawImpact = this.extractTag(accumulatedText, 'impact');
     const impact =
       rawImpact === 'low' || rawImpact === 'medium' || rawImpact === 'high' ? rawImpact : undefined;
-    const impactRationale = this.extractTag(accumulatedText, 'impact_rationale');
     const plannedNextStep = this.extractScaffoldSection(accumulatedText, 'Next Step I Plan To Do', [
       'Alternative',
       'Why I choose A over B',
@@ -635,7 +633,6 @@ export class ExecutionEngine {
     return {
       thinkingSummary,
       impact,
-      impactRationale,
       plannedNextStep,
       plannedAlternative,
       plannedRationale,
@@ -657,7 +654,6 @@ export class ExecutionEngine {
     const value = match[1]
       .replace(/<thinking_summary>[\s\S]*?<\/thinking_summary>/gi, ' ')
       .replace(/<impact>[\s\S]*?<\/impact>/gi, ' ')
-      .replace(/<impact_rationale>[\s\S]*?<\/impact_rationale>/gi, ' ')
       .replace(/\s+/g, ' ')
       .trim();
     return value.length > 0 ? value : undefined;
@@ -684,7 +680,7 @@ export class ExecutionEngine {
 
   private cleanPlanStepText(text: string): string {
     return text
-      .replace(/<\/?(thinking_summary|impact|impact_rationale)>/gi, '')
+      .replace(/<\/?(thinking_summary|impact)>/gi, '')
       .replace(/<\/?[^>]+>/g, '')
       .replace(/\s+/g, ' ')
       .trim();
@@ -693,7 +689,7 @@ export class ExecutionEngine {
   private isDescriptivePlanStep(text: string): boolean {
     if (!text || text.length < 16) return false;
     if (/^(low|medium|high)$/i.test(text)) return false;
-    if (/^(thinking_summary|impact|impact_rationale)$/i.test(text)) return false;
+    if (/^(thinking_summary|impact)$/i.test(text)) return false;
     return /[a-zA-Z]/.test(text) && text.includes(' ');
   }
 
@@ -1391,7 +1387,6 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             reasons: modelMetadata.impact
               ? [
                   `LLM assessed impact as ${modelMetadata.impact}.`,
-                  ...(modelMetadata.impactRationale ? [modelMetadata.impactRationale] : []),
                   ...baseRiskAssessment.reasons,
                 ]
               : baseRiskAssessment.reasons,
@@ -1620,7 +1615,6 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               adaptiveGateLevel: this.adaptiveGateState.currentLevel,
               impact: riskAssessment.impact,
               impactSource,
-              impactRationale: modelMetadata.impactRationale,
               gold_risky: riskAssessment.gold_risky,
               reversible: riskAssessment.reversible,
               category: riskAssessment.category,

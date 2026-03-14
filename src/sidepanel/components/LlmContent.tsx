@@ -28,7 +28,6 @@ export const LlmContent: React.FC<LlmContentProps> = ({
     .replace(metadataThinkingRegex, '')
     .replace(/<thinking_summary>[\s\S]*?<\/thinking_summary>/gi, '')
     .replace(/<impact>([\s\S]*?)<\/impact>/gi, '')
-    .replace(/<impact_rationale>[\s\S]*?<\/impact_rationale>/gi, '')
     .replace(/Next Step I Plan To Do:\s*[\s\S]*?(?=\n\s*<tool>|<tool>|$)/gi, '')
     .replace(/Alternative:\s*[\s\S]*?(?=\n\s*<tool>|<tool>|$)/gi, '')
     .replace(/Why I choose A over B:\s*[\s\S]*?(?=\n\s*<tool>|<tool>|$)/gi, '')

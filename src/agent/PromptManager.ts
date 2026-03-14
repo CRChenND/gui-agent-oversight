@@ -115,7 +115,6 @@ Remember to follow the verification-first workflow: navigate → observe → ana
 
   <thinking_summary>one or two short plain-language sentences for a non-technical user explaining what you are about to do, why you are doing it, and how it helps with the user's goal</thinking_summary>
   <impact>low or medium or high</impact>
-  <impact_rationale>one short sentence explaining the impact judgment</impact_rationale>
 
   Then output the tool call using this EXACT XML format with ALL three tags:
 
@@ -163,7 +162,7 @@ Requirements:
 2. Use 3-6 concrete execution steps in plain language.
 3. Each step must describe an observable action or decision.
 4. Do not output tool-call XML tags.
-5. Do not output metadata tags like <thinking_summary>, <impact>, <impact_rationale>.
+5. Do not output metadata tags like <thinking_summary> or <impact>.
 
 Output format (strict):
 Plan Summary: <one concise sentence>

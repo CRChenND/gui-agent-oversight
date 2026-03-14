@@ -32,7 +32,6 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({
     const stripped = content
       .replace(/<thinking_summary>[\s\S]*?<\/thinking_summary>/gi, '')
       .replace(/<impact>[\s\S]*?<\/impact>/gi, '')
-      .replace(/<impact_rationale>[\s\S]*?<\/impact_rationale>/gi, '')
       .replace(/(```(?:xml|bash)\s*)?<tool>[\s\S]*?<\/requires_approval>(\s*```)?/gi, '')
       .replace(/(```(?:xml|bash)\s*)?<tool>[\s\S]*?<\/input>(\s*```)?/gi, '')
       .trim();

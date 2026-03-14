@@ -17,7 +17,6 @@ export interface TaskNode {
   intervention?: {
     impact: StepImpact;
     impactSource?: 'llm' | 'heuristic';
-    impactRationale?: string;
     requiresApproval: boolean;
     llmRequiresApproval: boolean;
     promptedByGate: boolean;
@@ -173,7 +172,7 @@ function summarizeStepTitle(node: TaskNode): string {
 
 function getRiskExplanationText(node: TaskNode): string {
   if (!node.intervention) return '';
-  const rationale = node.intervention.impactRationale || node.intervention.reasonText || '';
+  const rationale = node.intervention.reasonText || '';
   if (rationale.trim()) return rationale.trim();
   if (node.intervention.impact === 'low') {
     return 'This step is low risk because it mainly observes the page or changes something easy to undo.';

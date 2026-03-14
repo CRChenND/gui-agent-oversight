@@ -316,7 +316,6 @@ const interventionGateMechanism: OversightMechanism = {
           intervention: {
             impact,
             impactSource,
-            impactRationale: asString(payload.impactRationale) || undefined,
             requiresApproval: asBoolean(payload.requiresApproval),
             llmRequiresApproval: asBoolean(payload.llmRequiresApproval),
             promptedByGate: asBoolean(payload.promptedByGate),
@@ -375,7 +374,6 @@ const interventionGateMechanism: OversightMechanism = {
             ...(node.intervention || {
               impact: 'medium' as StepImpact,
               impactSource: 'heuristic' as const,
-              impactRationale: undefined,
               requiresApproval: false,
               llmRequiresApproval: false,
               promptedByGate: false,
