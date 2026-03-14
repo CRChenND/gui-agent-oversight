@@ -233,6 +233,25 @@ export class ExecutionEngine {
     );
   }
 
+  private buildMissingToolCallNotice(profile: ExecutionProfile): string {
+    if (profile === 'action_confirmation') {
+      return '⚠️ Model explained the next action without a valid XML tool call. Requesting a corrected action proposal before approval.';
+    }
+    if (profile === 'supervisory_coexecution') {
+      return '⚠️ Model restated reasoning without starting the approved next step. Requesting a corrected XML tool call.';
+    }
+    return '⚠️ Model stopped after reasoning without a valid tool call. Requesting a corrected XML tool call.';
+  }
+
+  private buildActionConfirmationExecutionInstruction(): string {
+    return (
+      'Action-confirmation mode is active. ' +
+      'Do not stop at a plain-language explanation of the next action. ' +
+      'Your next response must propose exactly one action as a valid XML tool call with ' +
+      '<tool>, <input>, and <requires_approval>. The approval step happens after you emit that XML tool call.'
+    );
+  }
+
   private parseTaskCompletion(text: string): { complete: boolean; finalResponse: string | null } {
     if (!TASK_COMPLETE_REGEX.test(text)) {
       return { complete: false, finalResponse: null };
@@ -1088,6 +1107,31 @@ export class ExecutionEngine {
       }
 
       let executionProfile: ExecutionProfile = 'default';
+      if (adaptedCallbacks.onPrepareModelStep) {
+        const initialContext = await adaptedCallbacks.onPrepareModelStep();
+        this.promptManager.setAmplificationContext({
+          state: initialContext.amplificationState,
+          enteredReason: initialContext.enteredReason,
+        });
+        executionProfile =
+          initialContext.executionProfile === 'structural_amplification' ||
+          initialContext.executionProfile === 'supervisory_coexecution' ||
+          initialContext.executionProfile === 'action_confirmation'
+            ? initialContext.executionProfile
+            : 'default';
+      } else {
+        this.promptManager.setAmplificationContext({ state: 'normal' });
+      }
+
+      if (executionProfile === 'action_confirmation') {
+        messages.push({
+          role: 'user',
+          content: this.buildActionConfirmationExecutionInstruction(),
+        });
+        messages = trimHistory(messages);
+        this.liveMessages = messages;
+      }
+
       while (!done && step++ < this.getMaxStepsForProfile(executionProfile) && !this.errorHandler.isExecutionCancelled()) {
         try {
           if (adaptedCallbacks.onPrepareModelStep) {
@@ -1271,7 +1315,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             break;
           }
 
-          adaptedCallbacks.onToolOutput('⚠️ Model stopped after reasoning without a valid tool call. Requesting a corrected XML tool call.');
+          adaptedCallbacks.onToolOutput(this.buildMissingToolCallNotice(executionProfile));
           messages.push(
             { role: 'assistant', content: accumulatedText },
             {
