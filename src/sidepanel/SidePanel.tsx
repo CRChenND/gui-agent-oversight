@@ -1129,6 +1129,9 @@ export function SidePanel() {
     !isStructuralAmplificationArchetype &&
     pendingApprovalCount > 0 &&
     (notificationModality === 'modal' || notificationModality === 'mixed' || showApprovalOverlay);
+  const hasSupervisoryPlanStepApproval = approvalRequests.some(
+    (request) => request.approvalVariant === 'supervisory-plan-step'
+  );
   const canPause = runtimeStatus.executionState === 'running';
   const canResume =
     runtimeStatus.executionState === 'paused_by_user' ||
@@ -1456,6 +1459,8 @@ export function SidePanel() {
                 className={`pointer-events-auto overflow-y-auto ${
                   isActionConfirmationArchetype
                     ? 'max-h-[34rem]'
+                    : hasSupervisoryPlanStepApproval
+                      ? 'max-h-[25.2rem]'
                     : isRiskGatedArchetype
                       ? 'max-h-[27rem]'
                       : 'max-h-72'
