@@ -69,18 +69,47 @@ async function clickWithViewportStability(
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
-async function isLocatorInViewport(locator: ReturnType<Page["locator"]>): Promise<boolean> {
+type ActionabilityProbe = {
+  inViewport: boolean;
+  centerX: number | null;
+  centerY: number | null;
+  unobscured: boolean;
+};
+
+async function probeLocatorActionability(locator: ReturnType<Page["locator"]>): Promise<ActionabilityProbe> {
   const handle = await locator.elementHandle();
-  if (!handle) return false;
+  if (!handle) {
+    return { inViewport: false, centerX: null, centerY: null, unobscured: false };
+  }
 
   try {
     return await handle.evaluate((element: Element) => {
-      if (!(element instanceof HTMLElement)) return false;
+      if (!(element instanceof HTMLElement)) {
+        return { inViewport: false, centerX: null, centerY: null, unobscured: false };
+      }
       const rect = element.getBoundingClientRect();
-      if (rect.width < 4 || rect.height < 4) return false;
+      if (rect.width < 4 || rect.height < 4) {
+        return { inViewport: false, centerX: null, centerY: null, unobscured: false };
+      }
       const style = window.getComputedStyle(element);
-      if (style.visibility === "hidden" || style.display === "none") return false;
-      return rect.bottom >= 0 && rect.right >= 0 && rect.top <= window.innerHeight && rect.left <= window.innerWidth;
+      if (style.visibility === "hidden" || style.display === "none") {
+        return { inViewport: false, centerX: null, centerY: null, unobscured: false };
+      }
+
+      const left = Math.max(rect.left, 0);
+      const right = Math.min(rect.right, window.innerWidth);
+      const top = Math.max(rect.top, 0);
+      const bottom = Math.min(rect.bottom, window.innerHeight);
+      const inViewport = bottom > top && right > left;
+      if (!inViewport) {
+        return { inViewport: false, centerX: null, centerY: null, unobscured: false };
+      }
+
+      const centerX = left + (right - left) / 2;
+      const centerY = top + (bottom - top) / 2;
+      const topElement = document.elementFromPoint(centerX, centerY);
+      const unobscured = Boolean(topElement && (topElement === element || element.contains(topElement)));
+      return { inViewport, centerX, centerY, unobscured };
     });
   } finally {
     await handle.dispose();
@@ -92,9 +121,19 @@ async function clickLocatorConservatively(
   locator: ReturnType<Page["locator"]>,
   timeoutMs: number
 ): Promise<void> {
-  const initiallyVisible = await isLocatorInViewport(locator);
-  if (!initiallyVisible) {
+  const initialProbe = await probeLocatorActionability(locator);
+  if (!initialProbe.inViewport) {
     await locator.scrollIntoViewIfNeeded({ timeout: timeoutMs });
+  }
+
+  const readyProbe = initialProbe.inViewport ? initialProbe : await probeLocatorActionability(locator);
+  if (readyProbe.inViewport && readyProbe.unobscured && readyProbe.centerX !== null && readyProbe.centerY !== null) {
+    await clickWithViewportStability(
+      activePage,
+      () => activePage.mouse.click(readyProbe.centerX!, readyProbe.centerY!),
+      timeoutMs
+    );
+    return;
   }
 
   await clickWithViewportStability(activePage, () => locator.click({ timeout: timeoutMs }), timeoutMs);
@@ -181,7 +220,42 @@ async function clickBestVisibleTextTarget(activePage: Page, target: string, time
   }
 
   try {
-    await clickWithViewportStability(activePage, () => elementHandle.click({ timeout: timeoutMs }), timeoutMs);
+    const probe = await elementHandle.evaluate((element: Element) => {
+      if (!(element instanceof HTMLElement)) {
+        return { inViewport: false, centerX: null, centerY: null, unobscured: false };
+      }
+      const rect = element.getBoundingClientRect();
+      if (rect.width < 4 || rect.height < 4) {
+        return { inViewport: false, centerX: null, centerY: null, unobscured: false };
+      }
+      const style = window.getComputedStyle(element);
+      if (style.visibility === "hidden" || style.display === "none") {
+        return { inViewport: false, centerX: null, centerY: null, unobscured: false };
+      }
+      const left = Math.max(rect.left, 0);
+      const right = Math.min(rect.right, window.innerWidth);
+      const top = Math.max(rect.top, 0);
+      const bottom = Math.min(rect.bottom, window.innerHeight);
+      const inViewport = bottom > top && right > left;
+      if (!inViewport) {
+        return { inViewport: false, centerX: null, centerY: null, unobscured: false };
+      }
+      const centerX = left + (right - left) / 2;
+      const centerY = top + (bottom - top) / 2;
+      const topElement = document.elementFromPoint(centerX, centerY);
+      const unobscured = Boolean(topElement && (topElement === element || element.contains(topElement)));
+      return { inViewport, centerX, centerY, unobscured };
+    });
+
+    if (probe.inViewport && probe.unobscured && probe.centerX !== null && probe.centerY !== null) {
+      await clickWithViewportStability(
+        activePage,
+        () => activePage.mouse.click(probe.centerX!, probe.centerY!),
+        timeoutMs
+      );
+    } else {
+      await clickWithViewportStability(activePage, () => elementHandle.click({ timeout: timeoutMs }), timeoutMs);
+    }
     return `Clicked best visible text target: ${target}`;
   } finally {
     await elementHandle.dispose();

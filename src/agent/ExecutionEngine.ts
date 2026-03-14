@@ -43,6 +43,10 @@ type PlanExecutionEvidence = {
   status: PlanEvidenceStatus;
 };
 
+function isToolResultError(result: string): boolean {
+  return /^Error(?::|\s)/i.test(result.trim());
+}
+
 /**
  * Callback interface for execution
  */
@@ -1610,6 +1614,9 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
           if (adaptedCallbacks.onToolEnd) {
             adaptedCallbacks.onToolEnd(stepId, result);
           }
+          if (isToolResultError(result) && adaptedCallbacks.onToolError) {
+            adaptedCallbacks.onToolError(stepId, toolName, toolInput, result);
+          }
           if (adaptedCallbacks.onAfterToolCommitted) {
             await adaptedCallbacks.onAfterToolCommitted();
           }
@@ -1621,7 +1628,9 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               toolInput,
               thinking: stepDescription,
               status:
-                haltAfterReviewDeny || result.includes('Action cancelled by user.')
+                isToolResultError(result)
+                  ? 'error'
+                  : haltAfterReviewDeny || result.includes('Action cancelled by user.')
                   ? 'cancelled'
                   : 'completed',
             });
