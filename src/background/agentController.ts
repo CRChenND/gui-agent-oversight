@@ -944,7 +944,7 @@ export async function executePrompt(
     const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     const getThinkingTypingDurationMs = (thinking: string) => {
       const normalized = thinking.trim();
-      return Math.ceil(normalized.length / 2) * 18;
+      return Math.min(1200, Math.ceil(normalized.length / 8) * 16);
     };
 
     const callbacks: ExecutionCallbacks = {
@@ -1161,7 +1161,11 @@ export async function executePrompt(
       onAfterToolStart: async ({ stepId, thinking }) => {
         if (!enableStructuralAmplification) return;
         const resolvedThinking = (thinking || latestThinkingByStepId.get(stepId) || '').trim();
-        await wait(getThinkingTypingDurationMs(resolvedThinking) + DEFAULT_STRUCTURAL_AMPLIFICATION_STEP_DELAY_MS);
+        const totalDelayMs = Math.min(
+          2200,
+          getThinkingTypingDurationMs(resolvedThinking) + Math.min(DEFAULT_STRUCTURAL_AMPLIFICATION_STEP_DELAY_MS, 1000)
+        );
+        await wait(totalDelayMs);
       },
       onComplete: (result) => {
         // Get the window ID for this tab

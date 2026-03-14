@@ -94,6 +94,11 @@ const decisionBadgeMap: Record<'approve' | 'deny' | 'edit' | 'rollback', string>
   rollback: badgeVariants.info,
 };
 
+function getToolBadgeLabel(toolName: string): string {
+  const formatted = formatToolName(toolName).replace(/_/g, ' ').trim();
+  return formatted || 'action';
+}
+
 const tooltipCardClassName =
   'absolute left-0 z-20 rounded-2xl border border-slate-200 bg-white p-3 text-slate-700 shadow-xl';
 
@@ -340,10 +345,13 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                 </div>
                 <div className="relative min-w-0 flex-1">
                   <div className="inline-flex max-w-full">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <div className="text-sm font-medium text-base-content">
                         {summarizeStepTitle(node)}
                       </div>
+                      <span className={badgeClassName('neutral')}>
+                        {getToolBadgeLabel(node.toolName)}
+                      </span>
                     </div>
                   </div>
                   {node.thinking ? (
