@@ -24,11 +24,13 @@ import {
 
 // Constants
 const MAX_STEPS = 50;            // prevent infinite loops
+const STRUCTURAL_AMPLIFICATION_MAX_STEPS = 90;
 
 const TASK_COMPLETE_REGEX = /<task_status>\s*complete\s*<\/task_status>/i;
 const FINAL_RESPONSE_REGEX = /<final_response>([\s\S]*?)<\/final_response>/i;
 const MAX_OUTPUT_TOKENS = 1024;  // max tokens for LLM response
 type LlmImpact = 'low' | 'medium' | 'high';
+type ExecutionProfile = 'default' | 'structural_amplification';
 type ControlMode = 'approve_all' | 'risky_only' | 'step_through';
 type TimingPolicy = 'pre_action' | 'pre_navigation' | 'post_action';
 type ApprovedPlan = { summary: string; steps: string[] };
@@ -45,6 +47,12 @@ type PlanExecutionEvidence = {
 
 function isToolResultError(result: string): boolean {
   return /^Error(?::|\s)/i.test(result.trim());
+}
+
+function isRecoverableToolResultError(result: string): boolean {
+  return /strict focus target|outside the current viewport|not directly clickable|no visible element matched text|intercept|pointer events|not stable|another element|outside of the viewport|element is not attached/i.test(
+    result
+  );
 }
 
 /**
@@ -89,7 +97,11 @@ export interface ExecutionCallbacks {
     toolInput: string;
   }) => Promise<{ decision: 'accept' | 'reject' }>;
   onWaitForExecutionPermission?: () => Promise<{ allowed: boolean; reason?: string }>;
-  onPrepareModelStep?: () => Promise<{ amplificationState: 'normal' | 'amplified'; enteredReason?: string }>;
+  onPrepareModelStep?: () => Promise<{
+    amplificationState: 'normal' | 'amplified';
+    enteredReason?: string;
+    executionProfile?: ExecutionProfile;
+  }>;
   onBeforeToolInvocation?: (payload: { stepId: string; toolName: string }) => Promise<{ allowed: boolean; reason?: string }>;
   onAfterToolCommitted?: () => Promise<void>;
   classifyAmplifiedRisk?: (payload: { toolName: string; toolInput: string }) => {
@@ -175,6 +187,10 @@ export class ExecutionEngine {
   private highestAcceptedPlanStepIndex = -1;
   private lastCompletionCheckPlanStepIndex = 0;
   private executedPlanEvidence: PlanExecutionEvidence[] = [];
+
+  private getMaxStepsForProfile(profile: ExecutionProfile): number {
+    return profile === 'structural_amplification' ? STRUCTURAL_AMPLIFICATION_MAX_STEPS : MAX_STEPS;
+  }
 
   private parseTaskCompletion(text: string): { complete: boolean; finalResponse: string | null } {
     if (!TASK_COMPLETE_REGEX.test(text)) {
@@ -1008,7 +1024,8 @@ export class ExecutionEngine {
         messages = this.liveMessages ?? messages;
       }
 
-      while (!done && step++ < MAX_STEPS && !this.errorHandler.isExecutionCancelled()) {
+      let executionProfile: ExecutionProfile = 'default';
+      while (!done && step++ < this.getMaxStepsForProfile(executionProfile) && !this.errorHandler.isExecutionCancelled()) {
         try {
           if (adaptedCallbacks.onPrepareModelStep) {
             const context = await adaptedCallbacks.onPrepareModelStep();
@@ -1016,8 +1033,10 @@ export class ExecutionEngine {
               state: context.amplificationState,
               enteredReason: context.enteredReason,
             });
+            executionProfile = context.executionProfile === 'structural_amplification' ? 'structural_amplification' : 'default';
           } else {
             this.promptManager.setAmplificationContext({ state: 'normal' });
+            executionProfile = 'default';
           }
 
           // Check for cancellation before each major step
@@ -1393,17 +1412,24 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
                 {
                   role: 'user',
                   content:
-                    `Stop. Your proposed action is outside the approved plan.\n` +
-                    `Current approved step: ${currentStepText}\n` +
-                    `Next approved step: ${nextStepText}\n` +
-                    `Do not execute actions outside the approved plan. Wait for a plan update or propose an action that strictly completes the current or next approved step.`,
+                    executionProfile === 'structural_amplification'
+                      ? `Your proposed action is outside the approved plan.\n` +
+                        `Current approved step: ${currentStepText}\n` +
+                        `Next approved step: ${nextStepText}\n` +
+                        `Do not stop the run. Re-observe the page if needed and propose an action that strictly completes the current or next approved step.`
+                      : `Stop. Your proposed action is outside the approved plan.\n` +
+                        `Current approved step: ${currentStepText}\n` +
+                        `Next approved step: ${nextStepText}\n` +
+                        `Do not execute actions outside the approved plan. Wait for a plan update or propose an action that strictly completes the current or next approved step.`,
                 }
               );
               messages = trimHistory(messages);
               this.liveMessages = messages;
-              terminalStatus = 'stopped';
-              terminalReason = 'Proposed action was outside the approved plan.';
-              done = true;
+              if (executionProfile !== 'structural_amplification') {
+                terminalStatus = 'stopped';
+                terminalReason = 'Proposed action was outside the approved plan.';
+                done = true;
+              }
               continue;
             }
 
@@ -1679,7 +1705,11 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             }
           } catch (error) {
             // If not valid JSON, add as plain text
-            messages.push({ role: "user", content: `Tool result: ${result}` });
+            const recoveryHint =
+              executionProfile === 'structural_amplification' && isRecoverableToolResultError(result)
+                ? '\nThis error looks recoverable. Do not stop the task. Re-observe the page, check whether the target already exists in view, and try an alternative observation or action that still advances the task.'
+                : '';
+            messages.push({ role: "user", content: `Tool result: ${result}${recoveryHint}` });
           }
 
           messages = trimHistory(messages);
@@ -1697,11 +1727,11 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
         adaptedCallbacks.onLlmOutput(
           `\n\nExecution cancelled by user.`
         );
-      } else if (step >= MAX_STEPS) {
+      } else if (step >= this.getMaxStepsForProfile(executionProfile)) {
         terminalStatus = 'max_steps';
-        terminalReason = `Exceeded maximum of ${MAX_STEPS} steps.`;
+        terminalReason = `Exceeded maximum of ${this.getMaxStepsForProfile(executionProfile)} steps.`;
         adaptedCallbacks.onLlmOutput(
-          `Stopped: exceeded maximum of ${MAX_STEPS} steps.`
+          `Stopped: exceeded maximum of ${this.getMaxStepsForProfile(executionProfile)} steps.`
         );
       } else if (!terminalStatus) {
         terminalStatus = 'stopped';

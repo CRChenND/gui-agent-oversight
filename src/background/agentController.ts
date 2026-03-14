@@ -1253,6 +1253,10 @@ export async function executePrompt(
         return {
           amplificationState: amplification.state,
           enteredReason: amplification.enteredReason,
+          executionProfile:
+            selectedArchetypeId === 'structural-amplification'
+              ? 'structural_amplification' as const
+              : 'default' as const,
         };
       },
       onBeforeToolInvocation: async ({ stepId, toolName }) => {
