@@ -1258,6 +1258,8 @@ export async function executePrompt(
               ? 'structural_amplification' as const
               : selectedArchetypeId === 'supervisory-co-execution'
                 ? 'supervisory_coexecution' as const
+              : selectedArchetypeId === 'action-confirmation'
+                ? 'action_confirmation' as const
               : 'default' as const,
         };
       },

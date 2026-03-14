@@ -30,7 +30,7 @@ const TASK_COMPLETE_REGEX = /<task_status>\s*complete\s*<\/task_status>/i;
 const FINAL_RESPONSE_REGEX = /<final_response>([\s\S]*?)<\/final_response>/i;
 const MAX_OUTPUT_TOKENS = 1024;  // max tokens for LLM response
 type LlmImpact = 'low' | 'medium' | 'high';
-type ExecutionProfile = 'default' | 'structural_amplification' | 'supervisory_coexecution';
+type ExecutionProfile = 'default' | 'structural_amplification' | 'supervisory_coexecution' | 'action_confirmation';
 type ControlMode = 'approve_all' | 'risky_only' | 'step_through';
 type TimingPolicy = 'pre_action' | 'pre_navigation' | 'post_action';
 type ApprovedPlan = { summary: string; steps: string[] };
@@ -201,6 +201,35 @@ export class ExecutionEngine {
       '2) if the page already proves that first approved step is done, use an observation tool to verify it.\n' +
       `${firstStep ? `Start with approved step 1: ${firstStep}\n` : ''}` +
       'Do not output plain reasoning without a tool call.'
+    );
+  }
+
+  private buildMissingToolCallRepairMessage(profile: ExecutionProfile): string {
+    if (profile === 'supervisory_coexecution') {
+      return (
+        'You stopped without a valid tool call or completion marker. ' +
+        'Do not restate the plan. Start executing the approved next step now. ' +
+        'If the task is fully completed and verified on the page, respond with ' +
+        '<task_status>complete</task_status> and <final_response>...</final_response>. ' +
+        'Otherwise continue with exactly one required XML tool-call.'
+      );
+    }
+
+    if (profile === 'action_confirmation') {
+      return (
+        'You stopped without a valid tool call or completion marker. ' +
+        'Action-confirmation mode still requires you to propose the next action as exactly one valid XML tool call. ' +
+        'Do not stop at a plain-language explanation of the next action. ' +
+        'Approval happens after you emit the XML tool call, not before.'
+      );
+    }
+
+    return (
+      'You stopped without a valid tool call or completion marker. ' +
+      'Do not end with plain-text summary alone. ' +
+      'If the task is fully completed and verified on the page, respond with ' +
+      '<task_status>complete</task_status> and <final_response>...</final_response>. ' +
+      'Otherwise continue with the next observation or action using the required tool-call XML.'
     );
   }
 
@@ -1247,12 +1276,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             { role: 'assistant', content: accumulatedText },
             {
                 role: 'user',
-                content:
-                  'You stopped without a valid tool call or completion marker. ' +
-                  'Do not end with plain-text summary alone. ' +
-                  'If the task is fully completed and verified on the page, respond with ' +
-                  '<task_status>complete</task_status> and <final_response>...</final_response>. ' +
-                  'Otherwise continue with the next observation or action using the required tool-call XML.',
+                content: this.buildMissingToolCallRepairMessage(executionProfile),
               }
             );
             messages = trimHistory(messages);
