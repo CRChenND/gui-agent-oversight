@@ -94,11 +94,6 @@ const decisionBadgeMap: Record<'approve' | 'deny' | 'edit' | 'rollback', string>
   rollback: badgeVariants.info,
 };
 
-function getToolBadgeLabel(toolName: string): string {
-  const formatted = formatToolName(toolName).replace(/_/g, ' ').trim();
-  return formatted || 'action';
-}
-
 const tooltipCardClassName =
   'absolute left-0 z-20 rounded-2xl border border-slate-200 bg-white p-3 text-slate-700 shadow-xl';
 
@@ -349,32 +344,7 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                       <div className="text-sm font-medium text-base-content">
                         {summarizeStepTitle(node)}
                       </div>
-                      <span className={badgeClassName('neutral')}>
-                        {getToolBadgeLabel(node.toolName)}
-                      </span>
-                    </div>
-                  </div>
-                  {node.thinking ? (
-                    <div className="mt-1 text-xs leading-5 text-base-content/70">
-                      {compactSentence(node.thinking)}
-                    </div>
-                  ) : null}
-                  {showThinkingTooltip && node.thinking ? (
-                    <div
-                      data-thinking-tooltip="active"
-                      className={`pointer-events-none w-72 ${tooltipCardClassName} ${tooltipPositionClasses}`}
-                    >
-                      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-                        Agent Thinking
-                      </div>
-                      <div className="text-xs leading-5 text-slate-700">
-                        {node.thinking}
-                      </div>
-                    </div>
-                  ) : null}
-                  {node.intervention && monitoringContentScope !== 'minimal' ? (
-                    <div className="relative mt-1">
-                      <div className="flex flex-wrap items-center gap-1">
+                      {node.intervention && monitoringContentScope !== 'minimal' ? (
                         <div
                           className="inline-flex"
                           onMouseEnter={(e) => {
@@ -405,6 +375,30 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                             risk: {node.intervention.impact}
                           </span>
                         </div>
+                      ) : null}
+                    </div>
+                  </div>
+                  {node.thinking ? (
+                    <div className="mt-1 text-xs leading-5 text-base-content/70">
+                      {compactSentence(node.thinking)}
+                    </div>
+                  ) : null}
+                  {showThinkingTooltip && node.thinking ? (
+                    <div
+                      data-thinking-tooltip="active"
+                      className={`pointer-events-none w-72 ${tooltipCardClassName} ${tooltipPositionClasses}`}
+                    >
+                      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                        Agent Thinking
+                      </div>
+                      <div className="text-xs leading-5 text-slate-700">
+                        {node.thinking}
+                      </div>
+                    </div>
+                  ) : null}
+                  {node.intervention && monitoringContentScope !== 'minimal' ? (
+                    <div className="relative mt-1">
+                      <div className="flex flex-wrap items-center gap-1">
                         {node.intervention.decision ? (
                           <div
                             className="inline-flex"
