@@ -3,6 +3,72 @@ import type { Page } from "playwright-crx";
 import { ToolFactory } from "./types";
 import { installDialogListener, lastDialog, resetDialog, withActivePage } from "./utils";
 
+async function waitForViewportToSettle(activePage: Page, stableMs = 200, timeoutMs = 2500): Promise<void> {
+  try {
+    await activePage.evaluate(
+      async ({ stableMs: stableWindowMs, timeoutMs: maxWaitMs }: { stableMs: number; timeoutMs: number }) => {
+        const startedAt = Date.now();
+        let lastMovedAt = startedAt;
+        let lastX = window.scrollX;
+        let lastY = window.scrollY;
+
+        await new Promise<void>((resolve) => {
+          const tick = () => {
+            const nextX = window.scrollX;
+            const nextY = window.scrollY;
+            if (nextX !== lastX || nextY !== lastY) {
+              lastX = nextX;
+              lastY = nextY;
+              lastMovedAt = Date.now();
+            }
+
+            const now = Date.now();
+            if (now - lastMovedAt >= stableWindowMs || now - startedAt >= maxWaitMs) {
+              resolve();
+              return;
+            }
+
+            window.requestAnimationFrame(tick);
+          };
+
+          tick();
+        });
+      },
+      { stableMs, timeoutMs }
+    );
+  } catch {
+    // Best-effort only. Clicking should still proceed if stability detection fails.
+  }
+}
+
+async function clickWithViewportStability(
+  activePage: Page,
+  clickAction: () => Promise<void>,
+  timeoutMs: number
+): Promise<void> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await waitForViewportToSettle(activePage, 200, Math.min(2500, timeoutMs));
+    try {
+      await clickAction();
+      return;
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      const retryable =
+        /intercept|pointer events|not stable|another element|outside of the viewport|element is not attached/i.test(
+          message
+        );
+      if (!retryable || attempt === 2) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 async function clickBestVisibleTextTarget(activePage: Page, target: string, timeoutMs: number): Promise<string> {
   const handle = await activePage.evaluateHandle((needle: string) => {
     function normalizeText(value: string): string {
@@ -84,7 +150,7 @@ async function clickBestVisibleTextTarget(activePage: Page, target: string, time
   }
 
   try {
-    await elementHandle.click({ timeout: timeoutMs });
+    await clickWithViewportStability(activePage, () => elementHandle.click({ timeout: timeoutMs }), timeoutMs);
     return `Clicked best visible text target: ${target}`;
   } finally {
     await elementHandle.dispose();
@@ -108,7 +174,13 @@ export const browserClick: ToolFactory = (page: Page) =>
           const CLICK_TIMEOUT_MS = 5000;
 
           if (/[#.[\]>:=]/.test(target)) {
-            await activePage.locator(target).first().click({ timeout: CLICK_TIMEOUT_MS });
+            const locator = activePage.locator(target).first();
+            await locator.scrollIntoViewIfNeeded({ timeout: CLICK_TIMEOUT_MS });
+            await clickWithViewportStability(
+              activePage,
+              () => locator.click({ timeout: CLICK_TIMEOUT_MS }),
+              CLICK_TIMEOUT_MS
+            );
             return `Clicked selector: ${target}`;
           }
 
