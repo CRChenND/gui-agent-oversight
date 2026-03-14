@@ -588,6 +588,15 @@ export function SidePanel() {
       ) {
         return;
       }
+      if (
+        typeof content?.content === 'string' &&
+        (
+          content.content.includes('Requesting a corrected XML tool call.') ||
+          content.content.includes('Requesting a corrected action proposal before approval.')
+        )
+      ) {
+        return;
+      }
       if (typeof content?.content === 'string' && content.content.includes('Execution stopped by post-action review policy')) {
         setHaltReason('Stopped by post-action review policy');
       }
