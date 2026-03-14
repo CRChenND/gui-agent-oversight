@@ -69,6 +69,37 @@ async function clickWithViewportStability(
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
+async function isLocatorInViewport(locator: ReturnType<Page["locator"]>): Promise<boolean> {
+  const handle = await locator.elementHandle();
+  if (!handle) return false;
+
+  try {
+    return await handle.evaluate((element: Element) => {
+      if (!(element instanceof HTMLElement)) return false;
+      const rect = element.getBoundingClientRect();
+      if (rect.width < 4 || rect.height < 4) return false;
+      const style = window.getComputedStyle(element);
+      if (style.visibility === "hidden" || style.display === "none") return false;
+      return rect.bottom >= 0 && rect.right >= 0 && rect.top <= window.innerHeight && rect.left <= window.innerWidth;
+    });
+  } finally {
+    await handle.dispose();
+  }
+}
+
+async function clickLocatorConservatively(
+  activePage: Page,
+  locator: ReturnType<Page["locator"]>,
+  timeoutMs: number
+): Promise<void> {
+  const initiallyVisible = await isLocatorInViewport(locator);
+  if (!initiallyVisible) {
+    await locator.scrollIntoViewIfNeeded({ timeout: timeoutMs });
+  }
+
+  await clickWithViewportStability(activePage, () => locator.click({ timeout: timeoutMs }), timeoutMs);
+}
+
 async function clickBestVisibleTextTarget(activePage: Page, target: string, timeoutMs: number): Promise<string> {
   const handle = await activePage.evaluateHandle((needle: string) => {
     function normalizeText(value: string): string {
@@ -175,12 +206,7 @@ export const browserClick: ToolFactory = (page: Page) =>
 
           if (/[#.[\]>:=]/.test(target)) {
             const locator = activePage.locator(target).first();
-            await locator.scrollIntoViewIfNeeded({ timeout: CLICK_TIMEOUT_MS });
-            await clickWithViewportStability(
-              activePage,
-              () => locator.click({ timeout: CLICK_TIMEOUT_MS }),
-              CLICK_TIMEOUT_MS
-            );
+            await clickLocatorConservatively(activePage, locator, CLICK_TIMEOUT_MS);
             return `Clicked selector: ${target}`;
           }
 

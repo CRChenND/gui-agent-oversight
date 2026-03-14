@@ -248,6 +248,10 @@ export class ExecutionEngine {
     }
   }
 
+  private isObservationTool(toolName: string): boolean {
+    return /read|snapshot|query|screenshot|accessible_tree|get_title/i.test(toolName);
+  }
+
   private async assessApprovedPlanCompletion(): Promise<{ allowed: boolean; reason?: string }> {
     if (!this.approvedPlanState?.steps.length) {
       return { allowed: true };
@@ -268,6 +272,24 @@ export class ExecutionEngine {
           allowed: false,
           reason: `Approved plan step ${index + 1} has no completed execution evidence yet: ${this.approvedPlanState.steps[index]}`,
         };
+      }
+
+      const lastCompletedEvidence = [...evidence].reverse().find((item) => item.status === 'completed');
+      if (lastCompletedEvidence && !this.isObservationTool(lastCompletedEvidence.toolName)) {
+        const hasVerificationAfterLastAction = evidence.some(
+          (item) =>
+            item.status === 'completed' &&
+            this.isObservationTool(item.toolName) &&
+            this.executedPlanEvidence.indexOf(item) > this.executedPlanEvidence.indexOf(lastCompletedEvidence)
+        );
+        if (!hasVerificationAfterLastAction) {
+          return {
+            allowed: false,
+            reason:
+              `Approved plan step ${index + 1} still needs verification after the last page-changing action ` +
+              `(${lastCompletedEvidence.toolName}). Observe the page and confirm the remaining required work is done.`,
+          };
+        }
       }
     }
 
