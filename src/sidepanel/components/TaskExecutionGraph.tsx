@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { StepImpact } from '../../oversight/types';
 import { badgeClassName, badgeVariants } from './badgeStyles';
 
@@ -53,6 +53,7 @@ interface TaskExecutionGraphProps {
   onRepeatedTraceExpansion?: () => void;
   onRepeatedScrollBackward?: () => void;
   onRiskLabelHover?: (durationMs: number) => void;
+  onThinkingTooltipVisibilityChange?: (rect: Pick<DOMRect, 'top' | 'bottom'> | null) => void;
 }
 
 const statusColorMap: Record<TaskNodeStatus, string> = {
@@ -187,6 +188,7 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
   colorEncoding = 'semantic',
   monitoringContentScope = 'full',
   onRiskLabelHover,
+  onThinkingTooltipVisibilityChange,
 }) => {
   const hoverStartByStepRef = useRef<Record<string, number>>({});
   const [activeTooltip, setActiveTooltip] = useState<{
@@ -194,6 +196,23 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
     kind: TooltipKind;
     placement: TooltipPlacement;
   } | null>(null);
+
+  useEffect(() => {
+    if (!onThinkingTooltipVisibilityChange) return;
+    if (activeTooltip?.kind !== 'thinking') {
+      onThinkingTooltipVisibilityChange(null);
+      return;
+    }
+
+    const tooltip = document.querySelector('[data-thinking-tooltip="active"]');
+    if (!(tooltip instanceof HTMLElement)) {
+      onThinkingTooltipVisibilityChange(null);
+      return;
+    }
+
+    const rect = tooltip.getBoundingClientRect();
+    onThinkingTooltipVisibilityChange({ top: rect.top, bottom: rect.bottom });
+  }, [activeTooltip, onThinkingTooltipVisibilityChange]);
 
   const resolveTooltipPlacement = (element: HTMLElement): TooltipPlacement => {
     const rect = element.getBoundingClientRect();
@@ -315,7 +334,10 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                     </div>
                   ) : null}
                   {showThinkingTooltip && node.thinking ? (
-                    <div className={`pointer-events-none w-72 ${tooltipCardClassName} ${tooltipPositionClasses}`}>
+                    <div
+                      data-thinking-tooltip="active"
+                      className={`pointer-events-none w-72 ${tooltipCardClassName} ${tooltipPositionClasses}`}
+                    >
                       <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
                         Agent Thinking
                       </div>

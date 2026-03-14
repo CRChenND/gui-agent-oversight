@@ -139,9 +139,12 @@ export function SidePanel() {
   }>>([]);
   const [showApprovalOverlay, setShowApprovalOverlay] = useState(true);
   const [softPauseNow, setSoftPauseNow] = useState(Date.now());
+  const [thinkingTooltipRect, setThinkingTooltipRect] = useState<{ top: number; bottom: number } | null>(null);
+  const [approvalOverlayBottomPx, setApprovalOverlayBottomPx] = useState<number | null>(null);
   const lastApprovalPromptTsRef = useRef(0);
   const approvalPromptWindowRef = useRef<number[]>([]);
   const resolvedApprovalIdsRef = useRef<Set<string>>(new Set());
+  const approvalOverlayRef = useRef<HTMLDivElement>(null);
 
   // State to track if any LLM providers are configured
   const [hasConfiguredProviders, setHasConfiguredProviders] = useState<boolean>(false);
@@ -1219,6 +1222,46 @@ export function SidePanel() {
   );
   const riskGatedStreamingSegments = useMemo(() => ({} as Record<number, string>), []);
 
+  useEffect(() => {
+    if (!isStructuralAmplificationArchetype || activePanel !== 'oversight' || !shouldShowOverlay) {
+      setApprovalOverlayBottomPx(null);
+      return;
+    }
+
+    const recalcOverlayPosition = () => {
+      const overlayElement = approvalOverlayRef.current;
+      if (!overlayElement || !thinkingTooltipRect) {
+        setApprovalOverlayBottomPx(null);
+        return;
+      }
+
+      const overlayHeight = overlayElement.getBoundingClientRect().height;
+      const defaultBottomPx = 96;
+      const minViewportPaddingPx = 16;
+      const gapPx = 12;
+      const defaultTop = window.innerHeight - defaultBottomPx - overlayHeight;
+      const wouldClipBelowViewport = overlayHeight + defaultBottomPx > window.innerHeight - minViewportPaddingPx;
+      const wouldOverlapThinking = defaultTop < thinkingTooltipRect.bottom + gapPx;
+
+      if (!wouldClipBelowViewport && !wouldOverlapThinking) {
+        setApprovalOverlayBottomPx(null);
+        return;
+      }
+
+      const desiredBottomPx = window.innerHeight - thinkingTooltipRect.top + gapPx;
+      const maxBottomPx = Math.max(defaultBottomPx, window.innerHeight - overlayHeight - minViewportPaddingPx);
+      const nextBottomPx = Math.min(Math.max(defaultBottomPx, desiredBottomPx), maxBottomPx);
+      setApprovalOverlayBottomPx(nextBottomPx > defaultBottomPx ? nextBottomPx : null);
+    };
+
+    const frameId = window.requestAnimationFrame(recalcOverlayPosition);
+    window.addEventListener('resize', recalcOverlayPosition);
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.removeEventListener('resize', recalcOverlayPosition);
+    };
+  }, [activePanel, approvalRequests.length, isStructuralAmplificationArchetype, shouldShowOverlay, thinkingTooltipRect]);
+
   return (
     <div className="morph-shell flex h-screen flex-col overflow-x-hidden bg-base-200/60">
       {hasConfiguredProviders ? (
@@ -1391,6 +1434,7 @@ export function SidePanel() {
                     onRepeatedTraceExpansion={() => runtimeInteractionSignal('repeated_trace_expansion')}
                     onRepeatedScrollBackward={() => runtimeInteractionSignal('repeated_scroll_backward')}
                     onRiskLabelHover={(durationMs) => runtimeInteractionSignal('hover_risk_label', durationMs)}
+                    onThinkingTooltipVisibilityChange={setThinkingTooltipRect}
                   />
                 )}
                 {!enableAgentFocus && !enableTaskGraph && (
@@ -1403,8 +1447,20 @@ export function SidePanel() {
           </div>
 
           {shouldShowOverlay ? (
-            <div className="pointer-events-none fixed inset-x-4 bottom-24 z-30">
-              <div className={`pointer-events-auto overflow-y-auto ${isActionConfirmationArchetype ? 'max-h-[34rem]' : 'max-h-72'}`}>
+            <div
+              className="pointer-events-none fixed inset-x-4 bottom-24 z-30"
+              style={approvalOverlayBottomPx !== null ? { bottom: `${approvalOverlayBottomPx}px` } : undefined}
+            >
+              <div
+                ref={approvalOverlayRef}
+                className={`pointer-events-auto overflow-y-auto ${
+                  isActionConfirmationArchetype
+                    ? 'max-h-[34rem]'
+                    : isRiskGatedArchetype
+                      ? 'max-h-[27rem]'
+                      : 'max-h-72'
+                }`}
+              >
                 {approvalRequests.map(req => (
                   <ApprovalRequest
                     key={req.requestId}

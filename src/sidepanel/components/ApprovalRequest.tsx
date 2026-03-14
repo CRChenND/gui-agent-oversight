@@ -60,7 +60,7 @@ export function ApprovalRequest({
   return (
     <div
       className={`card border border-warning/25 bg-base-100 p-4 text-base-content shadow-lg my-2 ${
-        isActionConfirmation ? 'max-h-[26rem]' : isSupervisoryVariant ? 'max-h-[30rem]' : isRiskGated ? 'max-h-[39rem]' : ''
+        isActionConfirmation ? 'max-h-[26rem]' : isSupervisoryVariant ? 'max-h-[30rem]' : isRiskGated ? 'max-h-[58.5rem]' : ''
       }`}
     >
       <div className="flex items-start justify-between">
@@ -83,7 +83,7 @@ export function ApprovalRequest({
             : isSupervisoryVariant
               ? 'max-h-72 overflow-y-auto'
               : isRiskGated
-                ? 'max-h-[31rem] overflow-y-auto'
+                ? 'max-h-[46.5rem] overflow-y-auto'
               : ''
         }`}
       >
