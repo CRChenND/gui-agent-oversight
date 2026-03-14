@@ -58,6 +58,8 @@ Remember to follow the verification-first workflow: navigate → observe → ana
           `Alternative:\n` +
           `Why I choose A over B:\n\n` +
           `${this.amplificationEnteredReason ? `Entered because: ${this.amplificationEnteredReason}\n` : ''}` +
+          `If relevant content is outside the current viewport and direct scrolling is difficult, you may use browser_press_key ` +
+          `with keys like ArrowDown, ArrowUp, PageDown, PageUp, Space, or Shift+Space to scroll incrementally, then re-observe.\n` +
           `This is a cognitive/presentation requirement, not an approval request.\n`
         : '';
   
