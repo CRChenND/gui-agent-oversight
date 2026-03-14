@@ -69,6 +69,24 @@ const riskBadgeMap: Record<StepImpact, string> = {
   high: badgeVariants.danger,
 };
 
+const riskBadgeStyleMap: Record<StepImpact, React.CSSProperties> = {
+  low: {
+    borderColor: '#86efac',
+    backgroundColor: '#f0fdf4',
+    color: '#166534',
+  },
+  medium: {
+    borderColor: '#fcd34d',
+    backgroundColor: '#fffbeb',
+    color: '#b45309',
+  },
+  high: {
+    borderColor: '#fda4af',
+    backgroundColor: '#fff1f2',
+    color: '#be123c',
+  },
+};
+
 const decisionBadgeMap: Record<'approve' | 'deny' | 'edit' | 'rollback', string> = {
   approve: badgeVariants.success,
   deny: badgeVariants.danger,
@@ -372,7 +390,10 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                             toggleTooltip(node.stepId, 'risk', e.currentTarget);
                           }}
                         >
-                          <span className={`${badgeClassName()} ${riskBadgeMap[node.intervention.impact]} cursor-help`}>
+                          <span
+                            className={`${badgeClassName()} ${riskBadgeMap[node.intervention.impact]} cursor-help`}
+                            style={riskBadgeStyleMap[node.intervention.impact]}
+                          >
                             risk: {node.intervention.impact}
                           </span>
                         </div>
