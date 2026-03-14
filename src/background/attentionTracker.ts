@@ -331,7 +331,7 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
     root.style.position = "fixed";
     root.style.inset = "0";
     root.style.zIndex = "2147483647";
-    root.style.pointerEvents = "auto";
+    root.style.pointerEvents = payload.approval ? "auto" : "none";
     document.documentElement.appendChild(root);
 
     const box = document.createElement("div");
@@ -359,7 +359,7 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
     cardStack.style.display = "flex";
     cardStack.style.flexDirection = "column";
     cardStack.style.gap = "10px";
-    cardStack.style.pointerEvents = "auto";
+    cardStack.style.pointerEvents = payload.approval ? "auto" : "none";
     root.appendChild(cardStack);
 
     const sharedCardStyles = (card: HTMLDivElement) => {
