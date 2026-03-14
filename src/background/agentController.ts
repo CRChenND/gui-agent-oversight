@@ -1256,6 +1256,8 @@ export async function executePrompt(
           executionProfile:
             selectedArchetypeId === 'structural-amplification'
               ? 'structural_amplification' as const
+              : selectedArchetypeId === 'supervisory-co-execution'
+                ? 'supervisory_coexecution' as const
               : 'default' as const,
         };
       },

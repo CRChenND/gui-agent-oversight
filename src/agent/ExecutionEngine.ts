@@ -30,7 +30,7 @@ const TASK_COMPLETE_REGEX = /<task_status>\s*complete\s*<\/task_status>/i;
 const FINAL_RESPONSE_REGEX = /<final_response>([\s\S]*?)<\/final_response>/i;
 const MAX_OUTPUT_TOKENS = 1024;  // max tokens for LLM response
 type LlmImpact = 'low' | 'medium' | 'high';
-type ExecutionProfile = 'default' | 'structural_amplification';
+type ExecutionProfile = 'default' | 'structural_amplification' | 'supervisory_coexecution';
 type ControlMode = 'approve_all' | 'risky_only' | 'step_through';
 type TimingPolicy = 'pre_action' | 'pre_navigation' | 'post_action';
 type ApprovedPlan = { summary: string; steps: string[] };
@@ -190,6 +190,18 @@ export class ExecutionEngine {
 
   private getMaxStepsForProfile(profile: ExecutionProfile): number {
     return profile === 'structural_amplification' ? STRUCTURAL_AMPLIFICATION_MAX_STEPS : MAX_STEPS;
+  }
+
+  private buildImmediateExecutionInstruction(planSteps: string[] | undefined): string {
+    const firstStep = planSteps?.[0]?.trim();
+    return (
+      'Plan review is complete. Do not restate or summarize the plan again. ' +
+      'Your very next response must either:\n' +
+      '1) emit exactly one valid XML tool call for the first approved step, or\n' +
+      '2) if the page already proves that first approved step is done, use an observation tool to verify it.\n' +
+      `${firstStep ? `Start with approved step 1: ${firstStep}\n` : ''}` +
+      'Do not output plain reasoning without a tool call.'
+    );
   }
 
   private parseTaskCompletion(text: string): { complete: boolean; finalResponse: string | null } {
@@ -998,6 +1010,14 @@ export class ExecutionEngine {
           adaptedCallbacks.onToolOutput(`✏️ Plan edited by user. Applying guidance: ${editText}`);
           this.rewriteLiveMessagesForApprovedPlan(editText);
           messages = this.liveMessages ?? messages;
+          if (adaptedCallbacks.onPlanStepApprovalRequired) {
+            messages.push({
+              role: 'user',
+              content: this.buildImmediateExecutionInstruction(this.approvedPlanState?.steps),
+            });
+            messages = trimHistory(messages);
+            this.liveMessages = messages;
+          }
         } else {
           const approvedPlanText = [
             `Plan Summary: ${generatedPlan.summary}`,
@@ -1007,6 +1027,14 @@ export class ExecutionEngine {
           this.promptManager.setApprovedPlanGuidance(approvedPlanText);
           this.rewriteLiveMessagesForApprovedPlan(approvedPlanText);
           messages = this.liveMessages ?? messages;
+          if (adaptedCallbacks.onPlanStepApprovalRequired) {
+            messages.push({
+              role: 'user',
+              content: this.buildImmediateExecutionInstruction(generatedPlan.steps),
+            });
+            messages = trimHistory(messages);
+            this.liveMessages = messages;
+          }
         }
       } else if (adaptedCallbacks.onPlanStepApprovalRequired) {
         const generatedPlan = await this.generateTaskPlan(prompt, messages);
@@ -1022,6 +1050,12 @@ export class ExecutionEngine {
         this.promptManager.setApprovedPlanGuidance(approvedPlanText);
         this.rewriteLiveMessagesForApprovedPlan(approvedPlanText);
         messages = this.liveMessages ?? messages;
+        messages.push({
+          role: 'user',
+          content: this.buildImmediateExecutionInstruction(generatedPlan.steps),
+        });
+        messages = trimHistory(messages);
+        this.liveMessages = messages;
       }
 
       let executionProfile: ExecutionProfile = 'default';
