@@ -161,7 +161,14 @@ export function inferAttentionTarget(toolName: string, toolInput: string): Atten
 export async function clearAttentionOverlay(page: Page): Promise<void> {
   await page.evaluate(() => {
     const existing = document.getElementById("__morph_attention_overlay__");
-    if (existing) existing.remove();
+    if (existing) {
+      (
+        existing as HTMLElement & {
+          __morphCleanupAttentionOverlay__?: () => void;
+        }
+      ).__morphCleanupAttentionOverlay__?.();
+      existing.remove();
+    }
   });
 }
 
@@ -298,7 +305,14 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
     const OVERLAY_ID = "__morph_attention_overlay__";
     const renderToken = `overlay_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const old = document.getElementById(OVERLAY_ID);
-    if (old) old.remove();
+    if (old) {
+      (
+        old as HTMLElement & {
+          __morphCleanupAttentionOverlay__?: () => void;
+        }
+      ).__morphCleanupAttentionOverlay__?.();
+      old.remove();
+    }
 
     const root = document.createElement("div");
     root.id = OVERLAY_ID;
@@ -514,6 +528,51 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
         })()
       : null;
 
+    let desiredOverlayRect: { left: number; top: number; width: number; height: number } | null = null;
+    let overlayTranslateX = 0;
+    let overlayTranslateY = 0;
+    let syncScheduled = false;
+
+    function getAnchorElement(): HTMLElement | null {
+      if (box.isConnected) return box;
+      if (badge.isConnected) return badge;
+      if (cardStack.isConnected) return cardStack;
+      return null;
+    }
+
+    function scheduleOverlaySync() {
+      if (syncScheduled) return;
+      syncScheduled = true;
+      window.requestAnimationFrame(() => {
+        syncScheduled = false;
+        syncOverlayPosition();
+      });
+    }
+
+    function syncOverlayPosition() {
+      if (!desiredOverlayRect) return;
+      const anchor = getAnchorElement();
+      if (!anchor) return;
+      root.style.transform = `translate(${overlayTranslateX}px, ${overlayTranslateY}px)`;
+      const currentRect = anchor.getBoundingClientRect();
+      const deltaX = desiredOverlayRect.left - currentRect.left;
+      const deltaY = desiredOverlayRect.top - currentRect.top;
+      if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) return;
+      overlayTranslateX += deltaX;
+      overlayTranslateY += deltaY;
+      root.style.transform = `translate(${overlayTranslateX}px, ${overlayTranslateY}px)`;
+    }
+
+    function freezeOverlayAnchor() {
+      const anchor = getAnchorElement();
+      if (!anchor) return;
+      desiredOverlayRect = anchor.getBoundingClientRect();
+      overlayTranslateX = 0;
+      overlayTranslateY = 0;
+      root.style.transform = "translate(0px, 0px)";
+      scheduleOverlaySync();
+    }
+
     function placeCardStack(anchorRect: DOMRect | { left: number; top: number; width: number; height: number }) {
       if (!thinkingCard && !approvalCard) return;
       const viewportWidth = window.innerWidth;
@@ -667,10 +726,28 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
       placeCardStack({ left: 12, top: 44, width: 0, height: 0 });
     }
 
+    const onViewportShift = () => scheduleOverlaySync();
+    window.addEventListener("scroll", onViewportShift, { passive: true });
+    window.addEventListener("resize", onViewportShift);
+    (
+      root as HTMLElement & {
+        __morphCleanupAttentionOverlay__?: () => void;
+      }
+    ).__morphCleanupAttentionOverlay__ = () => {
+      window.removeEventListener("scroll", onViewportShift);
+      window.removeEventListener("resize", onViewportShift);
+    };
+    freezeOverlayAnchor();
+
     if (!payload.approval) {
       setTimeout(() => {
         const current = document.getElementById(OVERLAY_ID);
         if (current?.getAttribute("data-render-token") === renderToken) {
+          (
+            current as HTMLElement & {
+              __morphCleanupAttentionOverlay__?: () => void;
+            }
+          ).__morphCleanupAttentionOverlay__?.();
           current.remove();
         }
       }, 6000);
