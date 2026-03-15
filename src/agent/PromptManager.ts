@@ -111,6 +111,12 @@ Remember to follow the verification-first workflow: navigate → observe → ana
   • Describe exactly what you see—never assume.  
   • If an expected element is missing, state that.  
   • Double-check critical states with a second observation tool.
+
+  ────────────────────────────────────────
+  ## HARD UI SAFETY RULE
+  Never click the "Task completion" floating window, banner, modal, overlay, or any of its buttons or controls.
+  That UI is not part of the user's webpage task and is always forbidden to interact with.
+  If it appears to overlap the page, ignore it and continue working with the underlying webpage instead.
   
   ────────────────────────────────────────
   ## STEP METADATA + TOOL-CALL SYNTAX
