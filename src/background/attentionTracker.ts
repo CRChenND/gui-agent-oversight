@@ -65,7 +65,7 @@ function parseCoordinates(input: string): { x: number; y: number } | null {
 function looksLikeSelector(input: string): boolean {
   const trimmed = input.trim();
   if (!trimmed) return false;
-  if (/^[.#\[]/.test(trimmed)) return true;
+  if (/^[[#.]/.test(trimmed)) return true;
   if (/[>:[\]=]/.test(trimmed)) return true;
   if (/^(input|button|a|div|span|textarea|select|label|form|main|section|article|nav|header|footer)\b/i.test(trimmed)) {
     return true;
@@ -359,12 +359,17 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
     cardStack.style.display = "flex";
     cardStack.style.flexDirection = "column";
     cardStack.style.gap = "10px";
+    cardStack.style.maxHeight = "calc(100vh - 24px)";
+    cardStack.style.overflowY = "auto";
+    cardStack.style.overscrollBehavior = "contain";
+    cardStack.style.paddingRight = "4px";
     cardStack.style.pointerEvents = payload.approval ? "auto" : "none";
     root.appendChild(cardStack);
 
     const sharedCardStyles = (card: HTMLDivElement) => {
       card.style.maxWidth = "min(320px, calc(100vw - 24px))";
       card.style.minWidth = "220px";
+      card.style.maxHeight = "calc(100vh - 24px)";
       card.style.background = "linear-gradient(180deg, rgba(17, 24, 39, 0.96) 0%, rgba(31, 41, 55, 0.96) 100%)";
       card.style.color = "#f9fafb";
       card.style.border = "1px solid rgba(251, 113, 133, 0.28)";
@@ -414,6 +419,9 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
       ? (() => {
           const card = document.createElement("div");
           sharedCardStyles(card);
+          card.style.display = "flex";
+          card.style.flexDirection = "column";
+          card.style.overflow = "hidden";
           card.style.pointerEvents = "auto";
           card.style.border = "1px solid rgba(251, 191, 36, 0.30)";
           card.style.background =
@@ -442,8 +450,11 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
           body.style.color = "rgba(255, 255, 255, 0.88)";
           body.style.fontSize = "12px";
           body.style.lineHeight = "1.5";
-          body.style.maxHeight = "132px";
+          body.style.flex = "1 1 auto";
+          body.style.minHeight = "48px";
+          body.style.maxHeight = "min(220px, calc(100vh - 220px))";
           body.style.overflowY = "auto";
+          body.style.overscrollBehavior = "contain";
           body.style.paddingRight = "2px";
           card.appendChild(body);
 
@@ -555,7 +566,12 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
         left = Math.max(12, anchorRect.left - cardWidth - 14);
       }
 
-      const estimatedHeight = approvalCard ? 320 : 132;
+      const measuredHeight = Math.max(
+        thinkingCard?.getBoundingClientRect().height || 0,
+        approvalCard?.getBoundingClientRect().height || 0,
+        cardStack.getBoundingClientRect().height || 0
+      );
+      const estimatedHeight = Math.min(Math.max(measuredHeight, approvalCard ? 320 : 132), viewportHeight - 24);
       let top = anchorRect.top + anchorRect.height + 10;
       if (top + estimatedHeight > viewportHeight - 12) {
         top = Math.max(12, anchorRect.top + anchorRect.height - estimatedHeight);
