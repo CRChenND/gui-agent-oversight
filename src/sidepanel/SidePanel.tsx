@@ -253,8 +253,11 @@ export function SidePanel() {
   const isStructuralAmplificationArchetype = selectedArchetypeId === 'structural-amplification';
   const isActionConfirmationArchetype = selectedArchetypeId === 'action-confirmation';
   const isSupervisoryCoExecutionArchetype = selectedArchetypeId === 'supervisory-co-execution';
+  const hasStartedCurrentTask = currentPrompt.trim().length > 0;
   const isAgentActivelyWorking =
-    isProcessing || isStreaming || runtimeStatus.executionState === 'running';
+    hasStartedCurrentTask &&
+    runtimeStatus.executionState === 'running' &&
+    (isProcessing || isStreaming || tabStatus === 'running');
   const monitoringParams = mechanismParameterSettings[MONITORING_MECHANISM_ID] || {};
   const interventionParams = mechanismParameterSettings[INTERVENTION_GATE_MECHANISM_ID] || {};
   const taskGraphParams = mechanismParameterSettings[TASK_GRAPH_MECHANISM_ID] || {};
@@ -1320,6 +1323,11 @@ export function SidePanel() {
                   ))}
                 </select>
               </div>
+              {isAgentActivelyWorking ? (
+                <div className="mt-1 text-[11px] text-base-content/55">
+                  Agent is currently working on your task.
+                </div>
+              ) : null}
               {isApplyingArchetype ? (
                 <div className="mt-1 text-xs text-base-content/60">
                   Switching oversight regime...
