@@ -61,6 +61,9 @@ Remember to follow the verification-first workflow: navigate → observe → ana
           `If relevant content is outside the current viewport and direct scrolling is difficult, prefer browser_scroll ` +
           `with inputs like down, up, page_down, or page_up. You may also use browser_press_key ` +
           `with keys like ArrowDown, ArrowUp, PageDown, PageUp, Space, or Shift+Space to scroll incrementally, then re-observe.\n` +
+          `Amplified mode does not mean doing unnecessary extra work. If your observations show the user's task is already completed, ` +
+          `stop immediately with <task_status>complete</task_status> and <final_response>...</final_response>.\n` +
+          `Do not keep exploring, re-checking, or proposing more actions after verified completion.\n` +
           `This is a cognitive/presentation requirement, not an approval request.\n`
         : '';
   

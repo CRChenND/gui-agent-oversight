@@ -205,6 +205,16 @@ export class ExecutionEngine {
   }
 
   private buildMissingToolCallRepairMessage(profile: ExecutionProfile): string {
+    if (profile === 'structural_amplification') {
+      return (
+        'You stopped without a valid tool call or completion marker. ' +
+        'Amplified mode does not require extra work after verified completion. ' +
+        'If the user task is already completed and verified on the page, respond now with ' +
+        '<task_status>complete</task_status> and <final_response>...</final_response>. ' +
+        'Otherwise continue with exactly one next observation or action using the required XML tool-call format.'
+      );
+    }
+
     if (profile === 'supervisory_coexecution') {
       return (
         'You stopped without a valid tool call or completion marker. ' +
@@ -1513,7 +1523,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
                       ? `Your proposed action is outside the approved plan.\n` +
                         `Current approved step: ${currentStepText}\n` +
                         `Next approved step: ${nextStepText}\n` +
-                        `Do not stop the run. Re-observe the page if needed and propose an action that strictly completes the current or next approved step.`
+                        `If the task is already complete and verified on the page, emit completion instead. Otherwise re-observe the page if needed and propose an action that strictly completes the current or next approved step.`
                       : `Stop. Your proposed action is outside the approved plan.\n` +
                         `Current approved step: ${currentStepText}\n` +
                         `Next approved step: ${nextStepText}\n` +
@@ -1803,7 +1813,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             // If not valid JSON, add as plain text
             const recoveryHint =
               executionProfile === 'structural_amplification' && isRecoverableToolResultError(result)
-                ? '\nThis error looks recoverable. Do not stop the task. If the target is outside the viewport, use browser_scroll (for example: down or page_down) or browser_press_key (for example: PageDown or ArrowDown), then re-observe the page and continue.'
+                ? '\nThis error looks recoverable. Do not stop only because of this error. If a fresh observation shows the user task is already complete, emit completion. Otherwise, if the target is outside the viewport, use browser_scroll (for example: down or page_down) or browser_press_key (for example: PageDown or ArrowDown), then re-observe the page and continue.'
                 : '';
             messages.push({ role: "user", content: `Tool result: ${result}${recoveryHint}` });
           }
