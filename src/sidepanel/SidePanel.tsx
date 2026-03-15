@@ -253,6 +253,8 @@ export function SidePanel() {
   const isStructuralAmplificationArchetype = selectedArchetypeId === 'structural-amplification';
   const isActionConfirmationArchetype = selectedArchetypeId === 'action-confirmation';
   const isSupervisoryCoExecutionArchetype = selectedArchetypeId === 'supervisory-co-execution';
+  const isAgentActivelyWorking =
+    isProcessing || isStreaming || runtimeStatus.executionState === 'running';
   const monitoringParams = mechanismParameterSettings[MONITORING_MECHANISM_ID] || {};
   const interventionParams = mechanismParameterSettings[INTERVENTION_GATE_MECHANISM_ID] || {};
   const taskGraphParams = mechanismParameterSettings[TASK_GRAPH_MECHANISM_ID] || {};
@@ -1292,9 +1294,18 @@ export function SidePanel() {
               isProcessing={isProcessing}
             />
             <div className="border-b border-base-300 px-3 py-3">
-              <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/50">
-                Oversight Regime
-              </label>
+              <div className="mb-1 flex items-center gap-2">
+                <label className="block text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/50">
+                  Oversight Regime
+                </label>
+                {isAgentActivelyWorking ? (
+                  <span
+                    className="inline-block h-2.5 w-2.5 animate-spin rounded-full border border-primary/25 border-t-primary"
+                    aria-label="Agent is working"
+                    title="Agent is working"
+                  />
+                ) : null}
+              </div>
               <div className="flex items-start gap-3">
                 <select
                   className="select select-bordered select-sm w-full"
