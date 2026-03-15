@@ -541,6 +541,7 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
 
     let repositionScheduled = false;
     let pollingTimer: number | null = null;
+    let mutationObserver: MutationObserver | null = null;
 
     function placeCardStack(anchorRect: DOMRect | { left: number; top: number; width: number; height: number }) {
       if (!thinkingCard && !approvalCard) return;
@@ -722,9 +723,18 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
     window.addEventListener("scroll", onViewportChanged, scrollListenerOptions);
     window.addEventListener("resize", onViewportChanged);
     if (payload.type === "selector" || payload.type === "text") {
+      mutationObserver = new MutationObserver(() => {
+        scheduleReposition();
+      });
+      mutationObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["class", "style", "hidden", "aria-hidden"],
+        childList: true,
+        subtree: true,
+      });
       pollingTimer = window.setInterval(() => {
-        updateOverlayPosition();
-      }, 150);
+        scheduleReposition();
+      }, 450);
     }
     (
       root as HTMLElement & {
@@ -733,6 +743,7 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
     ).__morphCleanupAttentionOverlay__ = () => {
       window.removeEventListener("scroll", onViewportChanged, scrollListenerOptions);
       window.removeEventListener("resize", onViewportChanged);
+      mutationObserver?.disconnect();
       if (pollingTimer !== null) {
         window.clearInterval(pollingTimer);
       }

@@ -1537,13 +1537,22 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             thinking.goal ||
             '';
           if (this.approvedPlanState?.steps.length) {
-            const planMatch = await this.inferPlanStepIndexWithModel({
-              planSteps: this.approvedPlanState.steps,
-              currentPlanIndex: this.currentPlanStepIndex,
-              toolName,
-              toolInput,
-              thinking: stepDescription,
-            });
+            const planMatch =
+              executionProfile === 'supervisory_coexecution'
+                ? await this.inferPlanStepIndexWithModel({
+                    planSteps: this.approvedPlanState.steps,
+                    currentPlanIndex: this.currentPlanStepIndex,
+                    toolName,
+                    toolInput,
+                    thinking: stepDescription,
+                  })
+                : this.inferPlanStepIndex({
+                    planSteps: this.approvedPlanState.steps,
+                    currentPlanIndex: this.currentPlanStepIndex,
+                    toolName,
+                    toolInput,
+                    thinking: stepDescription,
+                  });
             if (planMatch.disposition === 'out_of_plan') {
               const laterApprovedStepIndex = this.inferLaterApprovedPlanStepIndex({
                 planSteps: this.approvedPlanState.steps,
