@@ -861,6 +861,37 @@ export class ExecutionEngine {
     return { disposition: 'current', index: normalizedCurrentIndex };
   }
 
+  private inferLaterApprovedPlanStepIndex(args: {
+    planSteps: string[];
+    currentPlanIndex: number;
+    toolName: string;
+    toolInput: string;
+    thinking: string;
+  }): number | null {
+    const { planSteps, currentPlanIndex, toolName, toolInput, thinking } = args;
+    if (planSteps.length < 3) return null;
+
+    const normalizedCurrentIndex = Math.max(0, Math.min(currentPlanIndex, planSteps.length - 1));
+    const stepTokens = this.tokenizePlanText([toolName, toolInput, thinking].join(' '));
+    if (stepTokens.length === 0) return null;
+
+    let bestIndex: number | null = null;
+    let bestScore = 0;
+    for (let index = normalizedCurrentIndex + 2; index < planSteps.length; index += 1) {
+      const planTokens = new Set(this.tokenizePlanText(planSteps[index]));
+      let score = 0;
+      for (const token of stepTokens) {
+        if (planTokens.has(token)) score += 1;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = index;
+      }
+    }
+
+    return bestScore >= 2 ? bestIndex : null;
+  }
+
   private async inferPlanStepIndexWithModel(args: {
     planSteps: string[];
     currentPlanIndex: number;
@@ -1146,7 +1177,12 @@ export class ExecutionEngine {
               state: context.amplificationState,
               enteredReason: context.enteredReason,
             });
-            executionProfile = context.executionProfile === 'structural_amplification' ? 'structural_amplification' : 'default';
+            executionProfile =
+              context.executionProfile === 'structural_amplification' ||
+              context.executionProfile === 'supervisory_coexecution' ||
+              context.executionProfile === 'action_confirmation'
+                ? context.executionProfile
+                : 'default';
           } else {
             this.promptManager.setAmplificationContext({ state: 'normal' });
             executionProfile = 'default';
@@ -1509,10 +1545,41 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               thinking: stepDescription,
             });
             if (planMatch.disposition === 'out_of_plan') {
+              const laterApprovedStepIndex = this.inferLaterApprovedPlanStepIndex({
+                planSteps: this.approvedPlanState.steps,
+                currentPlanIndex: this.currentPlanStepIndex,
+                toolName,
+                toolInput,
+                thinking: stepDescription,
+              });
               const currentStepText = this.approvedPlanState.steps[this.currentPlanStepIndex] || '(unknown current step)';
               const nextStepText =
                 this.approvedPlanState.steps[Math.min(this.approvedPlanState.steps.length - 1, this.currentPlanStepIndex + 1)] ||
                 '(no next step)';
+              if (
+                executionProfile === 'supervisory_coexecution' &&
+                typeof laterApprovedStepIndex === 'number'
+              ) {
+                const laterStepText = this.approvedPlanState.steps[laterApprovedStepIndex] || '(unknown later step)';
+                adaptedCallbacks.onToolOutput(
+                  `⏸️ Proposed action appears to jump ahead to approved plan step ${laterApprovedStepIndex + 1} before earlier steps are complete.`
+                );
+                messages.push(
+                  { role: 'assistant', content: accumulatedText },
+                  {
+                    role: 'user',
+                    content:
+                      `Your proposed action appears to belong to a later approved step, not an out-of-plan action.\n` +
+                      `Current approved step: ${currentStepText}\n` +
+                      `Next approved step: ${nextStepText}\n` +
+                      `Later matched approved step ${laterApprovedStepIndex + 1}: ${laterStepText}\n` +
+                      `Do not skip ahead. First finish or explicitly verify the earlier pending approved steps, then propose the next action again.`,
+                  }
+                );
+                messages = trimHistory(messages);
+                this.liveMessages = messages;
+                continue;
+              }
               adaptedCallbacks.onToolOutput('❌ Planned action rejected: the proposed tool call is outside the approved plan.');
               messages.push(
                 { role: 'assistant', content: accumulatedText },
