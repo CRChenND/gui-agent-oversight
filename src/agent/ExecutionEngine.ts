@@ -1556,24 +1556,47 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               const nextStepText =
                 this.approvedPlanState.steps[Math.min(this.approvedPlanState.steps.length - 1, this.currentPlanStepIndex + 1)] ||
                 '(no next step)';
-              if (
-                executionProfile === 'supervisory_coexecution' &&
-                typeof laterApprovedStepIndex === 'number'
-              ) {
-                const laterStepText = this.approvedPlanState.steps[laterApprovedStepIndex] || '(unknown later step)';
+              if (executionProfile === 'supervisory_coexecution') {
+                const remainingSteps = this.approvedPlanState.steps
+                  .slice(this.currentPlanStepIndex)
+                  .map((stepText, index) => `${this.currentPlanStepIndex + index + 1}. ${stepText}`)
+                  .join('\n');
+
+                if (typeof laterApprovedStepIndex === 'number') {
+                  const laterStepText = this.approvedPlanState.steps[laterApprovedStepIndex] || '(unknown later step)';
+                  adaptedCallbacks.onToolOutput(
+                    `⏸️ Proposed action appears to jump ahead to approved plan step ${laterApprovedStepIndex + 1} before earlier steps are complete.`
+                  );
+                  messages.push(
+                    { role: 'assistant', content: accumulatedText },
+                    {
+                      role: 'user',
+                      content:
+                        `Your proposed action appears to belong to a later approved step, not an out-of-plan action.\n` +
+                        `Current approved step: ${currentStepText}\n` +
+                        `Next approved step: ${nextStepText}\n` +
+                        `Later matched approved step ${laterApprovedStepIndex + 1}: ${laterStepText}\n` +
+                        `Do not skip ahead. First finish or explicitly verify the earlier pending approved steps, then propose the next action again.`,
+                    }
+                  );
+                  messages = trimHistory(messages);
+                  this.liveMessages = messages;
+                  continue;
+                }
+
                 adaptedCallbacks.onToolOutput(
-                  `⏸️ Proposed action appears to jump ahead to approved plan step ${laterApprovedStepIndex + 1} before earlier steps are complete.`
+                  '⏸️ Proposed action does not clearly match the remaining approved steps. Re-aligning to the pending plan.'
                 );
                 messages.push(
                   { role: 'assistant', content: accumulatedText },
                   {
                     role: 'user',
                     content:
-                      `Your proposed action appears to belong to a later approved step, not an out-of-plan action.\n` +
+                      `Your proposed action does not clearly match the currently pending approved steps, but the approved plan is not finished yet.\n` +
                       `Current approved step: ${currentStepText}\n` +
                       `Next approved step: ${nextStepText}\n` +
-                      `Later matched approved step ${laterApprovedStepIndex + 1}: ${laterStepText}\n` +
-                      `Do not skip ahead. First finish or explicitly verify the earlier pending approved steps, then propose the next action again.`,
+                      `Remaining approved steps:\n${remainingSteps}\n` +
+                      `Do not stop and do not invent new work. Re-observe the page if needed, decide which pending approved step still needs work, and then propose exactly one XML tool call that advances that pending step.`,
                   }
                 );
                 messages = trimHistory(messages);
