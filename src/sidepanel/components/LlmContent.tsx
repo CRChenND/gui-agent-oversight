@@ -99,11 +99,8 @@ export const LlmContent: React.FC<LlmContentProps> = ({
   }
   
   const isChatStyle = conversationStyle === 'chat';
-  const plainThinkingBlocks = stepMetadata
-    .map((item) => item.thinkingSummary.trim())
-    .filter(Boolean);
   const textParts = parts.filter((part) => part.type === 'text' && part.content.trim().length > 0);
-  const hasRenderableText = textParts.length > 0 || plainThinkingBlocks.length > 0;
+  const hasRenderableText = textParts.length > 0;
 
   if (isChatStyle && !hasRenderableText) {
     return null;
@@ -132,19 +129,6 @@ export const LlmContent: React.FC<LlmContentProps> = ({
           </div>
         );
       })}
-      {isChatStyle
-        ? plainThinkingBlocks.map((thinking, index) => (
-            <ReactMarkdown
-              key={`thinking-${index}`}
-              remarkPlugins={[remarkGfm]}
-              components={{
-                p: ({node, ...props}) => <p className="mb-2" {...props} />,
-              }}
-            >
-              {thinking}
-            </ReactMarkdown>
-          ))
-        : null}
       {parts.map((part, index) => {
         if (part.type === 'text') {
           // Render regular text with markdown
