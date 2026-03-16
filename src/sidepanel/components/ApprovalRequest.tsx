@@ -147,12 +147,17 @@ export function ApprovalRequest({
           {isActionConfirmation ? 'Decline' : isSupervisoryVariant ? 'Reject' : 'Reject'}
         </button>
         {onApproveSeries ? (
-          <button
-            className="btn btn-info"
-            onClick={() => onApproveSeries(requestId)}
+          <div
+            className="tooltip tooltip-bottom"
+            data-tip="Approve similar actions on this page"
           >
-            Approve Similar
-          </button>
+            <button
+              className="btn btn-info"
+              onClick={() => onApproveSeries(requestId)}
+            >
+              Approve Similar
+            </button>
+          </div>
         ) : null}
         <button 
           className="btn btn-success" 
