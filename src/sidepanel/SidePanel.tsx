@@ -1324,8 +1324,8 @@ export function SidePanel() {
                 </select>
               </div>
               {isAgentActivelyWorking ? (
-                <div className="mt-1 text-[11px] text-base-content/55">
-                  Agent is currently working on your task.
+                <div className="mt-1 text-sm text-base-content/55">
+                  Agent is currently working on your task. Please be patient.
                 </div>
               ) : null}
               {isApplyingArchetype ? (
