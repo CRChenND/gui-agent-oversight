@@ -405,15 +405,14 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                   <span className={`mt-1 block h-2.5 w-2.5 rounded-full ${statusClasses[node.status]}`} />
                   {!isLast ? <span className="absolute top-4 h-5 w-px bg-base-300" /> : null}
                 </div>
-                <div className="relative min-w-0 flex-1">
-                  <div className="inline-flex max-w-full">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="text-sm font-medium text-base-content">
+                <div className="relative min-w-0 flex-1 overflow-visible">
+                  <div className="flex max-w-full flex-wrap items-start gap-2 overflow-visible">
+                      <div className="min-w-0 flex-1 text-sm font-medium text-base-content">
                         {summarizeStepTitle(node)}
                       </div>
                       {showRiskBadge ? (
                         <div
-                          className="inline-flex"
+                          className="inline-flex max-w-full shrink-0"
                           onMouseEnter={(e) => {
                             if (!showRiskDetails) return;
                             openTooltip(node.stepId, 'risk', e.currentTarget);
@@ -439,7 +438,6 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                           </span>
                         </div>
                       ) : null}
-                    </div>
                   </div>
                   {node.thinking ? (
                     <div className="mt-1 flex items-start gap-1.5 text-xs leading-5 text-base-content/70">
