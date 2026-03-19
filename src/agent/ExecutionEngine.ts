@@ -13,6 +13,7 @@ import {
   mapStorageToOversightSettings,
 } from "../oversight/registry";
 import {
+  buildContextualRiskExplanation,
   inferRiskAssessment,
   INITIAL_ADAPTIVE_GATE_STATE,
   shouldPromptByGatePolicy,
@@ -29,6 +30,21 @@ const STRUCTURAL_AMPLIFICATION_MAX_STEPS = 90;
 const TASK_COMPLETE_REGEX = /<task_status>\s*complete\s*<\/task_status>/i;
 const FINAL_RESPONSE_REGEX = /<final_response>([\s\S]*?)<\/final_response>/i;
 const MAX_OUTPUT_TOKENS = 1024;  // max tokens for LLM response
+const LLM_STREAM_IDLE_TIMEOUT_MS = 45000;
+const TOOL_EXECUTION_WATCHDOG_INITIAL_MS = 15000;
+const TOOL_EXECUTION_WATCHDOG_REPEAT_MS = 10000;
+const TOOL_EXECUTION_TIMEOUT_MS = 30000;
+const RESUME_RECOVERY_OBSERVATION_TOOLS = new Set([
+  'browser_get_title',
+  'browser_snapshot_dom',
+  'browser_query',
+  'browser_accessible_tree',
+  'browser_read_text',
+  'browser_screenshot',
+  'browser_screenshot_tab',
+  'browser_tab_list',
+  'browser_get_active_tab',
+]);
 type LlmImpact = 'low' | 'medium' | 'high';
 type ExecutionProfile = 'default' | 'structural_amplification' | 'supervisory_coexecution' | 'action_confirmation';
 type ControlMode = 'approve_all' | 'risky_only' | 'step_through';
@@ -36,7 +52,13 @@ type TimingPolicy = 'pre_action' | 'pre_navigation' | 'post_action';
 type ApprovedPlan = { summary: string; steps: string[] };
 type PlanStepDisposition = 'current' | 'next' | 'out_of_plan';
 type PlanEvidenceStatus = 'completed' | 'cancelled' | 'error';
+type ResumeRecoveryPhase = 'idle' | 'needs_observation' | 'needs_replan';
 export type ExecutionTerminalStatus = 'completed' | 'stopped' | 'cancelled' | 'max_steps' | 'failed';
+type ExecutePromptOptions = {
+  skipInitialPlanReview?: boolean;
+  preserveRunState?: boolean;
+  invocationSource?: 'primary' | 'fallback_retry';
+};
 type PlanExecutionEvidence = {
   planStepIndex: number;
   toolName: string;
@@ -53,6 +75,17 @@ function isRecoverableToolResultError(result: string): boolean {
   return /strict focus target|outside the current viewport|not directly clickable|no visible element matched text|intercept|pointer events|not stable|another element|outside of the viewport|element is not attached/i.test(
     result
   );
+}
+
+function isTerminalExecutionBlockReason(reason?: string): boolean {
+  if (!reason) return false;
+  return /state=(cancelled|completed)|phase=(terminated|planning|plan_review|posthoc_review)/i.test(reason);
+}
+
+function summarizeForDebug(text: string, maxLength = 140): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3).trim()}...` : normalized;
 }
 
 /**
@@ -187,6 +220,8 @@ export class ExecutionEngine {
   private highestAcceptedPlanStepIndex = -1;
   private lastCompletionCheckPlanStepIndex = 0;
   private executedPlanEvidence: PlanExecutionEvidence[] = [];
+  private resumeRecoveryPhase: ResumeRecoveryPhase = 'idle';
+  private resumeRecoveryInstructionIssued = false;
 
   private getMaxStepsForProfile(profile: ExecutionProfile): number {
     return profile === 'structural_amplification' ? STRUCTURAL_AMPLIFICATION_MAX_STEPS : MAX_STEPS;
@@ -241,6 +276,107 @@ export class ExecutionEngine {
       '<task_status>complete</task_status> and <final_response>...</final_response>. ' +
       'Otherwise continue with the next observation or action using the required tool-call XML.'
     );
+  }
+
+  private appendResumeObservationInstruction(messages: any[]): any[] {
+    if (this.resumeRecoveryPhase !== 'needs_observation' || this.resumeRecoveryInstructionIssued) return messages;
+    this.resumeRecoveryInstructionIssued = true;
+    messages.push({
+      role: 'user',
+      content:
+        'The user rejected the last proposed action and may have changed the page while they were in control. Your next step must be a read-only observation tool so you can inspect the current page before doing anything else. After that observation, revise the remaining plan from the latest visible page state and only then continue execution.',
+    });
+    return trimHistory(messages);
+  }
+
+  private markResumeRecoveryRequired(args: {
+    source: 'plan_step_rejected' | 'approval_rejected' | 'post_action_review_rejected';
+    stepId: string;
+    toolName: string;
+    toolInput: string;
+  }): void {
+    console.warn('[resume-recovery] markResumeRecoveryRequired', {
+      source: args.source,
+      stepId: args.stepId,
+      toolName: args.toolName,
+      toolInput: summarizeForDebug(args.toolInput),
+    });
+    this.resumeRecoveryPhase = 'needs_observation';
+    this.resumeRecoveryInstructionIssued = false;
+  }
+
+  private requiresResumeObservation(): boolean {
+    return this.resumeRecoveryPhase === 'needs_observation';
+  }
+
+  private startToolExecutionWatchdog(args: {
+    stepId: string;
+    toolName: string;
+    toolInput: string;
+    stepDescription?: string;
+  }): () => void {
+    const startedAt = Date.now();
+    let cleared = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const emit = () => {
+      if (cleared) return;
+      const waitedMs = Date.now() - startedAt;
+      console.warn('[tool-watchdog] Tool execution is taking longer than expected', {
+        stepId: args.stepId,
+        toolName: args.toolName,
+        toolInput: summarizeForDebug(args.toolInput),
+        stepDescription: summarizeForDebug(args.stepDescription || ''),
+        waitedMs,
+      });
+      timeoutId = setTimeout(emit, TOOL_EXECUTION_WATCHDOG_REPEAT_MS);
+    };
+
+    timeoutId = setTimeout(emit, TOOL_EXECUTION_WATCHDOG_INITIAL_MS);
+
+    return () => {
+      cleared = true;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }
+
+  private async executeToolWithTimeout(args: {
+    stepId: string;
+    toolName: string;
+    toolInput: string;
+    stepDescription?: string;
+    invoke: () => Promise<string>;
+  }): Promise<string> {
+    console.info('[tool-debug] Starting tool execution', {
+      stepId: args.stepId,
+      toolName: args.toolName,
+      toolInput: summarizeForDebug(args.toolInput),
+      stepDescription: summarizeForDebug(args.stepDescription || ''),
+    });
+
+    const result = await Promise.race<string>([
+      args.invoke(),
+      new Promise<string>((_, reject) =>
+        setTimeout(
+          () =>
+            reject(
+              new Error(
+                `Tool ${args.toolName} timed out after ${TOOL_EXECUTION_TIMEOUT_MS}ms.`
+              )
+            ),
+          TOOL_EXECUTION_TIMEOUT_MS
+        )
+      ),
+    ]);
+
+    console.info('[tool-debug] Tool execution finished', {
+      stepId: args.stepId,
+      toolName: args.toolName,
+      toolInput: summarizeForDebug(args.toolInput),
+      resultPreview: summarizeForDebug(result, 180),
+    });
+
+    return result;
   }
 
   private buildMissingToolCallNotice(profile: ExecutionProfile): string {
@@ -339,7 +475,7 @@ export class ExecutionEngine {
   }
 
   private isObservationTool(toolName: string): boolean {
-    return /read|snapshot|query|screenshot|accessible_tree|get_title/i.test(toolName);
+    return RESUME_RECOVERY_OBSERVATION_TOOLS.has(toolName) || /read|snapshot|query|screenshot|accessible_tree|get_title/i.test(toolName);
   }
 
   private async assessApprovedPlanCompletion(): Promise<{ allowed: boolean; reason?: string }> {
@@ -467,7 +603,9 @@ export class ExecutionEngine {
 
     try {
       // Use the execution method with appropriate streaming mode
-      await this.executePrompt(prompt, callbacks, initialMessages, isStreaming);
+      await this.executePrompt(prompt, callbacks, initialMessages, isStreaming, {
+        invocationSource: 'primary',
+      });
     } catch (error) {
       console.warn("Execution failed, attempting fallback:", error);
 
@@ -486,7 +624,16 @@ export class ExecutionEngine {
       }
 
       // Continue with fallback using non-streaming mode
-      await this.executePrompt(prompt, callbacks, initialMessages, false);
+      const canReusePlanState = !!this.approvedPlanState?.steps.length;
+      console.warn('[plan-debug] restarting executePrompt via fallback', {
+        skipInitialPlanReview: canReusePlanState,
+        preservedApprovedPlanSteps: this.approvedPlanState?.steps.length ?? 0,
+      });
+      await this.executePrompt(prompt, callbacks, initialMessages, false, {
+        skipInitialPlanReview: canReusePlanState,
+        preserveRunState: canReusePlanState,
+        invocationSource: 'fallback_retry',
+      });
     }
   }
 
@@ -532,7 +679,8 @@ export class ExecutionEngine {
       /^plan approved\. follow this plan throughout the task/i.test(content) ||
       /^updated plan guidance replaces every earlier approved plan instruction\./i.test(content) ||
       /^original user request is background context only\./i.test(content) ||
-      /^approved plan override:/i.test(content)
+      /^approved plan override:/i.test(content) ||
+      /^resume recovery plan override:/i.test(content)
     );
   }
 
@@ -573,6 +721,85 @@ export class ExecutionEngine {
     });
 
     this.liveMessages = trimHistory(rewrittenMessages);
+  }
+
+  private rewriteLiveMessagesForResumeRecovery(planText: string): void {
+    if (!this.liveMessages) return;
+
+    const preservedMessages = this.liveMessages.filter(
+      (message) => !this.isPlanControlMessage(message) && !this.isStandaloneOriginalPromptMessage(message)
+    );
+
+    const rewrittenMessages = [...preservedMessages];
+    if (this.currentTaskPrompt.trim()) {
+      rewrittenMessages.push({
+        role: 'user',
+        content:
+          'Original user request is background context only. Use it to understand the goal and constraints, ' +
+          'but do not treat it as the active execution instruction if it conflicts with the latest page state:\n' +
+          this.currentTaskPrompt.trim(),
+      });
+    }
+    rewrittenMessages.push({
+      role: 'user',
+      content:
+        'Resume recovery plan override:\n' +
+        'The user took control and may have changed the page. The plan below replaces earlier remaining-step assumptions. ' +
+        'Continue from the latest observed page state, stay within the original task scope, and use this updated plan for all remaining actions.\n' +
+        planText,
+    });
+
+    this.liveMessages = trimHistory(rewrittenMessages);
+  }
+
+  private async refreshPlanAfterResumeObservation(args: {
+    toolName: string;
+    toolInput: string;
+    observationResult: string;
+  }): Promise<string | null> {
+    const existingPlanText = this.approvedPlanState?.steps.length
+      ? `Current remaining plan summary: ${this.approvedPlanState.summary}\n${this.approvedPlanState.steps
+          .map((step, index) => `Step ${index + 1}: ${step}`)
+          .join('\n')}`
+      : 'There is no explicit remaining plan yet.';
+
+    const replanPrompt =
+      'You are revising an agent execution plan after the user rejected an action, took control, and may have changed the page.\n' +
+      'Produce only the remaining plan from the latest visible page state.\n' +
+      'Rules:\n' +
+      '1) Use the latest observation as the source of truth.\n' +
+      '2) Remove obsolete steps and reorder steps if the page changed.\n' +
+      '3) Keep the plan within the original user task scope.\n' +
+      '4) If prior steps are already complete on the page, do not include them again.\n' +
+      '5) Return plain text only in this format:\n' +
+      'Plan Summary: ...\n' +
+      'Step 1: ...\n' +
+      'Step 2: ...';
+
+    const replanInput =
+      `Original task:\n${this.currentTaskPrompt || '(missing)'}\n\n` +
+      `${existingPlanText}\n\n` +
+      `Latest observation tool: ${args.toolName}\n` +
+      `Latest observation input: ${args.toolInput || '(none)'}\n` +
+      `Latest observation result:\n${args.observationResult}`;
+
+    const rawPlan = await this.collectModelText(replanPrompt, [{ role: 'user', content: replanInput }]);
+    const parsed = this.extractPlanFromPlannerOutput(rawPlan);
+    if (parsed.steps.length === 0) {
+      return null;
+    }
+
+    const planText =
+      `Plan Summary: ${parsed.summary}\n` +
+      parsed.steps.map((step, index) => `Step ${index + 1}: ${step}`).join('\n');
+
+    this.replacePlanStateFromResumeRecovery({
+      summary: parsed.summary,
+      steps: parsed.steps,
+    });
+    this.promptManager.setApprovedPlanGuidance(planText);
+    this.rewriteLiveMessagesForResumeRecovery(planText);
+    return planText;
   }
 
   private async getInterventionGateConfig(): Promise<{
@@ -689,11 +916,13 @@ export class ExecutionEngine {
   }
 
   private cleanPlanStepText(text: string): string {
-    return text
+    const cleaned = text
       .replace(/<\/?(thinking_summary|impact)>/gi, '')
       .replace(/<\/?[^>]+>/g, '')
       .replace(/\s+/g, ' ')
       .trim();
+    if (!cleaned) return '';
+    return /[.!?]$/.test(cleaned) ? cleaned : `${cleaned}.`;
   }
 
   private isDescriptivePlanStep(text: string): boolean {
@@ -771,6 +1000,24 @@ export class ExecutionEngine {
     this.currentPlanStepIndex = 0;
     this.highestAcceptedPlanStepIndex = -1;
     this.lastCompletionCheckPlanStepIndex = 0;
+  }
+
+  private replacePlanStateFromResumeRecovery(plan: ApprovedPlan): void {
+    this.approvedPlanState = {
+      summary: plan.summary,
+      steps: Array.from(
+        new Set(plan.steps.map((step) => this.cleanPlanStepText(step)).filter((step) => this.isDescriptivePlanStep(step)))
+      ),
+    };
+    if (this.approvedPlanState.steps.length === 0) {
+      this.resetApprovedPlanState();
+      return;
+    }
+
+    this.currentPlanStepIndex = 0;
+    this.highestAcceptedPlanStepIndex = -1;
+    this.lastCompletionCheckPlanStepIndex = 0;
+    this.executedPlanEvidence = [];
   }
 
   private setApprovedPlanState(plan: ApprovedPlan | null): void {
@@ -961,10 +1208,19 @@ export class ExecutionEngine {
       messages,
       tools
     );
+    const iterator = stream[Symbol.asyncIterator]();
 
     // Token usage tracking removed
 
-    for await (const chunk of stream) {
+    while (true) {
+      const chunkResult = await Promise.race([
+        iterator.next(),
+        new Promise<IteratorResult<StreamChunk>>((_, reject) =>
+          setTimeout(() => reject(new Error(`LLM stream timed out after ${LLM_STREAM_IDLE_TIMEOUT_MS}ms with no new output.`)), LLM_STREAM_IDLE_TIMEOUT_MS)
+        ),
+      ]);
+      if (chunkResult.done) break;
+      const chunk = chunkResult.value;
       if (this.errorHandler.isExecutionCancelled()) break;
 
       // Token usage chunks ignored
@@ -1037,7 +1293,8 @@ export class ExecutionEngine {
     prompt: string,
     callbacks: ExecutionCallbacks,
     initialMessages: any[] = [],
-    isStreaming: boolean
+    isStreaming: boolean,
+    options: ExecutePromptOptions = {}
   ): Promise<void> {
     // Create adapter to handle streaming vs non-streaming
     const adapter = new CallbackAdapter(callbacks, isStreaming);
@@ -1046,8 +1303,12 @@ export class ExecutionEngine {
       // Reset cancel flag at the start of execution
       this.errorHandler.resetCancel();
       this.adaptiveGateState = { ...INITIAL_ADAPTIVE_GATE_STATE };
-      this.resetApprovedPlanState();
-      this.executedPlanEvidence = [];
+      if (!options.preserveRunState) {
+        this.resetApprovedPlanState();
+        this.executedPlanEvidence = [];
+        this.resumeRecoveryPhase = 'idle';
+        this.resumeRecoveryInstructionIssued = false;
+      }
       try {
       // Initialize messages with the prompt
       this.currentTaskPrompt = prompt;
@@ -1059,9 +1320,19 @@ export class ExecutionEngine {
       let terminalStatus: ExecutionTerminalStatus | null = null;
       let terminalReason: string | undefined;
       let step = 0;
-      let planReviewed = false;
+      let planReviewed = options.skipInitialPlanReview === true;
+
+      if (planReviewed) {
+        console.warn('[plan-debug] skipping initial plan review for continued execution', {
+          source: options.invocationSource ?? 'primary',
+          approvedPlanSteps: this.approvedPlanState?.steps.length ?? 0,
+        });
+      }
 
       if (!planReviewed && adaptedCallbacks.onPlanReviewRequired) {
+        console.warn('[plan-debug] requesting initial plan review', {
+          source: options.invocationSource ?? 'primary',
+        });
         const generatedPlan = await this.generateTaskPlan(prompt, messages);
         adaptedCallbacks.onPlanGenerated?.({
           summary: generatedPlan.summary,
@@ -1190,6 +1461,28 @@ export class ExecutionEngine {
 
           // Check for cancellation before each major step
           if (this.errorHandler.isExecutionCancelled()) break;
+
+          if (adaptedCallbacks.onWaitForExecutionPermission) {
+            const permission = await adaptedCallbacks.onWaitForExecutionPermission();
+            if (!permission.allowed) {
+              adaptedCallbacks.onToolOutput(`⏸️ Execution blocked: ${permission.reason || 'runtime policy block'}`);
+              messages.push(
+                { role: 'assistant', content: 'Execution is paused or blocked.' },
+                { role: 'user', content: `Execution blocked by runtime state. ${permission.reason || ''}` }
+              );
+              messages = trimHistory(messages);
+              this.liveMessages = messages;
+              if (isTerminalExecutionBlockReason(permission.reason)) {
+                terminalStatus = 'stopped';
+                terminalReason = permission.reason || 'Execution blocked by runtime policy.';
+                done = true;
+              }
+              continue;
+            }
+          }
+
+          messages = this.appendResumeObservationInstruction(messages);
+          this.liveMessages = messages;
 
           // ── 1. Call LLM with streaming ───────────────────────────────────────
           const { accumulatedText } = await this.processLlmStream(messages, adaptedCallbacks);
@@ -1446,13 +1739,17 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             shouldPromptByGatePolicy(gateConfig.policy, riskAssessment, this.adaptiveGateState.currentLevel);
           this.adaptiveGateState = updateAdaptiveStateFromStep(this.adaptiveGateState, riskAssessment, promptedByGate);
 
-          const llmReason = llmRequiresApproval
-            ? "The AI assistant has determined this action requires your approval."
-            : null;
-          const gateReason = promptedByGate
-            ? `Intervention Gate (${gateConfig.policy}) blocked this step.`
-            : null;
-          const reasonParts = [llmReason, gateReason, ...riskAssessment.reasons].filter(Boolean) as string[];
+          const contextualRiskReason = buildContextualRiskExplanation({
+            toolName,
+            toolInput,
+            impact: riskAssessment.impact,
+            reversible: riskAssessment.reversible,
+            category: riskAssessment.category,
+            stepDescription: modelMetadata.thinkingSummary || thinking.rationale || thinking.goal || '',
+          });
+          const llmReason = llmRequiresApproval ? 'The model marked this step for approval.' : null;
+          const gateReason = promptedByGate ? `Gate policy ${gateConfig.policy} paused this step.` : null;
+          const reasonParts = [contextualRiskReason, llmReason, gateReason].filter(Boolean) as string[];
 
           let requiresApproval = llmRequiresApproval || promptedByGate;
           let postActionReviewRequired = false;
@@ -1496,6 +1793,22 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             continue;
           }
 
+          if (this.requiresResumeObservation() && !this.isObservationTool(toolName)) {
+            adaptedCallbacks.onToolOutput('⏸️ Resume recovery requires a fresh page observation before any new action.');
+            messages.push(
+              { role: 'assistant', content: accumulatedText },
+              {
+                role: 'user',
+                content:
+                  'The user may have changed the page while in control. Do not continue with the old plan yet. ' +
+                  'Your next response must use exactly one read-only observation tool such as browser_snapshot_dom, browser_read_text, browser_query, browser_accessible_tree, or browser_screenshot so you can inspect the current page first.',
+              }
+            );
+            messages = trimHistory(messages);
+            this.liveMessages = messages;
+            continue;
+          }
+
           // Check for cancellation before tool execution
           if (this.errorHandler.isExecutionCancelled()) break;
 
@@ -1503,15 +1816,17 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             const permission = await adaptedCallbacks.onWaitForExecutionPermission();
             if (!permission.allowed) {
               adaptedCallbacks.onToolOutput(`⏸️ Execution blocked: ${permission.reason || 'runtime policy block'}`);
-              terminalStatus = 'stopped';
-              terminalReason = permission.reason || 'Execution blocked by runtime policy.';
-              done = true;
               messages.push(
                 { role: "assistant", content: accumulatedText },
                 { role: "user", content: `Execution blocked by runtime state. ${permission.reason || ''}` }
               );
               messages = trimHistory(messages);
               this.liveMessages = messages;
+              if (isTerminalExecutionBlockReason(permission.reason)) {
+                terminalStatus = 'stopped';
+                terminalReason = permission.reason || 'Execution blocked by runtime policy.';
+                done = true;
+              }
               continue;
             }
           }
@@ -1671,16 +1986,24 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
                 toolInput,
               });
               if (planStepApproval.decision === 'reject') {
-                adaptedCallbacks.onToolOutput('❌ Plan step rejected by user. Execution stopped.');
+                this.markResumeRecoveryRequired({
+                  source: 'plan_step_rejected',
+                  stepId,
+                  toolName,
+                  toolInput,
+                });
+                adaptedCallbacks.onToolOutput('⏸️ Plan step rejected. Agent paused so you can take over.');
                 messages.push(
                   { role: 'assistant', content: accumulatedText },
-                  { role: 'user', content: `The user rejected plan step ${planMatch.index + 1}. Stop execution.` }
+                  {
+                    role: 'user',
+                    content:
+                      `The user rejected plan step ${planMatch.index + 1} and took control of the page. ` +
+                      `Wait until execution is resumed. After resume, re-observe the page and continue from the current page state while still following the approved plan.`,
+                  }
                 );
                 messages = trimHistory(messages);
                 this.liveMessages = messages;
-                terminalStatus = 'stopped';
-                terminalReason = `Plan step ${planMatch.index + 1} rejected by user.`;
-                done = true;
                 continue;
               }
               this.highestAcceptedPlanStepIndex = planMatch.index;
@@ -1708,9 +2031,8 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
           // ── 3. Execute tool ──────────────────────────────────────────────────
           adaptedCallbacks.onToolOutput(`🕹️ tool: ${toolName} | args: ${toolInput}`);
 
-          let result: string;
-          let haltAfterReviewDeny = false;
-
+          let result = '';
+          let stopToolExecutionWatchdog: (() => void) | null = null;
           if (adaptedCallbacks.onRiskSignal) {
             adaptedCallbacks.onRiskSignal(stepId, toolName, {
               signal: requiresApproval ? 'approval_required' : 'risk_assessed',
@@ -1743,42 +2065,13 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             // Get the current tab ID from chrome.tabs API
             const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
             const tabId = tabs[0]?.id || 0;
+            let approved = false;
 
             try {
               // Request approval from the user
-              const approved = await requestApproval(tabId, stepId, toolName, toolInput, reason);
-
-              if (approved) {
-                this.adaptiveGateState = updateAdaptiveStateFromDecision(this.adaptiveGateState, 'approve');
-                // User approved, execute the tool
-                adaptedCallbacks.onToolOutput(`✅ Action approved by user. Executing...`);
-
-                // Create a context object to pass to the tool
-                const context = {
-                  requiresApproval: true,
-                  approvalReason: reason
-                };
-
-                // Execute the tool with the context
-                try {
-                  result = await tool.func(toolInput, context);
-                } catch (toolError) {
-                  if (adaptedCallbacks.onToolError) {
-                    adaptedCallbacks.onToolError(
-                      stepId,
-                      toolName,
-                      toolInput,
-                      toolError instanceof Error ? toolError.message : String(toolError)
-                    );
-                  }
-                  throw toolError;
-                }
-              } else {
-                this.adaptiveGateState = updateAdaptiveStateFromDecision(this.adaptiveGateState, 'deny');
-                // User rejected, skip execution
-                result = "Action cancelled by user.";
-                adaptedCallbacks.onToolOutput(`❌ Action rejected by user.`);
-              }
+              approved = await requestApproval(tabId, stepId, toolName, toolInput, reason, undefined, {
+                stepDescription,
+              });
             } catch (approvalError) {
               console.error(`Error in approval process:`, approvalError);
               if (adaptedCallbacks.onToolError) {
@@ -1791,12 +2084,89 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               }
               result = "Error in approval process. Action cancelled.";
               adaptedCallbacks.onToolOutput(`❌ Error in approval process: ${approvalError}`);
+              approved = false;
+            }
+
+            if (approved) {
+              this.adaptiveGateState = updateAdaptiveStateFromDecision(this.adaptiveGateState, 'approve');
+              // User approved, execute the tool
+              adaptedCallbacks.onToolOutput(`✅ Action approved by user. Executing...`);
+
+              // Create a context object to pass to the tool
+              const context = {
+                requiresApproval: true,
+                approvalReason: reason
+              };
+
+              // Execute the tool with the context
+              try {
+                stopToolExecutionWatchdog = this.startToolExecutionWatchdog({
+                  stepId,
+                  toolName,
+                  toolInput,
+                  stepDescription,
+                });
+                result = await this.executeToolWithTimeout({
+                  stepId,
+                  toolName,
+                  toolInput,
+                  stepDescription,
+                  invoke: () => tool.func(toolInput, context),
+                });
+              } catch (toolError) {
+                console.error('[tool-debug] Tool execution failed', {
+                  stepId,
+                  toolName,
+                  toolInput: summarizeForDebug(toolInput),
+                  error: toolError instanceof Error ? toolError.message : String(toolError),
+                });
+                if (adaptedCallbacks.onToolError) {
+                  adaptedCallbacks.onToolError(
+                    stepId,
+                    toolName,
+                    toolInput,
+                    toolError instanceof Error ? toolError.message : String(toolError)
+                  );
+                }
+                throw toolError;
+              } finally {
+                stopToolExecutionWatchdog?.();
+                stopToolExecutionWatchdog = null;
+              }
+            } else if (!result) {
+              this.adaptiveGateState = updateAdaptiveStateFromDecision(this.adaptiveGateState, 'deny');
+              this.markResumeRecoveryRequired({
+                source: 'approval_rejected',
+                stepId,
+                toolName,
+                toolInput,
+              });
+              result = 'Action rejected by user. Agent paused for human takeover.';
+              adaptedCallbacks.onToolOutput('⏸️ Action rejected. Agent paused so you can take over.');
             }
           } else {
             // No approval required, execute the tool normally
             try {
-              result = await tool.func(toolInput);
+              stopToolExecutionWatchdog = this.startToolExecutionWatchdog({
+                stepId,
+                toolName,
+                toolInput,
+                stepDescription,
+              });
+              result = await this.executeToolWithTimeout({
+                stepId,
+                toolName,
+                toolInput,
+                stepDescription,
+                invoke: () => tool.func(toolInput),
+              });
             } catch (toolError) {
+              console.error('[tool-debug] Tool execution failed', {
+                stepId,
+                toolName,
+                toolInput: summarizeForDebug(toolInput),
+                error: toolError instanceof Error ? toolError.message : String(toolError),
+              });
               if (adaptedCallbacks.onToolError) {
                 adaptedCallbacks.onToolError(
                   stepId,
@@ -1806,6 +2176,9 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
                 );
               }
               throw toolError;
+            } finally {
+              stopToolExecutionWatchdog?.();
+              stopToolExecutionWatchdog = null;
             }
           }
 
@@ -1815,15 +2188,22 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
               const tabId = tabs[0]?.id || 0;
               const reviewReason = `${reason} Post-action review: confirm whether to continue with subsequent steps.`;
-              const approved = await requestApproval(tabId, stepId, toolName, toolInput, reviewReason);
+              const approved = await requestApproval(tabId, stepId, toolName, toolInput, reviewReason, undefined, {
+                stepDescription,
+              });
               if (approved) {
                 this.adaptiveGateState = updateAdaptiveStateFromDecision(this.adaptiveGateState, 'approve');
                 adaptedCallbacks.onToolOutput('✅ Post-action review approved.');
               } else {
                 this.adaptiveGateState = updateAdaptiveStateFromDecision(this.adaptiveGateState, 'deny');
-                adaptedCallbacks.onToolOutput('❌ Post-action review denied. Follow-up actions halted by policy.');
-                result = `${result}\nPost-action review denied by user.`;
-                haltAfterReviewDeny = true;
+                this.markResumeRecoveryRequired({
+                  source: 'post_action_review_rejected',
+                  stepId,
+                  toolName,
+                  toolInput,
+                });
+                adaptedCallbacks.onToolOutput('⏸️ Follow-up action rejected. Agent paused so you can take over.');
+                result = `${result}\nPost-action review denied by user. Agent paused for human takeover.`;
               }
               if (adaptedCallbacks.onRiskSignal) {
                 adaptedCallbacks.onRiskSignal(stepId, toolName, {
@@ -1861,7 +2241,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               status:
                 isToolResultError(result)
                   ? 'error'
-                  : haltAfterReviewDeny || result.includes('Action cancelled by user.')
+                  : result.includes('Action rejected by user.') || result.includes('human takeover')
                   ? 'cancelled'
                   : 'completed',
             });
@@ -1869,19 +2249,6 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
 
           // Check for cancellation after tool execution
           if (this.errorHandler.isExecutionCancelled()) break;
-
-          if (haltAfterReviewDeny) {
-            terminalStatus = 'stopped';
-            terminalReason = 'Execution stopped by post-action review policy.';
-            done = true;
-            messages.push(
-              { role: "assistant", content: accumulatedText },
-              { role: "user", content: `Tool result: ${result}\nExecution stopped by post-action review policy.` }
-            );
-            messages = trimHistory(messages);
-            this.liveMessages = messages;
-            continue;
-          }
 
           // ── 4. Record turn & prune history ───────────────────────────────────
           messages.push(
@@ -1919,6 +2286,34 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
 
           messages = trimHistory(messages);
           this.liveMessages = messages;
+
+      if (this.requiresResumeObservation() && this.isObservationTool(toolName) && !isToolResultError(result)) {
+            this.resumeRecoveryPhase = 'needs_replan';
+            adaptedCallbacks.onToolOutput('🔄 Fresh observation captured after human takeover. Refreshing the remaining plan.');
+            console.warn('[plan-debug] refreshing plan after resume observation', {
+              toolName,
+              toolInput: summarizeForDebug(toolInput),
+            });
+            const refreshedPlan = await this.refreshPlanAfterResumeObservation({
+              toolName,
+              toolInput,
+              observationResult: result,
+            });
+            if (refreshedPlan) {
+              adaptedCallbacks.onToolOutput('🗺️ Remaining plan updated from the current page state.');
+              messages = this.liveMessages ?? messages;
+            } else {
+              messages.push({
+                role: 'user',
+                content:
+                  'You have re-observed the page after human takeover. Before your next action, reconsider which remaining steps still make sense from the current page state and do not assume the old pending step is still valid.',
+              });
+              messages = trimHistory(messages);
+              this.liveMessages = messages;
+            }
+            this.resumeRecoveryPhase = 'idle';
+            this.resumeRecoveryInstructionIssued = false;
+          }
         } catch (error) {
           // If an error occurs during execution, check if it was due to cancellation
           if (this.errorHandler.isExecutionCancelled()) break;

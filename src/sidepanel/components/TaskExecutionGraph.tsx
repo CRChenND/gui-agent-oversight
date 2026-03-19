@@ -1,5 +1,8 @@
+import { faRobot } from '@fortawesome/free-solid-svg-icons';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import React, { useEffect, useState } from 'react';
 import type { StepImpact } from '../../oversight/types';
+import { buildContextualRiskExplanation } from '../../oversight/riskAssessment';
 import { badgeClassName, badgeVariants } from './badgeStyles';
 
 export type TaskNodeStatus = 'active' | 'completed' | 'cancelled' | 'error';
@@ -87,7 +90,7 @@ const riskBadgeStyleMap: Record<StepImpact, React.CSSProperties> = {
 };
 
 const tooltipCardClassName =
-  'absolute left-0 z-20 rounded-2xl border border-slate-200 bg-white p-3 text-slate-700 shadow-xl';
+  'absolute right-0 z-20 rounded-2xl border border-slate-200 bg-white p-3 text-slate-700 shadow-xl';
 
 function formatToolName(toolName: string): string {
   if (!toolName) return toolName;
@@ -105,10 +108,85 @@ function compactPhrase(text: string, maxWords = 7): string {
   return joined.length > 52 ? `${joined.slice(0, 49).trim()}...` : joined;
 }
 
+function ensureSentence(text: string): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  const capped =
+    normalized.split(/\s+/).length > 12
+      ? normalized.split(/\s+/).slice(0, 12).join(' ')
+      : normalized;
+  return /[.!?]$/.test(capped) ? capped : `${capped}.`;
+}
+
 function compactSentence(text: string, maxLength = 96): string {
   const normalized = text.replace(/\s+/g, ' ').trim();
   if (!normalized) return '';
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3).trim()}...` : normalized;
+}
+
+function normalizeExplanationText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function canonicalizeExplanationSentence(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/\bvisible text read\b/g, 'the page')
+    .replace(/\bno input\b/g, '')
+    .replace(/click target:\s*/g, '')
+    .replace(/\bshould not change [a-z\s"]+\b/g, 'should not change the page')
+    .replace(/\bonly reads the [a-z\s"]+\b/g, 'only reads the page')
+    .replace(/["']/g, '')
+    .replace(/\([^)]*\)/g, '')
+    .replace(/[.,;:!?]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokenizeExplanationSentence(text: string): Set<string> {
+  return new Set(
+    canonicalizeExplanationSentence(text)
+      .split(/\s+/)
+      .filter((token) => token.length > 2)
+  );
+}
+
+function areNearDuplicateExplanationSentences(a: string, b: string): boolean {
+  const canonicalA = canonicalizeExplanationSentence(a);
+  const canonicalB = canonicalizeExplanationSentence(b);
+  if (!canonicalA || !canonicalB) return false;
+  if (canonicalA === canonicalB) return true;
+  if (canonicalA.includes(canonicalB) || canonicalB.includes(canonicalA)) return true;
+
+  const tokensA = tokenizeExplanationSentence(a);
+  const tokensB = tokenizeExplanationSentence(b);
+  if (tokensA.size === 0 || tokensB.size === 0) return false;
+
+  let intersection = 0;
+  for (const token of tokensA) {
+    if (tokensB.has(token)) intersection += 1;
+  }
+  const overlap = intersection / Math.max(tokensA.size, tokensB.size);
+  return overlap >= 0.7;
+}
+
+function mergeUniqueExplanationText(parts: string[]): string {
+  const merged: string[] = [];
+
+  for (const part of parts) {
+    const sentences = normalizeExplanationText(part)
+      .split(/(?<=[.!?])\s+/)
+      .map((sentence) => sentence.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+
+    for (const sentence of sentences) {
+      if (!sentence) continue;
+      if (merged.some((existing) => areNearDuplicateExplanationSentences(existing, sentence))) continue;
+      merged.push(sentence);
+    }
+  }
+
+  return merged.join(' ');
 }
 
 function extractQuotedTarget(text: string): string | undefined {
@@ -167,20 +245,25 @@ function summarizeStepTitle(node: TaskNode): string {
       .find((part) => part.length > 6) || '';
 
   const basePhrase = primarySentence || cleanActionPhrase(node.focusLabel || '') || buildFallbackPhrase(node);
-  return compactPhrase(toTitleCasePhrase(basePhrase));
+  return ensureSentence(compactPhrase(toTitleCasePhrase(basePhrase), 10));
 }
 
 function getRiskExplanationText(node: TaskNode): string {
   if (!node.intervention) return '';
-  const rationale = node.intervention.reasonText || '';
-  if (rationale.trim()) return rationale.trim();
-  if (node.intervention.impact === 'low') {
-    return 'This step is low risk because it mainly observes the page or changes something easy to undo.';
+  const contextual = buildContextualRiskExplanation({
+    toolName: node.toolName,
+    toolInput: node.focusLabel,
+    impact: node.intervention.impact,
+    reversible: node.intervention.reversible,
+    category: node.intervention.category,
+    stepDescription: node.stepDescription || node.thinking,
+  });
+  const rationale = (node.intervention.reasonText || '').trim();
+  if (!rationale) return contextual;
+  if (rationale.includes('Input suggests') || rationale.includes('Interactive tool can modify page state')) {
+    return contextual;
   }
-  if (node.intervention.impact === 'medium') {
-    return 'This step is medium risk because it changes page state, but the impact is still limited and usually reversible.';
-  }
-  return 'This step is high risk because it could cause a meaningful action, external effect, or hard-to-undo change.';
+  return mergeUniqueExplanationText([contextual, rationale]);
 }
 
 export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
@@ -359,25 +442,31 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                     </div>
                   </div>
                   {node.thinking ? (
-                    <div className="mt-1 text-xs leading-5 text-base-content/70">
-                      {compactSentence(node.thinking)}
+                    <div className="mt-1 flex items-start gap-1.5 text-xs leading-5 text-base-content/70">
+                      <FontAwesomeIcon icon={faRobot} className="mt-0.5 text-[11px] text-base-content/45" />
+                      <span>{compactSentence(node.thinking)}</span>
                     </div>
                   ) : null}
                   {showThinkingTooltip && node.thinking ? (
                     <div
                       data-thinking-tooltip="active"
-                      className={`pointer-events-none w-72 ${tooltipCardClassName} ${tooltipPositionClasses}`}
+                      className={`pointer-events-none w-64 ${tooltipCardClassName} ${tooltipPositionClasses}`}
+                      style={{ maxWidth: 'calc(100vw - 2rem)' }}
                     >
                       <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
                         Agent Thinking
                       </div>
-                      <div className="text-xs leading-5 text-slate-700">
-                        {node.thinking}
+                      <div className="flex items-start gap-2 text-xs leading-5 text-slate-700">
+                        <FontAwesomeIcon icon={faRobot} className="mt-0.5 text-[11px] text-slate-400" />
+                        <span>{node.thinking}</span>
                       </div>
                     </div>
                   ) : null}
                   {showRiskDetails && showRiskTooltip ? (
-                    <div className={`pointer-events-none w-64 ${tooltipCardClassName} ${tooltipPositionClasses}`}>
+                    <div
+                      className={`pointer-events-none w-64 ${tooltipCardClassName} ${tooltipPositionClasses}`}
+                      style={{ maxWidth: 'calc(100vw - 2rem)' }}
+                    >
                       <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
                         Risk Explanation
                       </div>

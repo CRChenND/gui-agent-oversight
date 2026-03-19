@@ -82,9 +82,10 @@ export class BrowserAgent {
         return {
           name: tool.name,
           description: tool.description,
-          func: async (input: string, _context?: ToolExecutionContext) => {
-            // Call the original function, ignoring any extra parameters
-            return await tool.func(input);
+          func: async (input: string, context?: ToolExecutionContext) => {
+            // Forward the optional execution context so tools can react to
+            // approved/risky actions (for example by rendering stronger focus cues).
+            return await (tool.func as (input: string, context?: ToolExecutionContext) => Promise<string>)(input, context);
           }
         };
       } else if (

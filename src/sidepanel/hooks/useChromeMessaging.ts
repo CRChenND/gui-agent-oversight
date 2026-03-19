@@ -473,31 +473,63 @@ export const useChromeMessaging = ({
   };
 
   const approveRequest = (requestId: string, approvalMode: 'once' | 'series' | 'site' = 'once') => {
-    chrome.runtime.sendMessage({
-      action: 'approvalResponse',
-      requestId,
-      approved: true,
-      approvalMode,
-      tabId,
-      windowId
-    }, (_response) => {
-      if (chrome.runtime.lastError) {
-        console.error('Error sending approval response:', chrome.runtime.lastError);
-      }
+    return new Promise<void>((resolve, reject) => {
+      console.info('[approval-debug] UI sending approvalResponse', {
+        requestId,
+        approved: true,
+        approvalMode,
+        tabId,
+        windowId,
+      });
+      chrome.runtime.sendMessage({
+        action: 'approvalResponse',
+        requestId,
+        approved: true,
+        approvalMode,
+        tabId,
+        windowId
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error('Error sending approval response:', chrome.runtime.lastError);
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        if (!response?.success) {
+          reject(new Error(response?.error || 'Approval response was not accepted by background'));
+          return;
+        }
+        resolve();
+      });
     });
   };
 
   const rejectRequest = (requestId: string) => {
-    chrome.runtime.sendMessage({
-      action: 'approvalResponse',
-      requestId,
-      approved: false,
-      tabId,
-      windowId
-    }, (_response) => {
-      if (chrome.runtime.lastError) {
-        console.error('Error sending rejection response:', chrome.runtime.lastError);
-      }
+    return new Promise<void>((resolve, reject) => {
+      console.info('[approval-debug] UI sending approvalResponse', {
+        requestId,
+        approved: false,
+        approvalMode: 'once',
+        tabId,
+        windowId,
+      });
+      chrome.runtime.sendMessage({
+        action: 'approvalResponse',
+        requestId,
+        approved: false,
+        tabId,
+        windowId
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error('Error sending rejection response:', chrome.runtime.lastError);
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        if (!response?.success) {
+          reject(new Error(response?.error || 'Rejection response was not accepted by background'));
+          return;
+        }
+        resolve();
+      });
     });
   };
 

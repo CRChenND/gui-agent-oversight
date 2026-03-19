@@ -1,7 +1,8 @@
 import { waitForOverlayApprovalDecision } from '../background/attentionTracker';
-import { buildApprovalDecisionCopy, handleApprovalRequested } from '../background/oversightManager';
+import { buildApprovalDecisionCopy, buildPlanStepApprovalCopy, handleApprovalRequested } from '../background/oversightManager';
 import { getTabState, getWindowForTab } from '../background/tabManager';
 import { sendUIMessage } from '../background/utils';
+import { getOversightRuntimeManager } from '../oversight/runtime/runtimeManager';
 import {
   AGENT_FOCUS_MECHANISM_ID,
   getOversightStorageQueryDefaults,
@@ -15,11 +16,14 @@ const pendingApprovals = new Map<string, {
   toolName: string;
   toolInput: string;
   reason: string;
+  createdAt: number;
+  timeoutId?: ReturnType<typeof setTimeout>;
   approvalSeriesKey?: string | null;
   siteApprovalKey?: string | null;
 }>();
 const autoApprovedSeriesKeys = new Set<string>();
 const autoApprovedSiteKeys = new Set<string>();
+const APPROVAL_REQUEST_TIMEOUT_MS = 45000;
 
 function buildApprovalSeriesKey(toolName: string, toolInput: string): string | null {
   const normalizedTool = toolName.toLowerCase();
@@ -49,6 +53,10 @@ export function clearApprovalSeries(): void {
   autoApprovedSiteKeys.clear();
 }
 
+export function hasPendingApproval(requestId: string): boolean {
+  return pendingApprovals.has(requestId);
+}
+
 export async function requestPlanStepApproval(
   tabId: number,
   stepId: string,
@@ -63,6 +71,7 @@ export async function requestPlanStepApproval(
       toolName: 'plan_step',
       toolInput: planStepText,
       reason: `Up next in the plan: Step ${planStepNumber}.`,
+      createdAt: Date.now(),
     });
 
     if (!windowId) {
@@ -81,14 +90,21 @@ export async function requestPlanStepApproval(
       stepId,
       toolName: 'plan_step',
       toolInput: planStepText,
-      reason: `The next part of the plan is Step ${planStepNumber}: ${planStepText}`,
+      reason: buildPlanStepApprovalCopy(planStepNumber, planStepText),
       approvalVariant: 'supervisory-plan-step',
       planStepIndex: planStepNumber - 1,
     }, () => {
       if (chrome.runtime.lastError) {
         console.error('Error sending plan-step approval request:', chrome.runtime.lastError);
-        pendingApprovals.delete(requestId);
-        resolve(false);
+        void getOversightRuntimeManager()
+          .pauseForRejectedAction(windowId, 'plan_step_rejected')
+          .catch((error) => {
+            console.warn('[approval-debug] Failed to pause runtime after plan-step approval delivery error', error);
+          })
+          .finally(() => {
+            pendingApprovals.delete(requestId);
+            resolve(false);
+          });
       }
     });
   });
@@ -121,7 +137,10 @@ export async function requestApproval(
   toolName: string,
   toolInput: string,
   reason: string,
-  windowId?: number
+  windowId?: number,
+  options?: {
+    stepDescription?: string;
+  }
 ): Promise<boolean> {
   return new Promise((resolve) => {
     const requestId = generateUniqueId();
@@ -141,9 +160,50 @@ export async function requestApproval(
         toolName,
         toolInput,
         reason,
+        createdAt: Date.now(),
         approvalSeriesKey,
         siteApprovalKey,
       });
+      console.info('[approval-debug] Approval requested', {
+        requestId,
+        stepId,
+        toolName,
+        toolInput,
+        reason,
+        windowId,
+      });
+      const timeoutId = setTimeout(() => {
+        const pending = pendingApprovals.get(requestId);
+        if (!pending) return;
+        console.warn('[approval-debug] Approval timed out; auto-rejecting request', {
+          requestId,
+          stepId,
+          toolName,
+          toolInput,
+          waitedMs: Date.now() - pending.createdAt,
+        });
+        void getOversightRuntimeManager()
+          .pauseForRejectedAction(windowId, 'approval_rejected')
+          .catch((error) => {
+            console.warn('[approval-debug] Failed to pause runtime after approval timeout', error);
+          })
+          .finally(() => {
+            handleApprovalResponse(requestId, false, 'once');
+            sendUIMessage(
+              'approvalResolved',
+              {
+                requestId,
+                approved: false,
+              },
+              tabId,
+              windowId
+            );
+          });
+      }, APPROVAL_REQUEST_TIMEOUT_MS);
+      const currentPending = pendingApprovals.get(requestId);
+      if (currentPending) {
+        currentPending.timeoutId = timeoutId;
+      }
 
       if (!windowId) {
         try {
@@ -179,35 +239,61 @@ export async function requestApproval(
             toolName,
             toolInput,
             thinking: reason,
+            stepDescription: options?.stepDescription,
           });
 
           if (allowPageApprovalOverlay && enableAgentFocus && page) {
             void waitForOverlayApprovalDecision(page, requestId).then((decision) => {
               if (!decision || !pendingApprovals.has(requestId)) return;
-              handleApprovalResponse(requestId, decision.approved, decision.approvalMode || 'once');
-              sendUIMessage(
-                'approvalResolved',
-                {
-                  requestId,
-                  approved: decision.approved,
-                },
+              console.info('[approval-debug] Overlay resolving approval inside background', {
+                requestId,
+                approved: decision.approved,
+                approvalMode: decision.approvalMode || 'once',
                 tabId,
-                windowId
-              );
+                windowId,
+              });
+
+              const finalizeOverlayDecision = () => {
+                handleApprovalResponse(requestId, decision.approved, decision.approvalMode || 'once');
+                sendUIMessage(
+                  'approvalResolved',
+                  {
+                    requestId,
+                    approved: decision.approved,
+                  },
+                  tabId,
+                  windowId
+                );
+              };
+
+              if (!decision.approved) {
+                void getOversightRuntimeManager()
+                  .pauseForRejectedAction(windowId, 'approval_rejected')
+                  .then(finalizeOverlayDecision)
+                  .catch((error) => {
+                    console.warn('[approval-debug] Failed to pause runtime for overlay rejection', error);
+                    finalizeOverlayDecision();
+                  });
+                return;
+              }
+
+              finalizeOverlayDecision();
             });
           }
 
-          void handleApprovalRequested({
-            stepId,
-            requestId,
-            tabId,
-            windowId,
-            page,
-            toolName,
-            toolInput,
-            reason,
-            enableAgentFocus: allowPageApprovalOverlay && enableAgentFocus,
-          });
+          if (pendingApprovals.has(requestId)) {
+            void handleApprovalRequested({
+              stepId,
+              requestId,
+              tabId,
+              windowId,
+              page,
+              toolName,
+              toolInput,
+              reason,
+              enableAgentFocus: allowPageApprovalOverlay && enableAgentFocus,
+            });
+          }
 
           chrome.runtime.sendMessage({
             action: 'requestApproval',
@@ -227,7 +313,6 @@ export async function requestApproval(
           }, (_response) => {
             if (chrome.runtime.lastError) {
               console.error('Error sending approval request:', chrome.runtime.lastError);
-              resolve(false);
             }
           });
         })
@@ -245,18 +330,21 @@ export async function requestApproval(
             toolName,
             toolInput,
             thinking: reason,
+            stepDescription: options?.stepDescription,
           });
-          void handleApprovalRequested({
-            stepId,
-            requestId,
-            tabId,
-            windowId,
-            page: getTabState(tabId)?.page,
-            toolName,
-            toolInput,
-            reason,
-            enableAgentFocus: false,
-          });
+          if (pendingApprovals.has(requestId)) {
+            void handleApprovalRequested({
+              stepId,
+              requestId,
+              tabId,
+              windowId,
+              page: getTabState(tabId)?.page,
+              toolName,
+              toolInput,
+              reason,
+              enableAgentFocus: false,
+            });
+          }
           chrome.runtime.sendMessage({
             action: 'requestApproval',
             tabId,
@@ -270,7 +358,6 @@ export async function requestApproval(
           }, (_response) => {
             if (chrome.runtime.lastError) {
               console.error('Error sending approval request:', chrome.runtime.lastError);
-              resolve(false);
             }
           });
         });
@@ -287,19 +374,32 @@ export function handleApprovalResponse(
   requestId: string,
   approved: boolean,
   approvalMode: 'once' | 'series' | 'site' = 'once'
-): void {
+): boolean {
   const pendingApproval = pendingApprovals.get(requestId);
   if (pendingApproval) {
+    if (pendingApproval.timeoutId) {
+      clearTimeout(pendingApproval.timeoutId);
+    }
     if (approved && approvalMode === 'series' && pendingApproval.approvalSeriesKey) {
       autoApprovedSeriesKeys.add(pendingApproval.approvalSeriesKey);
     }
     if (approved && approvalMode === 'site' && pendingApproval.siteApprovalKey) {
       autoApprovedSiteKeys.add(pendingApproval.siteApprovalKey);
     }
+    console.info('[approval-debug] Approval resolved', {
+      requestId,
+      approved,
+      approvalMode,
+      toolName: pendingApproval.toolName,
+      toolInput: pendingApproval.toolInput,
+      waitedMs: Date.now() - pendingApproval.createdAt,
+    });
     pendingApproval.resolve(approved);
     pendingApprovals.delete(requestId);
+    return true;
   } else {
     console.warn(`No pending approval found for requestId: ${requestId}`);
+    return false;
   }
 }
 

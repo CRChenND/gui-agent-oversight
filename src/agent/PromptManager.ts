@@ -172,7 +172,7 @@ Generate a complete, task-level execution plan from start to finish based on the
 Requirements:
 1. Return a practical end-to-end plan, not just the next action.
 2. Use 3-6 concrete execution steps in plain language.
-3. Each step must describe an observable action or decision.
+3. Each step must be one complete but short sentence.
 4. Do not output tool-call XML tags.
 5. Do not output metadata tags like <thinking_summary> or <impact>.
 

@@ -1,4 +1,4 @@
-export type AttentionFocusType = 'selector' | 'coordinates' | 'url' | 'text' | 'none';
+export type AttentionFocusType = 'selector' | 'coordinates' | 'rect' | 'url' | 'text' | 'none';
 export type StepImpact = 'low' | 'medium' | 'high';
 export type AuthorityState = 'agent_autonomous' | 'shared_supervision' | 'human_control';
 export type ExecutionPhase = 'planning' | 'plan_review' | 'execution' | 'posthoc_review' | 'terminated';

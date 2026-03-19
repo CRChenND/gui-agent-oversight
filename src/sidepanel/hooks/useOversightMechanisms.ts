@@ -148,6 +148,7 @@ export function useOversightMechanisms({
         expanded: mechanismSettings[TASK_GRAPH_MECHANISM_ID],
       },
       thinkingByStepId: {},
+      pendingInterventionsByStepId: {},
     }));
   }, [mechanismSettings]);
 
@@ -159,6 +160,7 @@ export function useOversightMechanisms({
         expanded: false,
       },
       thinkingByStepId: {},
+      pendingInterventionsByStepId: {},
     }));
   }, []);
 

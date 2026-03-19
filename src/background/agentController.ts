@@ -941,6 +941,7 @@ export async function executePrompt(
     // Create callbacks for the agent
     let currentToolCall: { stepId: string; toolName: string; toolInput: string } | null = null;
     const latestThinkingByStepId = new Map<string, string>();
+    const toolStartOverlayPromises = new Map<string, Promise<void>>();
     const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     const getThinkingTypingDurationMs = (thinking: string) => {
       const normalized = thinking.trim();
@@ -1135,7 +1136,7 @@ export async function executePrompt(
       },
       onToolStart: (stepId, toolName, toolInput, planStepIndex, stepDescription) => {
         currentToolCall = { stepId, toolName, toolInput };
-        void handleToolStarted({
+        const overlayPromise = handleToolStarted({
           tabId: targetTabId,
           windowId: updatedTabState.windowId,
           page: updatedTabState.page,
@@ -1149,6 +1150,12 @@ export async function executePrompt(
           enableThinkingOverlay: enableFocusThinkingOverlay,
           selectedArchetypeId,
         });
+        toolStartOverlayPromises.set(stepId, overlayPromise);
+        void overlayPromise.finally(() => {
+          if (toolStartOverlayPromises.get(stepId) === overlayPromise) {
+            toolStartOverlayPromises.delete(stepId);
+          }
+        });
 
         if (useStreaming) {
           // Get the window ID for this tab
@@ -1159,6 +1166,13 @@ export async function executePrompt(
         }
       },
       onAfterToolStart: async ({ stepId, thinking }) => {
+        const overlayPromise = toolStartOverlayPromises.get(stepId);
+        if (overlayPromise) {
+          await overlayPromise.catch(() => undefined);
+          if (enableAgentFocus) {
+            await wait(120);
+          }
+        }
         if (!enableStructuralAmplification) return;
         const resolvedThinking = (thinking || latestThinkingByStepId.get(stepId) || '').trim();
         const totalDelayMs = Math.min(

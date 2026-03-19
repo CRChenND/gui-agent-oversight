@@ -6,7 +6,7 @@ import { initializeAgent } from './agentController';
 import { assessPlanProgress } from './agentController';
 import { getAgentStatus, updateApprovedPlanGuidance } from './agentController';
 import { attachToTab, getTabState, getWindowForTab, forceResetPlaywright } from './tabManager';
-import { clearAttentionOverlay } from './attentionTracker';
+import { clearAttentionOverlay, resolveApprovalOverlay } from './attentionTracker';
 import { getOversightRuntimeManager } from '../oversight/runtime/runtimeManager';
 import { BackgroundMessage } from './types';
 import { logWithTimestamp, handleError, sendUIMessage } from './utils';
@@ -64,28 +64,7 @@ export function handleMessage(
       // token usage UI removed
         
       case 'approvalResponse':
-        handleApprovalResponse(message.requestId, message.approved, message.approvalMode || 'once');
-        if (message.tabId) {
-          const page = getTabState(message.tabId)?.page;
-          if (page) {
-            void clearAttentionOverlay(page).catch((error) => {
-              logWithTimestamp(
-                `Failed to clear attention overlay after approval response: ${error instanceof Error ? error.message : String(error)}`,
-                'warn'
-              );
-            });
-          }
-        }
-        sendUIMessage(
-          'approvalResolved',
-          {
-            requestId: message.requestId,
-            approved: message.approved,
-          },
-          message.tabId,
-          message.windowId
-        );
-        sendResponse({ success: true });
+        handleApprovalResponseMessage(message, sendResponse);
         return true;
         
       case 'updateOutput':
@@ -176,6 +155,135 @@ export function handleMessage(
     sendResponse({ success: false, error: errorMessage });
     return false;
   }
+}
+
+function handleApprovalResponseMessage(
+  message: { requestId: string; approved: boolean; approvalMode?: 'once' | 'series' | 'site'; tabId?: number; windowId?: number },
+  sendResponse: (response?: any) => void
+): void {
+  console.info('[approval-debug] Background received approvalResponse', message);
+  const runtimeManager = getOversightRuntimeManager();
+  let resolvedWindowId = message.windowId;
+  if (typeof resolvedWindowId !== 'number' && typeof message.tabId === 'number') {
+    try {
+      resolvedWindowId = getWindowForTab(message.tabId);
+    } catch {
+      resolvedWindowId = undefined;
+    }
+  }
+
+  const clearResolvedApproval = () => {
+    if (!message.tabId) return;
+    const page = getTabState(message.tabId)?.page;
+    if (page) {
+      void resolveApprovalOverlay(page, message.requestId).catch((error) => {
+        logWithTimestamp(
+          `Failed to resolve approval overlay after approval response: ${error instanceof Error ? error.message : String(error)}`,
+          'warn'
+        );
+      });
+    }
+  };
+
+  const finalize = () => {
+    const resolved = handleApprovalResponse(message.requestId, message.approved, message.approvalMode || 'once');
+    if (!resolved) {
+      sendResponse({ success: true, ignored: true });
+      return;
+    }
+
+    console.info('[approval-debug] Background finalizing approvalResponse', {
+      requestId: message.requestId,
+      approved: message.approved,
+      approvalMode: message.approvalMode || 'once',
+      resolvedWindowId,
+    });
+    clearResolvedApproval();
+    if (message.tabId) {
+      const page = getTabState(message.tabId)?.page;
+      if (page) {
+        void clearAttentionOverlay(page).catch((error) => {
+          logWithTimestamp(
+            `Failed to clear attention overlay after approval response: ${error instanceof Error ? error.message : String(error)}`,
+            'warn'
+          );
+        });
+      }
+    }
+    sendUIMessage(
+      'approvalResolved',
+      {
+        requestId: message.requestId,
+        approved: message.approved,
+      },
+      message.tabId,
+      resolvedWindowId
+    );
+    sendResponse({ success: true });
+  };
+
+  if (!message.approved) {
+    const resolved = handleApprovalResponse(message.requestId, message.approved, message.approvalMode || 'once');
+    if (!resolved) {
+      sendResponse({ success: true, ignored: true });
+      return;
+    }
+
+    void runtimeManager
+      .pauseForRejectedAction(resolvedWindowId, 'approval_rejected')
+      .then(() => {
+        clearResolvedApproval();
+        if (message.tabId) {
+          const page = getTabState(message.tabId)?.page;
+          if (page) {
+            void clearAttentionOverlay(page).catch((error) => {
+              logWithTimestamp(
+                `Failed to clear attention overlay after approval response: ${error instanceof Error ? error.message : String(error)}`,
+                'warn'
+              );
+            });
+          }
+        }
+        sendUIMessage(
+          'approvalResolved',
+          {
+            requestId: message.requestId,
+            approved: message.approved,
+          },
+          message.tabId,
+          resolvedWindowId
+        );
+        sendResponse({ success: true });
+      })
+      .catch((error) => {
+        logWithTimestamp(`Failed to pause runtime after rejection: ${String(error)}`, 'warn');
+        clearResolvedApproval();
+        if (message.tabId) {
+          const page = getTabState(message.tabId)?.page;
+          if (page) {
+            void clearAttentionOverlay(page).catch((overlayError) => {
+              logWithTimestamp(
+                `Failed to clear attention overlay after approval response: ${overlayError instanceof Error ? overlayError.message : String(overlayError)}`,
+                'warn'
+              );
+            });
+          }
+        }
+        sendUIMessage(
+          'approvalResolved',
+          {
+            requestId: message.requestId,
+            approved: message.approved,
+          },
+          message.tabId,
+          resolvedWindowId
+        );
+        sendResponse({ success: true });
+      });
+    return;
+  }
+
+  finalize();
 }
 
 /**

@@ -1,7 +1,7 @@
 import type { Page } from "playwright-crx";
 import { wait } from "./utils";
 
-export type AttentionType = "selector" | "coordinates" | "url" | "text" | "none";
+export type AttentionType = "selector" | "coordinates" | "rect" | "url" | "text" | "none";
 
 export interface AttentionTarget {
   type: AttentionType;
@@ -10,6 +10,8 @@ export interface AttentionTarget {
   text?: string;
   x?: number;
   y?: number;
+  width?: number;
+  height?: number;
   thinking?: string;
   approval?: {
     requestId: string;
@@ -21,6 +23,32 @@ export interface AttentionTarget {
     approveSeriesLabel?: string;
     rejectLabel?: string;
   };
+}
+
+function normalizeAttentionTarget(target: AttentionTarget): AttentionTarget {
+  const normalized: AttentionTarget = {
+    type: target.type,
+    label: target.label,
+  };
+
+  if (typeof target.thinking === "string") normalized.thinking = target.thinking;
+  if (target.approval) normalized.approval = target.approval;
+
+  if (target.type === "selector" && typeof target.selector === "string") {
+    normalized.selector = target.selector;
+  } else if (target.type === "text" && typeof target.text === "string") {
+    normalized.text = target.text;
+  } else if (target.type === "coordinates") {
+    normalized.x = target.x;
+    normalized.y = target.y;
+  } else if (target.type === "rect") {
+    normalized.x = target.x;
+    normalized.y = target.y;
+    normalized.width = target.width;
+    normalized.height = target.height;
+  }
+
+  return normalized;
 }
 
 const TOOL_LABELS: Record<string, string> = {
@@ -73,6 +101,36 @@ function looksLikeSelector(input: string): boolean {
   return false;
 }
 
+function extractQuotedText(input: string): string | null {
+  const quoted = input.match(/["']([^"']+)["']/)?.[1]?.trim();
+  return quoted || null;
+}
+
+function deriveTextTargetFromSelector(input: string): string | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+
+  const containsMatch = trimmed.match(/:contains\((["'])(.*?)\1\)/i);
+  if (containsMatch?.[2]?.trim()) {
+    return containsMatch[2].trim();
+  }
+
+  const ariaMatch = trimmed.match(/\[aria-label[*^$|~]?=(["'])(.*?)\1\]/i);
+  if (ariaMatch?.[2]?.trim()) {
+    return ariaMatch[2].trim();
+  }
+
+  const titleMatch = trimmed.match(/\[title[*^$|~]?=(["'])(.*?)\1\]/i);
+  if (titleMatch?.[2]?.trim()) {
+    return titleMatch[2].trim();
+  }
+
+  const quoted = extractQuotedText(trimmed);
+  if (quoted) return quoted;
+
+  return null;
+}
+
 export function inferAttentionTarget(toolName: string, toolInput: string): AttentionTarget {
   const cleanInput = (toolInput || "").trim();
   const toolLabel = TOOL_LABELS[toolName] || `Run ${toolName}`;
@@ -112,6 +170,14 @@ export function inferAttentionTarget(toolName: string, toolInput: string): Atten
 
   if (toolName === "browser_click") {
     if (looksLikeSelector(cleanInput)) {
+      const textTarget = deriveTextTargetFromSelector(cleanInput);
+      if (textTarget) {
+        return {
+          type: "text",
+          text: textTarget,
+          label: `${toolLabel}: ${trimForDisplay(textTarget)}`,
+        };
+      }
       return {
         type: "selector",
         selector: cleanInput,
@@ -177,6 +243,31 @@ export async function clearAttentionOverlay(page: Page): Promise<void> {
   });
 }
 
+export async function resolveApprovalOverlay(page: Page, requestId: string): Promise<void> {
+  await page.evaluate((resolvedRequestId: string) => {
+    const win = window as Window & {
+      __morphResolvedApprovalIds__?: string[];
+      __morphFocusAnchor__?: { approval?: { requestId?: string } };
+    };
+    const existing = new Set(win.__morphResolvedApprovalIds__ || []);
+    existing.add(resolvedRequestId);
+    win.__morphResolvedApprovalIds__ = Array.from(existing).slice(-50);
+
+    if (win.__morphFocusAnchor__?.approval?.requestId === resolvedRequestId) {
+      delete win.__morphFocusAnchor__;
+      const overlay = document.getElementById("__morph_attention_overlay__");
+      if (overlay) {
+        (
+          overlay as HTMLElement & {
+            __morphCleanupAttentionOverlay__?: () => void;
+          }
+        ).__morphCleanupAttentionOverlay__?.();
+        overlay.remove();
+      }
+    }
+  }, requestId);
+}
+
 export async function canAnchorAttentionTargetInViewport(page: Page, target: AttentionTarget): Promise<boolean> {
   if (target.type === "coordinates") {
     return (
@@ -186,6 +277,17 @@ export async function canAnchorAttentionTargetInViewport(page: Page, target: Att
       target.y >= 0 &&
       target.x <= 100000 &&
       target.y <= 100000
+    );
+  }
+
+  if (target.type === "rect") {
+    return (
+      typeof target.x === "number" &&
+      typeof target.y === "number" &&
+      typeof target.width === "number" &&
+      typeof target.height === "number" &&
+      target.width > 0 &&
+      target.height > 0
     );
   }
 
@@ -208,8 +310,13 @@ export async function canAnchorAttentionTargetInViewport(page: Page, target: Att
           return value.replace(/\s+/g, " ").trim().toLowerCase();
         }
 
+        function isInsideMorphOverlay(element: Element | null): boolean {
+          return Boolean(element?.closest("#__morph_attention_overlay__"));
+        }
+
         function isVisibleCandidate(element: Element | null): element is HTMLElement {
           if (!(element instanceof HTMLElement)) return false;
+          if (isInsideMorphOverlay(element)) return false;
           const rect = element.getBoundingClientRect();
           if (rect.width < 4 || rect.height < 4) return false;
           const style = window.getComputedStyle(element);
@@ -229,11 +336,12 @@ export async function canAnchorAttentionTargetInViewport(page: Page, target: Att
         }
 
         function getClickableCandidate(element: HTMLElement): HTMLElement {
-          return (
+          const candidate = (
             element.closest(
               "button, a, label, input, textarea, select, summary, [role='button'], [role='link'], [tabindex]"
             ) as HTMLElement | null
           ) || element;
+          return isInsideMorphOverlay(candidate) ? element : candidate;
         }
 
         const needle = normalizeText(text);
@@ -295,18 +403,27 @@ export async function canAnchorAttentionTargetInViewport(page: Page, target: Att
 }
 
 export async function renderAttentionOverlay(page: Page, target: AttentionTarget): Promise<void> {
-  if (
-    target.type !== "selector" &&
-    target.type !== "coordinates" &&
-    target.type !== "text" &&
-    !target.thinking &&
-    !target.approval
-  ) {
+  const normalizedTarget = normalizeAttentionTarget(target);
+
+  if (normalizedTarget.type === "none" && !normalizedTarget.thinking && !normalizedTarget.approval) {
     await clearAttentionOverlay(page);
     return;
   }
 
   await page.evaluate((payload: AttentionTarget) => {
+    if (payload.approval?.requestId) {
+      const resolvedIds = new Set(
+        (
+          window as Window & {
+            __morphResolvedApprovalIds__?: string[];
+          }
+        ).__morphResolvedApprovalIds__ || []
+      );
+      if (resolvedIds.has(payload.approval.requestId)) {
+        return;
+      }
+    }
+
     (
       window as Window & {
         __morphFocusAnchor__?: AttentionTarget;
@@ -609,8 +726,13 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
         return value.replace(/\s+/g, " ").trim().toLowerCase();
       }
 
+      function isInsideMorphOverlay(element: Element | null): boolean {
+        return Boolean(element?.closest("#__morph_attention_overlay__"));
+      }
+
       function isVisibleCandidate(element: Element | null): element is HTMLElement {
         if (!(element instanceof HTMLElement)) return false;
+        if (isInsideMorphOverlay(element)) return false;
         const rect = element.getBoundingClientRect();
         if (rect.width < 4 || rect.height < 4) return false;
         const style = window.getComputedStyle(element);
@@ -630,11 +752,12 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
       }
 
       function getClickableCandidate(element: HTMLElement): HTMLElement {
-        return (
+        const candidate = (
           element.closest(
             "button, a, label, input, textarea, select, summary, [role='button'], [role='link'], [tabindex]"
           ) as HTMLElement | null
         ) || element;
+        return isInsideMorphOverlay(candidate) ? element : candidate;
       }
 
       const needle = normalizeText(text);
@@ -720,6 +843,15 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
         return;
       }
 
+      if (payload.type === "rect") {
+        const x = Math.max(0, Number(payload.x) || 0);
+        const y = Math.max(0, Number(payload.y) || 0);
+        const width = Math.max(8, Number(payload.width) || 0);
+        const height = Math.max(8, Number(payload.height) || 0);
+        applyRect({ left: x, top: y, width, height });
+        return;
+      }
+
       showFallbackCards();
     }
 
@@ -778,7 +910,38 @@ export async function renderAttentionOverlay(page: Page, target: AttentionTarget
         }
       }, 6000);
     }
-  }, target);
+  }, normalizedTarget);
+}
+
+export async function upgradeAttentionOverlayTarget(
+  page: Page,
+  target: AttentionTarget
+): Promise<void> {
+  const current = (await page
+    .evaluate(() => {
+      return (
+        window as Window & {
+          __morphFocusAnchor__?: AttentionTarget;
+        }
+      ).__morphFocusAnchor__ || null;
+    })
+    .catch(() => null)) as AttentionTarget | null;
+
+  const normalizedTarget = normalizeAttentionTarget(target);
+  const merged = normalizeAttentionTarget({
+    ...(current || {}),
+    ...normalizedTarget,
+    thinking:
+      normalizedTarget.thinking !== undefined
+        ? normalizedTarget.thinking
+        : current?.thinking,
+    approval:
+      normalizedTarget.approval !== undefined
+        ? normalizedTarget.approval
+        : current?.approval,
+  } as AttentionTarget);
+
+  await renderAttentionOverlay(page, merged);
 }
 
 export async function waitForOverlayApprovalDecision(
@@ -816,7 +979,9 @@ export async function waitForOverlayApprovalDecision(
         return payload;
       }
     } catch {
-      return null;
+      // Page/DOM state can be briefly unstable around overlays and navigation.
+      // Keep polling instead of treating one transient evaluation failure as
+      // a lost approval decision.
     }
 
     await wait(200);

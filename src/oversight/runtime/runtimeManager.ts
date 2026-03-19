@@ -823,6 +823,32 @@ class OversightRuntimeManager {
     await this.handleBehavioralSignal({ windowId, signal: 'pause_by_user', source: 'runtime' });
   }
 
+  async pauseForRejectedAction(
+    windowId: number | undefined,
+    reason:
+      | 'approval_rejected'
+      | 'plan_step_rejected'
+      | 'post_action_review_rejected'
+      | 'action_dismissed'
+  ): Promise<void> {
+    const key = this.runtimeKey(windowId);
+    const previous = this.authorityManager.getContext(key).authorityState;
+    if (this.softPauseContexts.get(key)?.active) {
+      await this.resolveSoftPauseDecision(windowId, 'pause');
+      return;
+    }
+
+    await this.setExecutionState(windowId, 'paused_by_user', reason, 'user');
+    await this.transitionAuthority(windowId, 'human_control', reason);
+    await this.logTelemetry('human_intervention', {
+      kind: 'authority_takeover',
+      previous,
+      timestamp: Date.now(),
+      reason,
+    });
+    await this.handleBehavioralSignal({ windowId, signal: 'takeover', source: 'runtime' });
+  }
+
   async resumeByUser(windowId: number | undefined): Promise<void> {
     const key = this.runtimeKey(windowId);
     if (this.softPauseContexts.get(key)?.active) {

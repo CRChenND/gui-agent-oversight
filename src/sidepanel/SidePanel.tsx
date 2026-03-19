@@ -141,9 +141,13 @@ export function SidePanel() {
   const [softPauseNow, setSoftPauseNow] = useState(Date.now());
   const [thinkingTooltipRect, setThinkingTooltipRect] = useState<{ top: number; bottom: number } | null>(null);
   const [approvalOverlayBottomPx, setApprovalOverlayBottomPx] = useState<number | null>(null);
+  const [isAgentStatusExpanded, setIsAgentStatusExpanded] = useState(false);
   const lastApprovalPromptTsRef = useRef(0);
   const approvalPromptWindowRef = useRef<number[]>([]);
   const resolvedApprovalIdsRef = useRef<Set<string>>(new Set());
+  const approvalEnqueueTimeoutsRef = useRef<Map<string, number>>(new Map());
+  const approvalTimeoutsRef = useRef<Map<string, number>>(new Map());
+  const approvalDecisionInFlightRef = useRef<Set<string>>(new Set());
   const approvalOverlayRef = useRef<HTMLDivElement>(null);
 
   // State to track if any LLM providers are configured
@@ -237,6 +241,7 @@ export function SidePanel() {
 
   const {
     taskNodes,
+    agentFocus,
     handleOversightEvent,
     logHumanTelemetry,
     resetRunState,
@@ -258,6 +263,68 @@ export function SidePanel() {
     hasStartedCurrentTask &&
     runtimeStatus.executionState === 'running' &&
     (isProcessing || isStreaming || tabStatus === 'running');
+
+  const toUserFacingStatus = useCallback((text: string): string => {
+    const normalized = text.replace(/\s+/g, ' ').trim();
+    if (!normalized) return '';
+
+    const softened = normalized
+      .replace(/^i(?:'m| am)\s+/i, '')
+      .replace(/^i\s+(?:will|want to|need to|plan to)\s+/i, '')
+      .replace(/^the agent\s+(?:will|wants to|needs to|is going to)\s+/i, '')
+      .replace(/^next step i plan to do:\s*/i, '')
+      .replace(/^why i choose a over b:\s*/i, '')
+      .replace(/^alternative:\s*/i, '')
+      .replace(/\bcurrent page\b/gi, 'the page')
+      .replace(/\bpage state\b/gi, 'what is on the page')
+      .replace(/\bfocus\b/gi, 'page area')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/[.;:,!?]+$/g, '');
+
+    if (!softened) return '';
+
+    const phrase = `${softened.charAt(0).toLowerCase()}${softened.slice(1)}`;
+    const firstWord = phrase.split(/\s+/)[0] || '';
+    const alreadyProgressive = /ing$/i.test(firstWord);
+    const looksLikeState =
+      /^(ready|idle|stuck|done|finished|paused|waiting|trying|about|unable|focused)\b/i.test(phrase);
+
+    if (alreadyProgressive || looksLikeState) {
+      return `Right now the agent is ${phrase}.`;
+    }
+
+    return `Right now the agent is working to ${phrase}.`;
+  }, []);
+
+  const summarizeLiveAgentStatus = useCallback((): string => {
+    if (runtimeStatus.softPause?.active) {
+      return `Right now the agent is waiting ${Math.max(0, Math.ceil((runtimeStatus.softPause.endsAt - softPauseNow) / 1000))}s before continuing, unless you step in.`;
+    }
+
+    const primary = (agentFocus.thinking || '').replace(/\s+/g, ' ').trim();
+    if (primary) {
+      return toUserFacingStatus(primary);
+    }
+
+    const focus = (agentFocus.focusLabel || '').replace(/\s+/g, ' ').trim();
+    if (focus && focus !== 'Waiting for agent action') {
+      return `Right now the agent is working with ${focus}.`;
+    }
+
+    const activeNode = [...taskNodes].reverse().find((node) => node.status === 'active');
+    if (activeNode?.thinking?.trim()) {
+      return toUserFacingStatus(activeNode.thinking);
+    }
+    if (activeNode?.focusLabel?.trim()) {
+      return `Right now the agent is working with ${activeNode.focusLabel.replace(/\s+/g, ' ').trim()}.`;
+    }
+
+    return 'Right now the agent is still working on your request.';
+  }, [agentFocus.focusLabel, agentFocus.thinking, runtimeStatus.softPause?.active, runtimeStatus.softPause?.endsAt, softPauseNow, taskNodes, toUserFacingStatus]);
+  useEffect(() => {
+    setIsAgentStatusExpanded(false);
+  }, [agentFocus.focusLabel, agentFocus.thinking, runtimeStatus.softPause?.active, runtimeStatus.softPause?.endsAt, taskNodes]);
   const monitoringParams = mechanismParameterSettings[MONITORING_MECHANISM_ID] || {};
   const interventionParams = mechanismParameterSettings[INTERVENTION_GATE_MECHANISM_ID] || {};
   const taskGraphParams = mechanismParameterSettings[TASK_GRAPH_MECHANISM_ID] || {};
@@ -317,33 +384,6 @@ export function SidePanel() {
   const interruptTopK = Math.max(1, Number(interventionParams.interruptTopK || 999));
   const approvedPlanSteps = approvedPlan?.steps || [];
 
-  const handleDownloadTaskGraph = useCallback(() => {
-    if (taskNodes.length === 0) return;
-
-    const exportData = {
-      exportedAt: Date.now(),
-      stepCount: taskNodes.length,
-      steps: taskNodes.map((node, index) => ({
-        index: index + 1,
-        stepId: node.stepId,
-        toolName: node.toolName,
-        focusLabel: node.focusLabel,
-        thinking: node.thinking || '',
-        status: node.status,
-        timestamp: node.timestamp,
-      })),
-    };
-
-    const json = JSON.stringify(exportData, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `task-graph-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-  }, [taskNodes]);
-
   // Heartbeat interval for checking agent status
   useEffect(() => {
     if (!isProcessing) return;
@@ -362,7 +402,24 @@ export function SidePanel() {
 
   // Handlers for approval requests
   const handleApprove = (requestId: string) => {
+    approvalDecisionInFlightRef.current.add(requestId);
+    const enqueueTimeout = approvalEnqueueTimeoutsRef.current.get(requestId);
+    if (typeof enqueueTimeout === 'number') {
+      window.clearTimeout(enqueueTimeout);
+      approvalEnqueueTimeoutsRef.current.delete(requestId);
+    }
+    const pendingTimeout = approvalTimeoutsRef.current.get(requestId);
+    if (typeof pendingTimeout === 'number') {
+      window.clearTimeout(pendingTimeout);
+      approvalTimeoutsRef.current.delete(requestId);
+    }
     const request = approvalRequests.find((req) => req.requestId === requestId);
+    console.info('[approval-debug] UI approve button clicked', {
+      requestId,
+      approvalVariant: request?.approvalVariant,
+      toolName: request?.toolName,
+      toolInput: request?.toolInput,
+    });
     const stepId = request?.stepId || requestId;
     void logHumanTelemetry('human_intervention', {
       action: 'approval_accepted',
@@ -390,15 +447,38 @@ export function SidePanel() {
       decision: 'approve',
     });
 
-    // Send approval to the background script
-    approveRequest(requestId, 'once');
-    // Remove the request from the list
-    setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
-    setHaltReason(null);
+    void approveRequest(requestId, 'once')
+      .then(() => {
+        setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
+        setHaltReason(null);
+      })
+      .catch((error) => {
+        addSystemMessage(`❌ Failed to send approval: ${error instanceof Error ? error.message : String(error)}`);
+      })
+      .finally(() => {
+        approvalDecisionInFlightRef.current.delete(requestId);
+      });
   };
 
   const handleApproveSeries = (requestId: string) => {
+    approvalDecisionInFlightRef.current.add(requestId);
+    const enqueueTimeout = approvalEnqueueTimeoutsRef.current.get(requestId);
+    if (typeof enqueueTimeout === 'number') {
+      window.clearTimeout(enqueueTimeout);
+      approvalEnqueueTimeoutsRef.current.delete(requestId);
+    }
+    const pendingTimeout = approvalTimeoutsRef.current.get(requestId);
+    if (typeof pendingTimeout === 'number') {
+      window.clearTimeout(pendingTimeout);
+      approvalTimeoutsRef.current.delete(requestId);
+    }
     const request = approvalRequests.find((req) => req.requestId === requestId);
+    console.info('[approval-debug] UI approve-similar button clicked', {
+      requestId,
+      approvalVariant: request?.approvalVariant,
+      toolName: request?.toolName,
+      toolInput: request?.toolInput,
+    });
     const stepId = request?.stepId || requestId;
     void logHumanTelemetry('human_intervention', {
       action: 'approval_accepted',
@@ -421,13 +501,38 @@ export function SidePanel() {
       decision: 'approve',
     });
 
-    approveRequest(requestId, 'series');
-    setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
-    setHaltReason(null);
+    void approveRequest(requestId, 'series')
+      .then(() => {
+        setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
+        setHaltReason(null);
+      })
+      .catch((error) => {
+        addSystemMessage(`❌ Failed to send approval: ${error instanceof Error ? error.message : String(error)}`);
+      })
+      .finally(() => {
+        approvalDecisionInFlightRef.current.delete(requestId);
+      });
   };
 
   const handleApproveSite = (requestId: string) => {
+    approvalDecisionInFlightRef.current.add(requestId);
+    const enqueueTimeout = approvalEnqueueTimeoutsRef.current.get(requestId);
+    if (typeof enqueueTimeout === 'number') {
+      window.clearTimeout(enqueueTimeout);
+      approvalEnqueueTimeoutsRef.current.delete(requestId);
+    }
+    const pendingTimeout = approvalTimeoutsRef.current.get(requestId);
+    if (typeof pendingTimeout === 'number') {
+      window.clearTimeout(pendingTimeout);
+      approvalTimeoutsRef.current.delete(requestId);
+    }
     const request = approvalRequests.find((req) => req.requestId === requestId);
+    console.info('[approval-debug] UI approve-site button clicked', {
+      requestId,
+      approvalVariant: request?.approvalVariant,
+      toolName: request?.toolName,
+      toolInput: request?.toolInput,
+    });
     const stepId = request?.stepId || requestId;
     void logHumanTelemetry('human_intervention', {
       action: 'approval_accepted',
@@ -449,13 +554,38 @@ export function SidePanel() {
       stepId,
       decision: 'approve',
     });
-    approveRequest(requestId, 'site');
-    setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
-    setHaltReason(null);
+    void approveRequest(requestId, 'site')
+      .then(() => {
+        setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
+        setHaltReason(null);
+      })
+      .catch((error) => {
+        addSystemMessage(`❌ Failed to send approval: ${error instanceof Error ? error.message : String(error)}`);
+      })
+      .finally(() => {
+        approvalDecisionInFlightRef.current.delete(requestId);
+      });
   };
 
   const handleReject = (requestId: string) => {
+    approvalDecisionInFlightRef.current.add(requestId);
+    const enqueueTimeout = approvalEnqueueTimeoutsRef.current.get(requestId);
+    if (typeof enqueueTimeout === 'number') {
+      window.clearTimeout(enqueueTimeout);
+      approvalEnqueueTimeoutsRef.current.delete(requestId);
+    }
+    const pendingTimeout = approvalTimeoutsRef.current.get(requestId);
+    if (typeof pendingTimeout === 'number') {
+      window.clearTimeout(pendingTimeout);
+      approvalTimeoutsRef.current.delete(requestId);
+    }
     const request = approvalRequests.find((req) => req.requestId === requestId);
+    console.info('[approval-debug] UI reject button clicked', {
+      requestId,
+      approvalVariant: request?.approvalVariant,
+      toolName: request?.toolName,
+      toolInput: request?.toolInput,
+    });
     const stepId = request?.stepId || requestId;
     void logHumanTelemetry('human_intervention', {
       action: 'approval_rejected',
@@ -482,10 +612,17 @@ export function SidePanel() {
       decision: 'deny',
     });
 
-    // Send rejection to the background script
-    rejectRequest(requestId);
-    // Remove the request from the list
-    setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
+    void rejectRequest(requestId)
+      .then(() => {
+        setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
+        addSystemMessage('⏸️ Agent paused. You can take over the page now, then resume the agent when ready.');
+      })
+      .catch((error) => {
+        addSystemMessage(`❌ Failed to send rejection: ${error instanceof Error ? error.message : String(error)}`);
+      })
+      .finally(() => {
+        approvalDecisionInFlightRef.current.delete(requestId);
+      });
   };
 
   const sendApprovalDecision = useCallback((requestId: string, approved: boolean, approvalMode: 'once' | 'series' | 'site' = 'once') => {
@@ -500,6 +637,16 @@ export function SidePanel() {
   }, [tabId, windowId]);
 
   const handleDismissWarning = (requestId: string) => {
+    const enqueueTimeout = approvalEnqueueTimeoutsRef.current.get(requestId);
+    if (typeof enqueueTimeout === 'number') {
+      window.clearTimeout(enqueueTimeout);
+      approvalEnqueueTimeoutsRef.current.delete(requestId);
+    }
+    const pendingTimeout = approvalTimeoutsRef.current.get(requestId);
+    if (typeof pendingTimeout === 'number') {
+      window.clearTimeout(pendingTimeout);
+      approvalTimeoutsRef.current.delete(requestId);
+    }
     const request = approvalRequests.find((req) => req.requestId === requestId);
     const stepId = request?.stepId || requestId;
     void logHumanTelemetry('human_monitoring', {
@@ -530,10 +677,22 @@ export function SidePanel() {
     // Dismissing a pending approval also rejects it to avoid blocking execution.
     sendApprovalDecision(requestId, false);
     setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
+    addSystemMessage('⏸️ Agent paused. You can inspect or edit the page, then resume when ready.');
   };
 
   const handleApprovalResolved = useCallback((payload: { requestId: string; approved: boolean }) => {
     resolvedApprovalIdsRef.current.add(payload.requestId);
+    approvalDecisionInFlightRef.current.delete(payload.requestId);
+    const enqueueTimeout = approvalEnqueueTimeoutsRef.current.get(payload.requestId);
+    if (typeof enqueueTimeout === 'number') {
+      window.clearTimeout(enqueueTimeout);
+      approvalEnqueueTimeoutsRef.current.delete(payload.requestId);
+    }
+    const pendingTimeout = approvalTimeoutsRef.current.get(payload.requestId);
+    if (typeof pendingTimeout === 'number') {
+      window.clearTimeout(pendingTimeout);
+      approvalTimeoutsRef.current.delete(payload.requestId);
+    }
 
     setApprovalRequests((prev) => {
       const request = prev.find((item) => item.requestId === payload.requestId);
@@ -663,8 +822,12 @@ export function SidePanel() {
         return;
       }
 
-      window.setTimeout(() => {
+      const enqueueTimeoutId = window.setTimeout(() => {
+        approvalEnqueueTimeoutsRef.current.delete(request.requestId);
         if (resolvedApprovalIdsRef.current.has(request.requestId)) {
+          return;
+        }
+        if (approvalDecisionInFlightRef.current.has(request.requestId)) {
           return;
         }
         setApprovalRequests(prev => [...prev, request]);
@@ -677,17 +840,23 @@ export function SidePanel() {
         }
 
         if (persistenceMs > 0 && !isStructuralAmplificationArchetype && !isSupervisoryPrompt) {
-          window.setTimeout(() => {
+          const timeoutId = window.setTimeout(() => {
             setApprovalRequests((prev) => {
+              if (approvalDecisionInFlightRef.current.has(request.requestId)) {
+                return prev;
+              }
               const exists = prev.some((item) => item.requestId === request.requestId);
               if (!exists) return prev;
+              approvalTimeoutsRef.current.delete(request.requestId);
               sendApprovalDecision(request.requestId, false);
               addSystemMessage(`⌛ Auto-rejected expired approval: ${request.requestId}`);
               return prev.filter((item) => item.requestId !== request.requestId);
             });
           }, persistenceMs);
+          approvalTimeoutsRef.current.set(request.requestId, timeoutId);
         }
       }, feedbackLatencyMs);
+      approvalEnqueueTimeoutsRef.current.set(request.requestId, enqueueTimeoutId);
     },
     onApprovalResolved: handleApprovalResolved,
     setTabTitle,
@@ -967,6 +1136,11 @@ export function SidePanel() {
   };
 
   const clearConversationState = useCallback(() => {
+    approvalEnqueueTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+    approvalEnqueueTimeoutsRef.current.clear();
+    approvalTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+    approvalTimeoutsRef.current.clear();
+    approvalDecisionInFlightRef.current.clear();
     clearMessages();
     clearHistory();
     clearOversightState();
@@ -1289,25 +1463,27 @@ export function SidePanel() {
       {hasConfiguredProviders ? (
         <>
           <div className="morph-surface flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-hidden bg-base-100">
-            <OutputHeader
-              onOpenOptions={navigateToOptions}
-              onClearHistory={handleClearHistory}
-              onDownloadTaskGraph={handleDownloadTaskGraph}
-              canDownloadTaskGraph={taskNodes.length > 0}
-              isProcessing={isProcessing}
-            />
             <div className="border-b border-base-300 px-3 py-3">
-              <div className="mb-1 flex items-center gap-2">
-                <label className="block text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/50">
-                  Oversight Regime
-                </label>
-                {isAgentActivelyWorking ? (
-                  <span
-                    className="inline-block h-2.5 w-2.5 animate-spin rounded-full border border-primary/25 border-t-primary"
-                    aria-label="Agent is working"
-                    title="Agent is working"
-                  />
-                ) : null}
+              <div className="mb-2 flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <label className="block text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/50">
+                      Oversight Regime
+                    </label>
+                    {isAgentActivelyWorking ? (
+                      <span
+                        className="inline-block h-2.5 w-2.5 animate-spin rounded-full border border-primary/25 border-t-primary"
+                        aria-label="Agent is working"
+                        title="Agent is working"
+                      />
+                    ) : null}
+                  </div>
+                </div>
+                <OutputHeader
+                  onOpenOptions={navigateToOptions}
+                  onClearHistory={handleClearHistory}
+                  isProcessing={isProcessing}
+                />
               </div>
               <div className="flex items-start gap-3">
                 <select
@@ -1324,9 +1500,27 @@ export function SidePanel() {
                 </select>
               </div>
               {isAgentActivelyWorking ? (
-                <div className="mt-1 text-sm text-base-content/55">
-                  Agent is currently working on your task. Please be patient.
-                </div>
+                <button
+                  type="button"
+                  className="mt-1 block w-full text-left text-sm text-base-content/60"
+                  onClick={() => setIsAgentStatusExpanded((prev) => !prev)}
+                  title={isAgentStatusExpanded ? 'Collapse status' : 'Expand status'}
+                >
+                  <span
+                    style={
+                      isAgentStatusExpanded
+                        ? undefined
+                        : {
+                            display: '-webkit-box',
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden',
+                          }
+                    }
+                  >
+                    {summarizeLiveAgentStatus()}
+                  </span>
+                </button>
               ) : null}
               {isApplyingArchetype ? (
                 <div className="mt-1 text-xs text-base-content/60">

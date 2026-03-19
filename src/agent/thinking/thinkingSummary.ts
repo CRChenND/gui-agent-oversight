@@ -91,6 +91,75 @@ function inferUncertainty(rationale: string | undefined): AgentThinkingSummary['
   return 'low';
 }
 
+function extractQuotedText(value: string): string | undefined {
+  return value.match(/["']([^"']+)["']/)?.[1]?.trim() || undefined;
+}
+
+function deriveGroundedClickDescription(toolInput: string): string | undefined {
+  const trimmed = toolInput.trim();
+  if (!trimmed) return undefined;
+
+  const containsMatch = trimmed.match(/:contains\((["'])(.*?)\1\)/i)?.[2]?.trim();
+  if (containsMatch) {
+    return `I am selecting the visible "${containsMatch}" target on the page.`;
+  }
+
+  const ariaMatch = trimmed.match(/\[aria-label[*^$|~]?=(["'])(.*?)\1\]/i)?.[2]?.trim();
+  if (ariaMatch) {
+    return `I am selecting the control labeled "${ariaMatch}".`;
+  }
+
+  const titleMatch = trimmed.match(/\[title[*^$|~]?=(["'])(.*?)\1\]/i)?.[2]?.trim();
+  if (titleMatch) {
+    return `I am selecting the control titled "${titleMatch}".`;
+  }
+
+  const quoted = extractQuotedText(trimmed);
+  if (quoted) {
+    return `I am selecting the visible "${quoted}" target on the page.`;
+  }
+
+  if (/\[href[*^$|~]?=/i.test(trimmed)) {
+    return 'I am selecting the visible ticket-related link currently matched on the page.';
+  }
+
+  if (/[#.[\]>:=]/.test(trimmed)) {
+    return 'I am selecting the visible page target currently matched by the click instruction.';
+  }
+
+  return undefined;
+}
+
+function groundRationaleForTool(args: {
+  toolName?: string;
+  toolInput?: string;
+  rationale?: string;
+}): string | undefined {
+  const toolName = args.toolName?.trim().toLowerCase();
+  const toolInput = args.toolInput?.trim() || '';
+  const rationale = args.rationale?.trim();
+
+  if (toolName !== 'browser_click') {
+    return rationale;
+  }
+
+  const groundedClickDescription = deriveGroundedClickDescription(toolInput);
+  if (!groundedClickDescription) {
+    return rationale;
+  }
+
+  const ambiguousSelectorClick =
+    /[#.[\]>:=]/.test(toolInput) &&
+    !/:contains\((["']).*?\1\)/i.test(toolInput) &&
+    !/\[(?:aria-label|title)[*^$|~]?=(["']).*?\1\]/i.test(toolInput);
+
+  if (ambiguousSelectorClick) {
+    return groundedClickDescription;
+  }
+
+  return rationale || groundedClickDescription;
+}
+
 export function buildThinkingSummary(args: {
   goal: string;
   toolName?: string;
@@ -100,7 +169,12 @@ export function buildThinkingSummary(args: {
 }): AgentThinkingSummary {
   const fromModel = args.modelThinkingSummary?.trim();
   const rawRationale = fromModel || extractRationale(args.accumulatedText ?? '');
-  const rationale = rawRationale ? rewriteForUsers(rawRationale) : undefined;
+  const rewrittenRationale = rawRationale ? rewriteForUsers(rawRationale) : undefined;
+  const rationale = groundRationaleForTool({
+    toolName: args.toolName,
+    toolInput: args.toolInput,
+    rationale: rewrittenRationale,
+  });
   const plan = extractPlan(rawRationale, args.accumulatedText);
   const riskFlags: string[] = [];
 

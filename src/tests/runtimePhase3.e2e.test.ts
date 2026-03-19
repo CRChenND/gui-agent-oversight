@@ -1,5 +1,7 @@
 import { getOversightRuntimeManager } from '../oversight/runtime/runtimeManager';
 import { OversightTelemetryLogger } from '../oversight/telemetry/logger';
+import { buildApprovalDecisionCopy, buildPlanStepApprovalCopy } from '../background/oversightManager';
+import { handleMessage } from '../background/messageHandler';
 import { assert, assertEqual } from './testUtils';
 
 type StorageRecord = Record<string, unknown>;
@@ -178,6 +180,99 @@ async function testTakeoverReleaseBlocking(): Promise<void> {
   const snapshot = runtimeManager.getSnapshot(runtimeManager.runtimeKey(windowId));
   assertEqual(snapshot.authorityState, 'agent_autonomous', 'Release should return authority to autonomous');
   assertEqual(snapshot.executionState, 'running', 'Release should unfreeze execution');
+}
+
+async function testRejectedActionPausesForTakeover(): Promise<void> {
+  installChromeMock();
+  const runtimeManager = getOversightRuntimeManager();
+  const windowId = 9104;
+  const tabId = 94;
+
+  runtimeManager.initializeRun({
+    tabId,
+    windowId,
+    controlMode: 'risky_only',
+    gatePolicy: 'impact',
+  });
+  await runtimeManager.setExecutionPhase(windowId, 'execution', 'test_setup');
+  await runtimeManager.setExecutionState(windowId, 'running', 'test_setup', 'system');
+  await runtimeManager.transitionAuthority(windowId, 'shared_supervision', 'test_setup');
+
+  await runtimeManager.pauseForRejectedAction(windowId, 'approval_rejected');
+  const paused = runtimeManager.getSnapshot(runtimeManager.runtimeKey(windowId));
+  assertEqual(paused.executionState, 'paused_by_user', 'Reject should pause execution instead of cancelling');
+  assertEqual(paused.authorityState, 'human_control', 'Reject should hand authority to the user');
+
+  const blocked = runtimeManager.waitUntilExecutable(windowId);
+  const race = await Promise.race([
+    blocked.then(() => 'resolved'),
+    delay(40).then(() => 'timeout'),
+  ]);
+  assertEqual(race, 'timeout', 'Rejected action should block execution until resume');
+
+  await runtimeManager.resumeByUser(windowId);
+  const resumed = await blocked;
+  assert(resumed.allowed, 'Execution should resume after user hands control back');
+}
+
+async function testStaleApprovalRejectDoesNotPauseRuntime(): Promise<void> {
+  installChromeMock();
+  const runtimeManager = getOversightRuntimeManager();
+  const windowId = 9106;
+  const tabId = 96;
+
+  runtimeManager.initializeRun({
+    tabId,
+    windowId,
+    controlMode: 'risky_only',
+    gatePolicy: 'impact',
+  });
+  await runtimeManager.setExecutionPhase(windowId, 'execution', 'test_setup');
+  await runtimeManager.setExecutionState(windowId, 'running', 'test_setup', 'system');
+  await runtimeManager.transitionAuthority(windowId, 'shared_supervision', 'test_setup');
+
+  let responsePayload: Record<string, unknown> | undefined;
+  handleMessage(
+    {
+      action: 'approvalResponse',
+      requestId: 'missing_approval_request',
+      approved: false,
+      tabId,
+      windowId,
+    },
+    {} as chrome.runtime.MessageSender,
+    (response) => {
+      responsePayload = response;
+    }
+  );
+
+  await delay(10);
+
+  const snapshot = runtimeManager.getSnapshot(runtimeManager.runtimeKey(windowId));
+  assertEqual(snapshot.executionState, 'running', 'Stale rejection must not pause execution');
+  assertEqual(snapshot.authorityState, 'shared_supervision', 'Stale rejection must not transfer authority');
+  assertEqual(responsePayload?.ignored, true, 'Stale rejection should be ignored explicitly');
+}
+
+function testApprovalCopyIsShortAndContextual(): void {
+  const approvalCopy = buildApprovalDecisionCopy({
+    actionTitle: 'Enter information',
+    toolName: 'browser_fill',
+    toolInput: '"Credit card number"',
+    stepDescription: 'Enter the payment details for checkout.',
+  });
+  assert(
+    approvalCopy.includes('place sensitive data into Credit card number') &&
+      !approvalCopy.includes('Enter the payment details for checkout.') &&
+      approvalCopy.includes('Reject to pause the agent so you can take over.'),
+    'Approval copy should jump directly to the concrete risk guidance and explain reject behavior'
+  );
+
+  const planCopy = buildPlanStepApprovalCopy(2, 'Review the shipping options.');
+  assert(
+    planCopy.includes('step 2') && planCopy.includes('Reject to pause the agent so you can take over.'),
+    'Plan-step approval copy should be short and explain reject behavior'
+  );
 }
 
 async function testRhythmMetricsExport(): Promise<void> {
@@ -413,6 +508,9 @@ export async function runRuntimePhase3E2ETests(): Promise<void> {
   await testPlanReviewBlocking();
   await testPauseResumeBlocking();
   await testTakeoverReleaseBlocking();
+  await testRejectedActionPausesForTakeover();
+  await testStaleApprovalRejectDoesNotPauseRuntime();
+  testApprovalCopyIsShortAndContextual();
   await testRhythmMetricsExport();
   await testAdaptiveEscalationAuthorityTransition();
   await testBehavioralRegimeEscalationAndResolution();
