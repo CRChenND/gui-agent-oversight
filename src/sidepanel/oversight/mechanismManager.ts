@@ -160,6 +160,24 @@ function buildInterventionFromRiskSignal(
   };
 }
 
+function buildInterventionFromStepContext(
+  event: StepContextEvent,
+  adaptiveLevel: OversightLevel
+): NonNullable<TaskNode['intervention']> {
+  return {
+    impact: event.impact,
+    impactSource: 'heuristic',
+    requiresApproval: false,
+    llmRequiresApproval: false,
+    promptedByGate: false,
+    gatePolicy: 'impact',
+    adaptiveGateLevel: adaptiveLevel,
+    reversible: event.reversible,
+    category: event.category,
+    amplifiedRisk: null,
+  };
+}
+
 function transitionOversightLevel(
   state: OversightUiState,
   to: OversightLevel,
@@ -258,6 +276,39 @@ const taskGraphMechanism: OversightMechanism = {
           ...state.thinkingByStepId,
           [event.stepId]: event.thinking,
         },
+      };
+    }
+
+    if (event.kind === 'step_context') {
+      const contextualIntervention = buildInterventionFromStepContext(event, state.adaptiveState.currentLevel);
+      const nextNodes = state.taskGraph.nodes.map((node) => {
+        if (node.stepId !== event.stepId) return node;
+        return {
+          ...node,
+          intervention: {
+            ...contextualIntervention,
+            ...(node.intervention || {}),
+          },
+        };
+      });
+
+      const hasNode = nextNodes.some((node) => node.stepId === event.stepId);
+
+      return {
+        ...state,
+        taskGraph: {
+          ...state.taskGraph,
+          nodes: nextNodes,
+        },
+        pendingInterventionsByStepId: hasNode
+          ? state.pendingInterventionsByStepId
+          : {
+              ...state.pendingInterventionsByStepId,
+              [event.stepId]: {
+                ...contextualIntervention,
+                ...(state.pendingInterventionsByStepId[event.stepId] || {}),
+              },
+            },
       };
     }
 
