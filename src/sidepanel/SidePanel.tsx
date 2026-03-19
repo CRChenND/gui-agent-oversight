@@ -128,6 +128,8 @@ export function SidePanel() {
   const [draggedRemainingStepIndex, setDraggedRemainingStepIndex] = useState<number | null>(null);
   const [editingPlanStepIndex, setEditingPlanStepIndex] = useState<number | null>(null);
   const [editingRemainingStepIndex, setEditingRemainingStepIndex] = useState<number | null>(null);
+  const [supervisoryPlanStepOriginals, setSupervisoryPlanStepOriginals] = useState<Record<string, string>>({});
+  const [planStepUpdateRequestId, setPlanStepUpdateRequestId] = useState<string | null>(null);
   const [supervisoryActualSteps, setSupervisoryActualSteps] = useState<Array<{
     stepId: string;
     toolName: string;
@@ -207,7 +209,7 @@ export function SidePanel() {
     outputRef,
     addMessage,
     addUserMessage,
-    addSystemMessage,
+    addSystemMessage: addRawSystemMessage,
     updateStreamingChunk,
     finalizeStreamingSegment,
     startNewSegment,
@@ -383,6 +385,39 @@ export function SidePanel() {
   const interruptCooldownMs = Math.max(0, Number(interventionParams.interruptCooldownMs || 0));
   const interruptTopK = Math.max(1, Number(interventionParams.interruptTopK || 999));
   const approvedPlanSteps = approvedPlan?.steps || [];
+  const shouldHideConversationSystemMessage = useCallback((text: string): boolean => {
+    const normalized = text.replace(/\s+/g, ' ').trim();
+    if (/^[⚠️✅❌⏸️✏️🧭🔄🗺️ℹ️⌛📢🕹️]/u.test(normalized)) {
+      return true;
+    }
+    return (
+      normalized === '✏️ Updated the next plan step. The agent will use the revised step after approval.' ||
+      normalized === '⏸️ Plan step rejected. Agent paused so you can take over.' ||
+      normalized === '⏸️ Agent paused. You can take over the page now, then resume the agent when ready.'
+    );
+  }, []);
+  const addSystemMessage = useCallback((text: string) => {
+    if (shouldHideConversationSystemMessage(text)) {
+      return;
+    }
+    addRawSystemMessage(text);
+  }, [addRawSystemMessage, shouldHideConversationSystemMessage]);
+
+  const buildPlanStepApprovalReason = useCallback((planStepNumber: number, planStepText: string) => {
+    const normalizedStepText = planStepText.replace(/\s+/g, ' ').trim();
+    return `Next up is step ${planStepNumber}: ${normalizedStepText} Approve to let the agent continue with this step. Reject to pause the agent so you can take over.`;
+  }, []);
+
+  const clearApprovalRequestState = useCallback((requestId: string) => {
+    setApprovalRequests((prev) => prev.filter((req) => req.requestId !== requestId));
+    setSupervisoryPlanStepOriginals((prev) => {
+      if (!(requestId in prev)) return prev;
+      const next = { ...prev };
+      delete next[requestId];
+      return next;
+    });
+    setPlanStepUpdateRequestId((prev) => (prev === requestId ? null : prev));
+  }, []);
 
   // Heartbeat interval for checking agent status
   useEffect(() => {
@@ -414,11 +449,16 @@ export function SidePanel() {
       approvalTimeoutsRef.current.delete(requestId);
     }
     const request = approvalRequests.find((req) => req.requestId === requestId);
+    const editedSupervisoryPlanStep =
+      request?.approvalVariant === 'supervisory-plan-step' &&
+      typeof supervisoryPlanStepOriginals[requestId] === 'string' &&
+      supervisoryPlanStepOriginals[requestId].trim() !== (request.toolInput || '').trim();
     console.info('[approval-debug] UI approve button clicked', {
       requestId,
       approvalVariant: request?.approvalVariant,
       toolName: request?.toolName,
       toolInput: request?.toolInput,
+      editedSupervisoryPlanStep,
     });
     const stepId = request?.stepId || requestId;
     void logHumanTelemetry('human_intervention', {
@@ -447,9 +487,25 @@ export function SidePanel() {
       decision: 'approve',
     });
 
+    if (editedSupervisoryPlanStep) {
+      void supersedeApprovalRequest(requestId)
+        .then(() => {
+          clearApprovalRequestState(requestId);
+          setHaltReason(null);
+          addSystemMessage('✏️ Revised plan step accepted. The stale proposal was discarded and execution will continue with the updated step.');
+        })
+        .catch((error) => {
+          addSystemMessage(`❌ Failed to continue after revising the plan step: ${error instanceof Error ? error.message : String(error)}`);
+        })
+        .finally(() => {
+          approvalDecisionInFlightRef.current.delete(requestId);
+        });
+      return;
+    }
+
     void approveRequest(requestId, 'once')
       .then(() => {
-        setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
+        clearApprovalRequestState(requestId);
         setHaltReason(null);
       })
       .catch((error) => {
@@ -503,7 +559,7 @@ export function SidePanel() {
 
     void approveRequest(requestId, 'series')
       .then(() => {
-        setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
+        clearApprovalRequestState(requestId);
         setHaltReason(null);
       })
       .catch((error) => {
@@ -556,7 +612,7 @@ export function SidePanel() {
     });
     void approveRequest(requestId, 'site')
       .then(() => {
-        setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
+        clearApprovalRequestState(requestId);
         setHaltReason(null);
       })
       .catch((error) => {
@@ -614,11 +670,10 @@ export function SidePanel() {
 
     void rejectRequest(requestId)
       .then(() => {
-        setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
-        addSystemMessage('⏸️ Agent paused. You can take over the page now, then resume the agent when ready.');
+        clearApprovalRequestState(requestId);
       })
       .catch((error) => {
-        addSystemMessage(`❌ Failed to send rejection: ${error instanceof Error ? error.message : String(error)}`);
+        // addSystemMessage(`❌ Failed to send rejection: ${error instanceof Error ? error.message : String(error)}`);
       })
       .finally(() => {
         approvalDecisionInFlightRef.current.delete(requestId);
@@ -633,6 +688,29 @@ export function SidePanel() {
       approvalMode,
       tabId: tabId || undefined,
       windowId: windowId || undefined,
+    });
+  }, [tabId, windowId]);
+
+  const supersedeApprovalRequest = useCallback((requestId: string) => {
+    return new Promise<void>((resolve, reject) => {
+      chrome.runtime.sendMessage({
+        action: 'approvalResponse',
+        requestId,
+        approved: false,
+        resolution: 'supersede',
+        tabId,
+        windowId,
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        if (!response?.success) {
+          reject(new Error(response?.error || 'Supersede response was not accepted by background'));
+          return;
+        }
+        resolve();
+      });
     });
   }, [tabId, windowId]);
 
@@ -676,7 +754,7 @@ export function SidePanel() {
 
     // Dismissing a pending approval also rejects it to avoid blocking execution.
     sendApprovalDecision(requestId, false);
-    setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
+    clearApprovalRequestState(requestId);
     addSystemMessage('⏸️ Agent paused. You can inspect or edit the page, then resume when ready.');
   };
 
@@ -711,6 +789,13 @@ export function SidePanel() {
       }
       return prev.filter((item) => item.requestId !== payload.requestId);
     });
+    setSupervisoryPlanStepOriginals((prev) => {
+      if (!(payload.requestId in prev)) return prev;
+      const next = { ...prev };
+      delete next[payload.requestId];
+      return next;
+    });
+    setPlanStepUpdateRequestId((prev) => (prev === payload.requestId ? null : prev));
   }, [handleOversightEvent, logHumanTelemetry]);
 
   // Set up Chrome messaging with callbacks
@@ -731,6 +816,9 @@ export function SidePanel() {
     tabId,
     windowId,
     onUpdateOutput: (content) => {
+      if (typeof content?.content === 'string' && shouldHideConversationSystemMessage(content.content)) {
+        return;
+      }
       if (content?.type === 'system' &&
           typeof content.content === 'string' &&
           content.content.startsWith('🕹️ tool:')) {
@@ -829,6 +917,11 @@ export function SidePanel() {
         }
         if (approvalDecisionInFlightRef.current.has(request.requestId)) {
           return;
+        }
+        if (request.approvalVariant === 'supervisory-plan-step') {
+          setSupervisoryPlanStepOriginals((prev) =>
+            request.requestId in prev ? prev : { ...prev, [request.requestId]: request.toolInput }
+          );
         }
         setApprovalRequests(prev => [...prev, request]);
         const timestamp = Date.now();
@@ -970,6 +1063,89 @@ export function SidePanel() {
       addSystemMessage('🧭 Plan review required before execution.');
     },
   });
+
+  const updateSupervisoryPlanStep = useCallback(async (requestId: string, nextStepText: string) => {
+    const request = approvalRequests.find((item) => item.requestId === requestId);
+    if (!request || request.approvalVariant !== 'supervisory-plan-step' || typeof request.planStepIndex !== 'number') {
+      addSystemMessage('⚠️ This approval request no longer has an editable plan step.');
+      return;
+    }
+    if (!approvedPlan) {
+      addSystemMessage('⚠️ No approved plan is available to update.');
+      return;
+    }
+
+    const normalizedStepText = nextStepText.trim();
+    if (!normalizedStepText) {
+      addSystemMessage('⚠️ Plan steps cannot be empty.');
+      return;
+    }
+
+    if (request.planStepIndex < 0 || request.planStepIndex >= approvedPlan.steps.length) {
+      addSystemMessage('⚠️ That plan step is out of range for the current approved plan.');
+      return;
+    }
+
+    const planStepIndex = request.planStepIndex;
+    const currentStepText = approvedPlan.steps[request.planStepIndex]?.trim() || '';
+    if (currentStepText === normalizedStepText) {
+      return;
+    }
+
+    const updatedSteps = approvedPlan.steps.map((step, index) =>
+      index === planStepIndex ? normalizedStepText : step
+    );
+    const editedPlan = [
+      `Plan Summary: ${approvedPlan.summary}`,
+      ...updatedSteps.map((step, index) => `Step ${index + 1}: ${step}`),
+    ].join('\n');
+    const activePlanStepIndex = Math.max(
+      0,
+      inspectPlanProgress?.currentStepNumber && inspectPlanProgress.currentStepNumber > 0
+        ? inspectPlanProgress.currentStepNumber - 1
+        : inspectPlanProgress?.completedCount || 0
+    );
+
+    setPlanStepUpdateRequestId(requestId);
+    try {
+      const response = await updateApprovedPlan(editedPlan, {
+        editedStepIndex: request.planStepIndex,
+        regenerateRemainingStepsAfterExecution: request.planStepIndex === activePlanStepIndex,
+      });
+      if (!response?.success) {
+        addSystemMessage(`⚠️ Failed to update the next plan step: ${response?.error || 'unknown error'}`);
+        return;
+      }
+
+      runtimeInteractionSignal('edit_intermediate_output');
+      setApprovedPlan({
+        summary: approvedPlan.summary,
+        steps: updatedSteps,
+      });
+      setApprovalRequests((prev) =>
+        prev.map((item) =>
+          item.requestId === requestId
+            ? {
+                ...item,
+                toolInput: normalizedStepText,
+                reason: buildPlanStepApprovalReason(planStepIndex + 1, normalizedStepText),
+              }
+            : item
+        )
+      );
+      
+    } catch (error) {
+      addSystemMessage(`⚠️ Failed to update the next plan step: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setPlanStepUpdateRequestId((prev) => (prev === requestId ? null : prev));
+    }
+  }, [addSystemMessage, approvalRequests, approvedPlan, buildPlanStepApprovalReason, runtimeInteractionSignal, updateApprovedPlan]);
+
+  const resetSupervisoryPlanStep = useCallback(async (requestId: string) => {
+    const originalText = supervisoryPlanStepOriginals[requestId];
+    if (!originalText) return;
+    await updateSupervisoryPlanStep(requestId, originalText);
+  }, [supervisoryPlanStepOriginals, updateSupervisoryPlanStep]);
 
   useEffect(() => {
     if (runtimeStatus.regime === 'deliberative_escalated') {
@@ -1151,6 +1327,8 @@ export function SidePanel() {
     setInspectPlanProgress(null);
     setInspectPlanError(null);
     setApprovalRequests([]);
+    setSupervisoryPlanStepOriginals({});
+    setPlanStepUpdateRequestId(null);
   }, [clearHistory, clearMessages, clearOversightState]);
 
   const handleApplyArchetype = useCallback((archetypeId: string) => {
@@ -1288,6 +1466,8 @@ export function SidePanel() {
 
       // Clear the approval requests
       setApprovalRequests([]);
+      setSupervisoryPlanStepOriginals({});
+      setPlanStepUpdateRequestId(null);
     }
 
     // Cancel the execution
@@ -1377,7 +1557,7 @@ export function SidePanel() {
           return false;
         }
         if (message.type !== 'llm') return true;
-        return !/<thinking_summary>|<tool>|<requires_approval>/i.test(message.content || '');
+        return !/<thinking(?:_summary|\s+summary)>|<tool>|<requires_approval>/i.test(message.content || '');
       }),
     [messages]
   );
@@ -1389,7 +1569,7 @@ export function SidePanel() {
         if (
           message.type === 'llm' &&
           typeof message.content === 'string' &&
-          !/<thinking_summary>|<tool>|<requires_approval>/i.test(message.content)
+          !/<thinking(?:_summary|\s+summary)>|<tool>|<requires_approval>/i.test(message.content)
         ) {
           return message.content.trim().length > 0;
         }
@@ -1412,7 +1592,7 @@ export function SidePanel() {
   const supervisoryStreamingSegments = useMemo(
     () =>
       Object.fromEntries(
-        Object.entries(streamingSegments).filter(([, content]) => !/<thinking_summary>|<tool>|<requires_approval>/i.test(content))
+        Object.entries(streamingSegments).filter(([, content]) => !/<thinking(?:_summary|\s+summary)>|<tool>|<requires_approval>/i.test(content))
       ),
     [streamingSegments]
   );
@@ -1712,8 +1892,20 @@ export function SidePanel() {
                     onEdit={undefined}
                     onRetry={undefined}
                     onRollback={undefined}
+                    onPlanStepSave={
+                      req.approvalVariant === 'supervisory-plan-step'
+                        ? updateSupervisoryPlanStep
+                        : undefined
+                    }
+                    onPlanStepReset={
+                      req.approvalVariant === 'supervisory-plan-step'
+                        ? resetSupervisoryPlanStep
+                        : undefined
+                    }
                     compact={informationDensity === 'compact'}
                     variant={req.approvalVariant || 'default'}
+                    originalPlanStepText={supervisoryPlanStepOriginals[req.requestId]}
+                    planStepBusy={planStepUpdateRequestId === req.requestId}
                   />
                 ))}
               </div>

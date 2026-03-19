@@ -16,7 +16,7 @@ export const LlmContent: React.FC<LlmContentProps> = ({
 }) => {
   // Extract structured step metadata tags for prettier rendering in conversation.
   const stepMetadata: Array<{ thinkingSummary: string }> = [];
-  const metadataThinkingRegex = /<thinking_summary>([\s\S]*?)<\/thinking_summary>/gi;
+  const metadataThinkingRegex = /<thinking(?:_summary|\s+summary)>([\s\S]*?)<\/thinking(?:_summary|\s+summary)>/gi;
   let metadataMatch;
   while ((metadataMatch = metadataThinkingRegex.exec(content)) !== null) {
     stepMetadata.push({
@@ -26,7 +26,7 @@ export const LlmContent: React.FC<LlmContentProps> = ({
 
   const contentWithoutMetadata = content
     .replace(metadataThinkingRegex, '')
-    .replace(/<thinking_summary>[\s\S]*?<\/thinking_summary>/gi, '')
+    .replace(/<thinking(?:_summary|\s+summary)>[\s\S]*?<\/thinking(?:_summary|\s+summary)>/gi, '')
     .replace(/<impact>([\s\S]*?)<\/impact>/gi, '')
     .replace(/Next Step I Plan To Do:\s*[\s\S]*?(?=\n\s*<tool>|<tool>|$)/gi, '')
     .replace(/Alternative:\s*[\s\S]*?(?=\n\s*<tool>|<tool>|$)/gi, '')

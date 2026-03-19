@@ -284,6 +284,8 @@ export async function updateApprovedPlanGuidance(args: {
   tabId?: number;
   windowId?: number;
   editedPlan: string;
+  editedStepIndex?: number;
+  regenerateRemainingStepsAfterExecution?: boolean;
 }): Promise<void> {
   const windowId = args.windowId ?? (args.tabId ? getWindowForTab(args.tabId) : undefined);
   if (!windowId) {
@@ -297,7 +299,10 @@ export async function updateApprovedPlanGuidance(args: {
 
   const promptManager = (agent as any).promptManager;
   if (typeof (agent as any).updateApprovedPlanGuidanceDuringRun === 'function') {
-    (agent as any).updateApprovedPlanGuidanceDuringRun(args.editedPlan || '');
+    (agent as any).updateApprovedPlanGuidanceDuringRun(args.editedPlan || '', {
+      editedStepIndex: typeof args.editedStepIndex === 'number' ? args.editedStepIndex : undefined,
+      regenerateRemainingStepsAfterExecution: Boolean(args.regenerateRemainingStepsAfterExecution),
+    });
   } else if (promptManager && typeof promptManager.setApprovedPlanGuidance === 'function') {
     promptManager.setApprovedPlanGuidance(args.editedPlan || '');
   } else {
@@ -1247,14 +1252,14 @@ export async function executePrompt(
       onPlanStepApprovalRequired:
         selectedArchetypeId === 'supervisory-co-execution'
           ? async (payload) => {
-              const approved = await requestPlanStepApproval(
+              const decision = await requestPlanStepApproval(
                 targetTabId,
                 payload.stepId,
                 payload.planStepIndex + 1,
                 payload.planStepText,
                 updatedTabState.windowId
               );
-              return { decision: approved ? 'accept' as const : 'reject' as const };
+              return { decision };
             }
           : undefined,
       onWaitForExecutionPermission: async () => {

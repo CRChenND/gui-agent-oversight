@@ -70,6 +70,7 @@ export interface ApprovalResponseMessage {
   requestId: string;
   approved: boolean;
   approvalMode?: 'once' | 'series' | 'site';
+  resolution?: 'approve' | 'reject' | 'supersede';
   tabId?: number;
   windowId?: number;
 }
@@ -232,6 +233,8 @@ export interface UpdateApprovedPlanMessage {
   tabId?: number;
   windowId?: number;
   editedPlan: string;
+  editedStepIndex?: number;
+  regenerateRemainingStepsAfterExecution?: boolean;
 }
 
 export interface RuntimeInteractionSignalMessage {

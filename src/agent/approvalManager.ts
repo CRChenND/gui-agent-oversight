@@ -11,8 +11,10 @@ import {
 import { getDefaultOversightArchetype, OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY } from '../options/oversightArchetypes';
 
 // Pending approvals map
+export type ApprovalDecision = 'approve' | 'reject' | 'supersede';
+
 const pendingApprovals = new Map<string, {
-  resolve: (approved: boolean) => void;
+  resolve: (decision: ApprovalDecision) => void;
   toolName: string;
   toolInput: string;
   reason: string;
@@ -63,11 +65,11 @@ export async function requestPlanStepApproval(
   planStepNumber: number,
   planStepText: string,
   windowId?: number
-): Promise<boolean> {
+): Promise<'accept' | 'reject' | 'revise'> {
   return new Promise((resolve) => {
     const requestId = `plan_step_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     pendingApprovals.set(requestId, {
-      resolve,
+      resolve: (decision) => resolve(decision === 'approve' ? 'accept' : decision === 'supersede' ? 'revise' : 'reject'),
       toolName: 'plan_step',
       toolInput: planStepText,
       reason: `Up next in the plan: Step ${planStepNumber}.`,
@@ -103,7 +105,7 @@ export async function requestPlanStepApproval(
           })
           .finally(() => {
             pendingApprovals.delete(requestId);
-            resolve(false);
+            resolve('reject');
           });
       }
     });
@@ -129,7 +131,7 @@ async function resolveSiteApprovalKey(tabId: number): Promise<string | null> {
  * @param toolInput The input to the tool
  * @param reason The reason approval is required
  * @param windowId Optional window ID to scope the approval request to a specific window
- * @returns A promise that resolves to true if approved, false if rejected
+ * @returns A promise that resolves to approve, reject, or supersede
  */
 export async function requestApproval(
   tabId: number,
@@ -141,17 +143,17 @@ export async function requestApproval(
   options?: {
     stepDescription?: string;
   }
-): Promise<boolean> {
+): Promise<ApprovalDecision> {
   return new Promise((resolve) => {
     const requestId = generateUniqueId();
     const approvalSeriesKey = buildApprovalSeriesKey(toolName, toolInput);
     void resolveSiteApprovalKey(tabId).then((siteApprovalKey) => {
       if (siteApprovalKey && autoApprovedSiteKeys.has(siteApprovalKey)) {
-        resolve(true);
+        resolve('approve');
         return;
       }
       if (approvalSeriesKey && autoApprovedSeriesKeys.has(approvalSeriesKey)) {
-        resolve(true);
+        resolve('approve');
         return;
       }
 
@@ -188,7 +190,7 @@ export async function requestApproval(
             console.warn('[approval-debug] Failed to pause runtime after approval timeout', error);
           })
           .finally(() => {
-            handleApprovalResponse(requestId, false, 'once');
+            handleApprovalResponse(requestId, 'reject', 'once');
             sendUIMessage(
               'approvalResolved',
               {
@@ -254,7 +256,7 @@ export async function requestApproval(
               });
 
               const finalizeOverlayDecision = () => {
-                handleApprovalResponse(requestId, decision.approved, decision.approvalMode || 'once');
+                handleApprovalResponse(requestId, decision.approved ? 'approve' : 'reject', decision.approvalMode || 'once');
                 sendUIMessage(
                   'approvalResolved',
                   {
@@ -372,7 +374,7 @@ export async function requestApproval(
  */
 export function handleApprovalResponse(
   requestId: string,
-  approved: boolean,
+  decision: ApprovalDecision,
   approvalMode: 'once' | 'series' | 'site' = 'once'
 ): boolean {
   const pendingApproval = pendingApprovals.get(requestId);
@@ -380,21 +382,21 @@ export function handleApprovalResponse(
     if (pendingApproval.timeoutId) {
       clearTimeout(pendingApproval.timeoutId);
     }
-    if (approved && approvalMode === 'series' && pendingApproval.approvalSeriesKey) {
+    if (decision === 'approve' && approvalMode === 'series' && pendingApproval.approvalSeriesKey) {
       autoApprovedSeriesKeys.add(pendingApproval.approvalSeriesKey);
     }
-    if (approved && approvalMode === 'site' && pendingApproval.siteApprovalKey) {
+    if (decision === 'approve' && approvalMode === 'site' && pendingApproval.siteApprovalKey) {
       autoApprovedSiteKeys.add(pendingApproval.siteApprovalKey);
     }
     console.info('[approval-debug] Approval resolved', {
       requestId,
-      approved,
+      decision,
       approvalMode,
       toolName: pendingApproval.toolName,
       toolInput: pendingApproval.toolInput,
       waitedMs: Date.now() - pendingApproval.createdAt,
     });
-    pendingApproval.resolve(approved);
+    pendingApproval.resolve(decision);
     pendingApprovals.delete(requestId);
     return true;
   } else {

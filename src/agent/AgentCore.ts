@@ -173,8 +173,14 @@ export class BrowserAgent {
     );
   }
 
-  updateApprovedPlanGuidanceDuringRun(text: string): void {
-    this.executionEngine.updateApprovedPlanGuidanceDuringRun(text);
+  updateApprovedPlanGuidanceDuringRun(
+    text: string,
+    options?: {
+      editedStepIndex?: number;
+      regenerateRemainingStepsAfterExecution?: boolean;
+    }
+  ): void {
+    this.executionEngine.updateApprovedPlanGuidanceDuringRun(text, options);
   }
 }
 

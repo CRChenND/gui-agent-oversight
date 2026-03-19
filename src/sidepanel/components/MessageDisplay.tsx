@@ -19,7 +19,7 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({
   const isChatStyle = conversationStyle === 'chat';
   const countStepMetadata = (content: string): number => {
     if (!content) return 0;
-    const metadataTripletRegex = /<thinking_summary>[\s\S]*?<\/thinking_summary>/gi;
+    const metadataTripletRegex = /<thinking(?:_summary|\s+summary)>[\s\S]*?<\/thinking(?:_summary|\s+summary)>/gi;
     const matches = content.match(metadataTripletRegex);
     return matches ? matches.length : 0;
   };
@@ -28,9 +28,9 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({
     if (!isChatStyle) {
       return content.trim().length > 0;
     }
-    const thinkingBlocks = content.match(/<thinking_summary>([\s\S]*?)<\/thinking_summary>/gi);
+    const thinkingBlocks = content.match(/<thinking(?:_summary|\s+summary)>([\s\S]*?)<\/thinking(?:_summary|\s+summary)>/gi);
     const stripped = content
-      .replace(/<thinking_summary>[\s\S]*?<\/thinking_summary>/gi, '')
+      .replace(/<thinking(?:_summary|\s+summary)>[\s\S]*?<\/thinking(?:_summary|\s+summary)>/gi, '')
       .replace(/<impact>[\s\S]*?<\/impact>/gi, '')
       .replace(/(```(?:xml|bash)\s*)?<tool>[\s\S]*?<\/requires_approval>(\s*```)?/gi, '')
       .replace(/(```(?:xml|bash)\s*)?<tool>[\s\S]*?<\/input>(\s*```)?/gi, '')

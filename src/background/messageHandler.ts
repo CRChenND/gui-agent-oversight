@@ -158,10 +158,18 @@ export function handleMessage(
 }
 
 function handleApprovalResponseMessage(
-  message: { requestId: string; approved: boolean; approvalMode?: 'once' | 'series' | 'site'; tabId?: number; windowId?: number },
+  message: {
+    requestId: string;
+    approved: boolean;
+    approvalMode?: 'once' | 'series' | 'site';
+    resolution?: 'approve' | 'reject' | 'supersede';
+    tabId?: number;
+    windowId?: number;
+  },
   sendResponse: (response?: any) => void
 ): void {
   console.info('[approval-debug] Background received approvalResponse', message);
+  const decision = message.resolution || (message.approved ? 'approve' : 'reject');
   const runtimeManager = getOversightRuntimeManager();
   let resolvedWindowId = message.windowId;
   if (typeof resolvedWindowId !== 'number' && typeof message.tabId === 'number') {
@@ -186,7 +194,7 @@ function handleApprovalResponseMessage(
   };
 
   const finalize = () => {
-    const resolved = handleApprovalResponse(message.requestId, message.approved, message.approvalMode || 'once');
+    const resolved = handleApprovalResponse(message.requestId, decision, message.approvalMode || 'once');
     if (!resolved) {
       sendResponse({ success: true, ignored: true });
       return;
@@ -194,7 +202,8 @@ function handleApprovalResponseMessage(
 
     console.info('[approval-debug] Background finalizing approvalResponse', {
       requestId: message.requestId,
-      approved: message.approved,
+      approved: decision === 'approve',
+      decision,
       approvalMode: message.approvalMode || 'once',
       resolvedWindowId,
     });
@@ -214,7 +223,7 @@ function handleApprovalResponseMessage(
       'approvalResolved',
       {
         requestId: message.requestId,
-        approved: message.approved,
+        approved: decision === 'approve',
       },
       message.tabId,
       resolvedWindowId
@@ -222,10 +231,36 @@ function handleApprovalResponseMessage(
     sendResponse({ success: true });
   };
 
-  if (!message.approved) {
-    const resolved = handleApprovalResponse(message.requestId, message.approved, message.approvalMode || 'once');
+  if (decision !== 'approve') {
+    const resolved = handleApprovalResponse(message.requestId, decision, message.approvalMode || 'once');
     if (!resolved) {
       sendResponse({ success: true, ignored: true });
+      return;
+    }
+
+    if (decision === 'supersede') {
+      clearResolvedApproval();
+      if (message.tabId) {
+        const page = getTabState(message.tabId)?.page;
+        if (page) {
+          void clearAttentionOverlay(page).catch((error) => {
+            logWithTimestamp(
+              `Failed to clear attention overlay after approval response: ${error instanceof Error ? error.message : String(error)}`,
+              'warn'
+            );
+          });
+        }
+      }
+      sendUIMessage(
+        'approvalResolved',
+        {
+          requestId: message.requestId,
+          approved: false,
+        },
+        message.tabId,
+        resolvedWindowId
+      );
+      sendResponse({ success: true });
       return;
     }
 
@@ -419,13 +454,25 @@ function handlePlanReviewDecision(
 }
 
 function handleUpdateApprovedPlan(
-  message: { tabId?: number; windowId?: number; editedPlan?: string },
+  message: {
+    tabId?: number;
+    windowId?: number;
+    editedPlan?: string;
+    editedStepIndex?: number;
+    regenerateRemainingStepsAfterExecution?: boolean;
+  },
   sendResponse: (response?: any) => void
 ): void {
+  if (typeof message.editedPlan !== 'string') {
+    sendResponse({ success: false, error: 'Missing edited plan' });
+    return;
+  }
   void updateApprovedPlanGuidance({
       tabId: message.tabId,
       windowId: message.windowId,
-      editedPlan: typeof message.editedPlan === 'string' ? message.editedPlan : '',
+      editedPlan: message.editedPlan,
+      editedStepIndex: typeof message.editedStepIndex === 'number' ? message.editedStepIndex : undefined,
+      regenerateRemainingStepsAfterExecution: Boolean(message.regenerateRemainingStepsAfterExecution),
     })
     .then(() => sendResponse({ success: true }))
     .catch((error) => {

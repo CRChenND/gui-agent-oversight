@@ -3,7 +3,7 @@ import { ErrorHandler } from "./ErrorHandler";
 import { PromptManager } from "./PromptManager";
 import { trimHistory } from "./TokenManager";
 import { ToolManager } from "./ToolManager";
-import { requestApproval } from "./approvalManager";
+import { requestApproval, type ApprovalDecision } from "./approvalManager";
 import { emitAgentThinking } from "./thinking/thinkingEmitter";
 import { buildThinkingSummary, createStepId } from "./thinking/thinkingSummary";
 import {
@@ -128,7 +128,7 @@ export interface ExecutionCallbacks {
     thinking?: string;
     toolName: string;
     toolInput: string;
-  }) => Promise<{ decision: 'accept' | 'reject' }>;
+  }) => Promise<{ decision: 'accept' | 'reject' | 'revise' }>;
   onWaitForExecutionPermission?: () => Promise<{ allowed: boolean; reason?: string }>;
   onPrepareModelStep?: () => Promise<{
     amplificationState: 'normal' | 'amplified';
@@ -220,6 +220,7 @@ export class ExecutionEngine {
   private highestAcceptedPlanStepIndex = -1;
   private lastCompletionCheckPlanStepIndex = 0;
   private executedPlanEvidence: PlanExecutionEvidence[] = [];
+  private pendingPlanRegenerationAfterEditedStepIndex: number | null = null;
   private resumeRecoveryPhase: ResumeRecoveryPhase = 'idle';
   private resumeRecoveryInstructionIssued = false;
 
@@ -582,10 +583,20 @@ export class ExecutionEngine {
     this.errorHandler = errorHandler;
   }
 
-  updateApprovedPlanGuidanceDuringRun(text: string): void {
+  updateApprovedPlanGuidanceDuringRun(
+    text: string,
+    options?: {
+      editedStepIndex?: number;
+      regenerateRemainingStepsAfterExecution?: boolean;
+    }
+  ): void {
     const normalized = text.trim();
     this.promptManager.setApprovedPlanGuidance(normalized);
     this.applyApprovedPlanText(normalized);
+    this.pendingPlanRegenerationAfterEditedStepIndex =
+      options?.regenerateRemainingStepsAfterExecution && typeof options.editedStepIndex === 'number'
+        ? options.editedStepIndex
+        : null;
     if (!normalized) return;
     this.rewriteLiveMessagesForApprovedPlan(normalized);
   }
@@ -802,6 +813,58 @@ export class ExecutionEngine {
     return planText;
   }
 
+  private async refreshRemainingPlanAfterEditedStepExecution(args: {
+    completedStepIndex: number;
+    toolName: string;
+    toolInput: string;
+    result: string;
+  }): Promise<string | null> {
+    if (!this.approvedPlanState?.steps.length) {
+      return null;
+    }
+
+    const completedPrefix = this.approvedPlanState.steps.slice(0, args.completedStepIndex + 1);
+    const existingFutureSteps = this.approvedPlanState.steps.slice(args.completedStepIndex + 1);
+    const replanPrompt =
+      'You are revising the remaining execution plan after the agent completed a user-edited plan step.\n' +
+      'Produce only the steps that should come after the completed step.\n' +
+      'Rules:\n' +
+      '1) Treat the completed-step prefix as fixed and already done.\n' +
+      '2) Use the latest tool result as the strongest evidence about what changed.\n' +
+      '3) Regenerate only the subsequent steps from the new page/task state.\n' +
+      '4) Remove obsolete steps and reorder remaining work if needed.\n' +
+      '5) Keep the plan within the original user task scope.\n' +
+      '6) Return plain text only in this format:\n' +
+      'Plan Summary: ...\n' +
+      'Step 1: ...\n' +
+      'Step 2: ...\n' +
+      '7) If no further steps are needed, return only Plan Summary: ...';
+
+    const replanInput =
+      `Original task:\n${this.currentTaskPrompt || '(missing)'}\n\n` +
+      `Current plan summary: ${this.approvedPlanState.summary}\n` +
+      `Completed fixed plan steps:\n${completedPrefix.map((step, index) => `${index + 1}. ${step}`).join('\n')}\n\n` +
+      `Previously planned future steps:\n${existingFutureSteps.length ? existingFutureSteps.map((step, index) => `${args.completedStepIndex + index + 2}. ${step}`).join('\n') : '(none)'}\n\n` +
+      `Latest executed tool: ${args.toolName}\n` +
+      `Latest tool input: ${args.toolInput || '(none)'}\n` +
+      `Latest tool result:\n${args.result}`;
+
+    const rawPlan = await this.collectModelText(replanPrompt, [{ role: 'user', content: replanInput }]);
+    const parsed = this.extractPlanFromPlannerOutput(rawPlan);
+    const mergedPlan: ApprovedPlan = {
+      summary: parsed.summary || this.approvedPlanState.summary || 'Approved plan.',
+      steps: [...completedPrefix, ...parsed.steps],
+    };
+    const planText =
+      `Plan Summary: ${mergedPlan.summary}\n` +
+      mergedPlan.steps.map((step, index) => `Step ${index + 1}: ${step}`).join('\n');
+
+    this.setApprovedPlanState(mergedPlan);
+    this.promptManager.setApprovedPlanGuidance(planText);
+    this.rewriteLiveMessagesForApprovedPlan(planText);
+    return planText;
+  }
+
   private async getInterventionGateConfig(): Promise<{
     enabled: boolean;
     policy: InterventionGatePolicy;
@@ -889,7 +952,7 @@ export class ExecutionEngine {
     const match = text.match(regex);
     if (!match) return undefined;
     const value = match[1]
-      .replace(/<thinking_summary>[\s\S]*?<\/thinking_summary>/gi, ' ')
+      .replace(/<thinking(?:_summary|\s+summary)>[\s\S]*?<\/thinking(?:_summary|\s+summary)>/gi, ' ')
       .replace(/<impact>[\s\S]*?<\/impact>/gi, ' ')
       .replace(/\s+/g, ' ')
       .trim();
@@ -917,7 +980,7 @@ export class ExecutionEngine {
 
   private cleanPlanStepText(text: string): string {
     const cleaned = text
-      .replace(/<\/?(thinking_summary|impact)>/gi, '')
+      .replace(/<\/?(thinking_summary|thinking\s+summary|impact)>/gi, '')
       .replace(/<\/?[^>]+>/g, '')
       .replace(/\s+/g, ' ')
       .trim();
@@ -928,7 +991,7 @@ export class ExecutionEngine {
   private isDescriptivePlanStep(text: string): boolean {
     if (!text || text.length < 16) return false;
     if (/^(low|medium|high)$/i.test(text)) return false;
-    if (/^(thinking_summary|impact)$/i.test(text)) return false;
+    if (/^(thinking_summary|thinking\s+summary|impact)$/i.test(text)) return false;
     return /[a-zA-Z]/.test(text) && text.includes(' ');
   }
 
@@ -2006,6 +2069,24 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
                 this.liveMessages = messages;
                 continue;
               }
+              if (planStepApproval.decision === 'revise') {
+                this.highestAcceptedPlanStepIndex = planMatch.index;
+                const revisedCurrentStep = this.approvedPlanState.steps[planMatch.index] || '(unknown current step)';
+                messages.push(
+                  { role: 'assistant', content: accumulatedText },
+                  {
+                    role: 'user',
+                    content:
+                      `The user revised and accepted the current approved plan step.\n` +
+                      `Current edited step ${planMatch.index + 1}: ${revisedCurrentStep}\n` +
+                      `Do not restate the plan. Do not generate later steps yet.\n` +
+                      `Your very next response must emit exactly one valid XML tool call that directly advances this edited current step.`,
+                  }
+                );
+                messages = trimHistory(messages);
+                this.liveMessages = messages;
+                continue;
+              }
               this.highestAcceptedPlanStepIndex = planMatch.index;
             }
           }
@@ -2065,11 +2146,11 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             // Get the current tab ID from chrome.tabs API
             const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
             const tabId = tabs[0]?.id || 0;
-            let approved = false;
+            let approvalDecision: ApprovalDecision = 'reject';
 
             try {
               // Request approval from the user
-              approved = await requestApproval(tabId, stepId, toolName, toolInput, reason, undefined, {
+              approvalDecision = await requestApproval(tabId, stepId, toolName, toolInput, reason, undefined, {
                 stepDescription,
               });
             } catch (approvalError) {
@@ -2084,10 +2165,10 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               }
               result = "Error in approval process. Action cancelled.";
               adaptedCallbacks.onToolOutput(`❌ Error in approval process: ${approvalError}`);
-              approved = false;
+              approvalDecision = 'reject';
             }
 
-            if (approved) {
+            if (approvalDecision === 'approve') {
               this.adaptiveGateState = updateAdaptiveStateFromDecision(this.adaptiveGateState, 'approve');
               // User approved, execute the tool
               adaptedCallbacks.onToolOutput(`✅ Action approved by user. Executing...`);
@@ -2132,6 +2213,28 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               } finally {
                 stopToolExecutionWatchdog?.();
                 stopToolExecutionWatchdog = null;
+              }
+            } else if (approvalDecision === 'supersede') {
+              adaptedCallbacks.onToolOutput('🔄 Pending action superseded by the updated plan step. Continuing with the revised plan.');
+              result = 'Action superseded by updated plan step. Do not execute the stale proposal. Continue from the revised approved plan.';
+              if (this.approvedPlanState?.steps.length) {
+                const currentEditedStep =
+                  this.approvedPlanState.steps[Math.max(0, Math.min(resolvedPlanStepIndex, this.approvedPlanState.steps.length - 1))] ||
+                  '(unknown current step)';
+                messages.push(
+                  { role: 'assistant', content: accumulatedText },
+                  {
+                    role: 'user',
+                    content:
+                      `The user edited the current approved plan step, so the previous proposal is stale and must not be executed.\n` +
+                      `Current edited step: ${currentEditedStep}\n` +
+                      `Do not regenerate later steps yet.\n` +
+                      `Your very next response must emit exactly one valid XML tool call that advances this edited current step.`,
+                  }
+                );
+                messages = trimHistory(messages);
+                this.liveMessages = messages;
+                continue;
               }
             } else if (!result) {
               this.adaptiveGateState = updateAdaptiveStateFromDecision(this.adaptiveGateState, 'deny');
@@ -2188,9 +2291,10 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
               const tabId = tabs[0]?.id || 0;
               const reviewReason = `${reason} Post-action review: confirm whether to continue with subsequent steps.`;
-              const approved = await requestApproval(tabId, stepId, toolName, toolInput, reviewReason, undefined, {
+              const reviewDecision = await requestApproval(tabId, stepId, toolName, toolInput, reviewReason, undefined, {
                 stepDescription,
               });
+              const approved = reviewDecision === 'approve';
               if (approved) {
                 this.adaptiveGateState = updateAdaptiveStateFromDecision(this.adaptiveGateState, 'approve');
                 adaptedCallbacks.onToolOutput('✅ Post-action review approved.');
@@ -2241,6 +2345,8 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               status:
                 isToolResultError(result)
                   ? 'error'
+                  : result.includes('superseded by updated plan step')
+                  ? 'cancelled'
                   : result.includes('Action rejected by user.') || result.includes('human takeover')
                   ? 'cancelled'
                   : 'completed',
@@ -2287,7 +2393,52 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
           messages = trimHistory(messages);
           this.liveMessages = messages;
 
-      if (this.requiresResumeObservation() && this.isObservationTool(toolName) && !isToolResultError(result)) {
+          if (
+            typeof resolvedPlanStepIndex === 'number' &&
+            this.pendingPlanRegenerationAfterEditedStepIndex === resolvedPlanStepIndex &&
+            !isToolResultError(result) &&
+            !result.includes('superseded by updated plan step')
+          ) {
+            const priorCompletedActionForEditedStep = this.executedPlanEvidence.some(
+              (item) =>
+                item.planStepIndex === resolvedPlanStepIndex &&
+                item.status === 'completed' &&
+                !this.isObservationTool(item.toolName)
+            );
+            const shouldRegenerateNow =
+              !this.isObservationTool(toolName) ||
+              priorCompletedActionForEditedStep;
+
+            if (!shouldRegenerateNow) {
+              messages.push({
+                role: 'user',
+                content:
+                  'You have started executing the edited current step, but do not regenerate later steps yet. ' +
+                  'First carry out the edited current step on the page. After that step is actually completed, the remaining steps will be regenerated.',
+              });
+              messages = trimHistory(messages);
+              this.liveMessages = messages;
+              continue;
+            }
+            console.warn('[plan-debug] regenerating future plan after edited step execution', {
+              completedStepIndex: resolvedPlanStepIndex,
+              toolName,
+              toolInput: summarizeForDebug(toolInput),
+            });
+            const replanned = await this.refreshRemainingPlanAfterEditedStepExecution({
+              completedStepIndex: resolvedPlanStepIndex,
+              toolName,
+              toolInput,
+              result,
+            });
+            this.pendingPlanRegenerationAfterEditedStepIndex = null;
+            if (replanned) {
+              adaptedCallbacks.onToolOutput('🗺️ Subsequent plan steps were regenerated from the executed edited step.');
+              messages = this.liveMessages ?? messages;
+            }
+          }
+
+          if (this.requiresResumeObservation() && this.isObservationTool(toolName) && !isToolResultError(result)) {
             this.resumeRecoveryPhase = 'needs_replan';
             adaptedCallbacks.onToolOutput('🔄 Fresh observation captured after human takeover. Refreshing the remaining plan.');
             console.warn('[plan-debug] refreshing plan after resume observation', {

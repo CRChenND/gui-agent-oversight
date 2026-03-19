@@ -13,8 +13,12 @@ interface ApprovalRequestProps {
   onEdit?: (requestId: string) => void;
   onRetry?: (requestId: string) => void;
   onRollback?: (requestId: string) => void;
+  onPlanStepSave?: (requestId: string, text: string) => Promise<void> | void;
+  onPlanStepReset?: (requestId: string) => Promise<void> | void;
   compact?: boolean;
   variant?: 'default' | 'action-confirmation' | 'supervisory' | 'supervisory-plan-step';
+  originalPlanStepText?: string;
+  planStepBusy?: boolean;
 }
 
 export function ApprovalRequest({ 
@@ -30,8 +34,12 @@ export function ApprovalRequest({
   onEdit,
   onRetry,
   onRollback,
+  onPlanStepSave,
+  onPlanStepReset,
   compact = false,
   variant = 'default',
+  originalPlanStepText,
+  planStepBusy = false,
 }: ApprovalRequestProps) {
   const isRiskGated = variant === 'default';
   const isActionConfirmation = variant === 'action-confirmation';
@@ -40,6 +48,15 @@ export function ApprovalRequest({
   const isSupervisoryVariant = isSupervisory || isSupervisoryPlanStep;
   const quotedTarget = toolInput.match(/["']([^"']+)["']/)?.[1]?.trim();
   const nextActionLabel = quotedTarget || toolInput.trim() || toolName.replace(/^browser_/, '').replace(/_/g, ' ');
+  const canEditPlanStep = isSupervisoryPlanStep && typeof onPlanStepSave === 'function';
+  const [isEditingPlanStep, setIsEditingPlanStep] = React.useState(false);
+  const [draftPlanStepText, setDraftPlanStepText] = React.useState(nextActionLabel);
+  const currentPlanStepText = toolInput.trim() || nextActionLabel;
+  const visibleActionText = isSupervisoryPlanStep ? currentPlanStepText : nextActionLabel;
+  const normalizedCurrentPlanStepText = currentPlanStepText.trim();
+  const normalizedOriginalPlanStepText = (originalPlanStepText || normalizedCurrentPlanStepText).trim();
+  const hasUnsavedPlanStepChanges = draftPlanStepText.trim() !== normalizedCurrentPlanStepText;
+  const hasModifiedPlanStep = normalizedCurrentPlanStepText !== normalizedOriginalPlanStepText;
   const displayTitle = isActionConfirmation
     ? 'Needs Your Decision'
     : isSupervisoryPlanStep
@@ -56,6 +73,35 @@ export function ApprovalRequest({
       : compact
       ? 'Critical action pending.'
       : 'The agent wants to execute a critical action:';
+
+  React.useEffect(() => {
+    setDraftPlanStepText(currentPlanStepText);
+  }, [currentPlanStepText]);
+
+  React.useEffect(() => {
+    if (planStepBusy) {
+      setIsEditingPlanStep(false);
+    }
+  }, [planStepBusy]);
+
+  const handlePlanStepSave = async () => {
+    if (!onPlanStepSave) return;
+    const normalizedDraft = draftPlanStepText.trim();
+    if (!normalizedDraft || normalizedDraft === normalizedCurrentPlanStepText) {
+      setDraftPlanStepText(currentPlanStepText);
+      setIsEditingPlanStep(false);
+      return;
+    }
+    await onPlanStepSave(requestId, normalizedDraft);
+  };
+
+  const handlePlanStepReset = async () => {
+    setDraftPlanStepText(normalizedOriginalPlanStepText);
+    setIsEditingPlanStep(false);
+    if (hasModifiedPlanStep && onPlanStepReset) {
+      await onPlanStepReset(requestId);
+    }
+  };
 
   return (
     <div
@@ -99,13 +145,90 @@ export function ApprovalRequest({
       >
         {isActionConfirmation || isSupervisoryVariant ? (
           <>
-            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/45">
-              {isSupervisoryPlanStep ? 'Next Plan Step' : 'Next Action'}
-            </div>
-            <p className="mt-1 text-sm font-medium text-base-content">
-              {nextActionLabel}
-            </p>
-            {reason ? <p className="mt-2 text-sm leading-6 text-base-content/80">{reason}</p> : null}
+            {!isSupervisoryPlanStep ? (
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/45">
+                {isSupervisory ? 'Next Action' : 'Next Action'}
+              </div>
+            ) : null}
+            {canEditPlanStep && isEditingPlanStep ? (
+              <div className="space-y-2">
+                <textarea
+                  autoFocus
+                  className="textarea textarea-bordered min-h-[5rem] w-full resize-y text-sm leading-6"
+                  value={draftPlanStepText}
+                  onChange={(e) => setDraftPlanStepText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                      void handlePlanStepSave();
+                    } else if (e.key === 'Escape') {
+                      void handlePlanStepReset();
+                    }
+                  }}
+                  rows={3}
+                />
+                <div className="flex flex-wrap justify-end gap-2">
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    disabled={planStepBusy}
+                    onClick={() => {
+                      void handlePlanStepReset();
+                    }}
+                    type="button"
+                  >
+                    Reset
+                  </button>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    disabled={planStepBusy || !draftPlanStepText.trim() || !hasUnsavedPlanStepChanges}
+                    onClick={() => {
+                      void handlePlanStepSave();
+                    }}
+                    type="button"
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+            ) : canEditPlanStep ? (
+              <>
+                <button
+                  className={`w-full rounded-lg px-0 text-left text-sm font-medium leading-6 text-base-content ${
+                    canEditPlanStep ? 'cursor-text transition hover:text-primary' : ''
+                  }`}
+                  disabled={!canEditPlanStep || planStepBusy}
+                  onDoubleClick={() => {
+                    if (!canEditPlanStep || planStepBusy) return;
+                    setDraftPlanStepText(currentPlanStepText);
+                    setIsEditingPlanStep(true);
+                  }}
+                  type="button"
+                >
+                  {visibleActionText}
+                </button>
+                {canEditPlanStep ? (
+                  <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-base-content/55">
+                    <span>Double-click to edit this step.</span>
+                    {hasModifiedPlanStep ? (
+                      <button
+                        className="btn btn-ghost btn-xs"
+                        disabled={planStepBusy}
+                        onClick={() => {
+                          void handlePlanStepReset();
+                        }}
+                        type="button"
+                      >
+                        Reset
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <p className="text-sm font-medium text-base-content">
+                {visibleActionText}
+              </p>
+            )}
+            {!isSupervisoryPlanStep && reason ? <p className="mt-2 text-sm leading-6 text-base-content/80">{reason}</p> : null}
           </>
         ) : (
           <>
@@ -161,6 +284,7 @@ export function ApprovalRequest({
         ) : null}
         <button 
           className="btn btn-success" 
+          disabled={planStepBusy || (canEditPlanStep && isEditingPlanStep && hasUnsavedPlanStepChanges)}
           onClick={() => onApprove(requestId)}
         >
           {isActionConfirmation ? 'Agree' : isSupervisoryVariant ? 'Accept' : 'Approve'}

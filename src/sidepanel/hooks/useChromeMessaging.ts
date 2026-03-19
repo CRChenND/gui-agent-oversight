@@ -563,12 +563,20 @@ export const useChromeMessaging = ({
     });
   };
 
-  const updateApprovedPlan = async (editedPlan: string) => {
+  const updateApprovedPlan = async (
+    editedPlan: string,
+    options?: {
+      editedStepIndex?: number;
+      regenerateRemainingStepsAfterExecution?: boolean;
+    }
+  ) => {
     return chrome.runtime.sendMessage({
       action: 'updateApprovedPlan',
       tabId,
       windowId,
       editedPlan,
+      editedStepIndex: options?.editedStepIndex,
+      regenerateRemainingStepsAfterExecution: options?.regenerateRemainingStepsAfterExecution,
     });
   };
 

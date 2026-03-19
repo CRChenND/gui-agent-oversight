@@ -36,7 +36,7 @@ function extractRationale(accumulatedText: string): string | undefined {
 function sanitizeForPlan(accumulatedText: string): string {
   return accumulatedText
     .replace(/<tool>[\s\S]*?<\/requires_approval>/g, '')
-    .replace(/<\/?(thinking_summary|impact)>/gi, '')
+    .replace(/<\/?(thinking_summary|thinking\s+summary|impact)>/gi, '')
     .replace(/<\/?[^>]+>/g, '')
     .replace(/```(?:xml|bash)/g, '')
     .replace(/```/g, '')
