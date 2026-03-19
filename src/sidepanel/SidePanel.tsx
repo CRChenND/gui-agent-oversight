@@ -840,10 +840,7 @@ export function SidePanel() {
       }
       if (
         typeof content?.content === 'string' &&
-        (
-          content.content.includes('Requesting a corrected XML tool call.') ||
-          content.content.includes('Requesting a corrected action proposal before approval.')
-        )
+        content.content.includes('Requesting a corrected action proposal before approval.')
       ) {
         return;
       }

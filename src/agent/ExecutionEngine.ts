@@ -390,6 +390,22 @@ export class ExecutionEngine {
     return '⚠️ Model stopped after reasoning without a valid tool call. Requesting a corrected XML tool call.';
   }
 
+  private buildEmptyResponseRepairMessage(profile: ExecutionProfile): string {
+    if (profile === 'action_confirmation') {
+      return (
+        'Your previous response was empty. ' +
+        'Reply with exactly one valid XML action proposal using <tool>, <input>, and <requires_approval>. ' +
+        'Do not return an empty response.'
+      );
+    }
+    return (
+      'Your previous response was empty. ' +
+      'Reply with either exactly one valid XML tool call using <tool>, <input>, and <requires_approval>, ' +
+      'or a verified completion using <task_status>complete</task_status> and <final_response>...</final_response>. ' +
+      'Do not return an empty response.'
+    );
+  }
+
   private buildActionConfirmationExecutionInstruction(): string {
     return (
       'Action-confirmation mode is active. ' +
@@ -1392,6 +1408,7 @@ export class ExecutionEngine {
       let terminalReason: string | undefined;
       let step = 0;
       let planReviewed = options.skipInitialPlanReview === true;
+      let consecutiveEmptyModelResponses = 0;
 
       if (planReviewed) {
         console.warn('[plan-debug] skipping initial plan review for continued execution', {
@@ -1556,6 +1573,34 @@ export class ExecutionEngine {
 
           // Check for cancellation after LLM response
           if (this.errorHandler.isExecutionCancelled()) break;
+
+          if (!accumulatedText.trim()) {
+            consecutiveEmptyModelResponses += 1;
+            console.warn('[execution-debug] empty model response', {
+              step,
+              executionProfile,
+              consecutiveEmptyModelResponses,
+            });
+            adaptedCallbacks.onToolOutput(
+              consecutiveEmptyModelResponses >= 2
+                ? '⚠️ Model returned repeated empty responses. Stopping this run.'
+                : '⚠️ Model returned an empty response. Retrying with a stricter instruction.'
+            );
+            if (consecutiveEmptyModelResponses >= 2) {
+              terminalStatus = 'stopped';
+              terminalReason = 'Model returned repeated empty responses.';
+              done = true;
+              continue;
+            }
+            messages.push(
+              { role: 'assistant', content: '(empty response)' },
+              { role: 'user', content: this.buildEmptyResponseRepairMessage(executionProfile) }
+            );
+            messages = trimHistory(messages);
+            this.liveMessages = messages;
+            continue;
+          }
+          consecutiveEmptyModelResponses = 0;
 
           // Check for incomplete or malformed tool calls
           // This regex looks for tool calls that have <tool> and <input> but are missing <requires_approval>
