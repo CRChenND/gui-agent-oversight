@@ -959,11 +959,19 @@ export class ExecutionEngine {
     return value.length > 0 ? value : undefined;
   }
 
-  private hasRequiredAmplifiedScaffold(text: string): boolean {
-    return (
-      text.includes('Next Step I Plan To Do:') &&
-      text.includes('Alternative:') &&
-      text.includes('Why I choose A over B:')
+  private hasRequiredAmplifiedScaffold(
+    text: string,
+    parsedMetadata?: {
+      plannedNextStep?: string;
+      plannedAlternative?: string;
+      plannedRationale?: string;
+    }
+  ): boolean {
+    const metadata = parsedMetadata ?? this.parseModelStepMetadata(text);
+    return Boolean(
+      metadata.plannedNextStep?.trim() &&
+      metadata.plannedAlternative?.trim() &&
+      metadata.plannedRationale?.trim()
     );
   }
 
@@ -1429,14 +1437,12 @@ export class ExecutionEngine {
           adaptedCallbacks.onToolOutput(`✏️ Plan edited by user. Applying guidance: ${editText}`);
           this.rewriteLiveMessagesForApprovedPlan(editText);
           messages = this.liveMessages ?? messages;
-          if (adaptedCallbacks.onPlanStepApprovalRequired) {
-            messages.push({
-              role: 'user',
-              content: this.buildImmediateExecutionInstruction(this.approvedPlanState?.steps),
-            });
-            messages = trimHistory(messages);
-            this.liveMessages = messages;
-          }
+          messages.push({
+            role: 'user',
+            content: this.buildImmediateExecutionInstruction(this.approvedPlanState?.steps),
+          });
+          messages = trimHistory(messages);
+          this.liveMessages = messages;
         } else {
           const approvedPlanText = [
             `Plan Summary: ${generatedPlan.summary}`,
@@ -1446,14 +1452,12 @@ export class ExecutionEngine {
           this.promptManager.setApprovedPlanGuidance(approvedPlanText);
           this.rewriteLiveMessagesForApprovedPlan(approvedPlanText);
           messages = this.liveMessages ?? messages;
-          if (adaptedCallbacks.onPlanStepApprovalRequired) {
-            messages.push({
-              role: 'user',
-              content: this.buildImmediateExecutionInstruction(generatedPlan.steps),
-            });
-            messages = trimHistory(messages);
-            this.liveMessages = messages;
-          }
+          messages.push({
+            role: 'user',
+            content: this.buildImmediateExecutionInstruction(generatedPlan.steps),
+          });
+          messages = trimHistory(messages);
+          this.liveMessages = messages;
         }
       } else if (adaptedCallbacks.onPlanStepApprovalRequired) {
         const generatedPlan = await this.generateTaskPlan(prompt, messages);
@@ -1752,9 +1756,25 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
           const tool = this.toolManager.findTool(toolName);
           const stepId = createStepId(step);
           const modelMetadata = this.parseModelStepMetadata(accumulatedText);
+          const thinking = buildThinkingSummary({
+            goal: prompt,
+            toolName,
+            toolInput,
+            accumulatedText,
+            modelThinkingSummary: modelMetadata.thinkingSummary,
+          });
+          emitAgentThinking(stepId, toolName, thinking);
           const amplificationState = this.promptManager.getAmplificationState();
           if (amplificationState === 'amplified') {
-            if (!this.hasRequiredAmplifiedScaffold(accumulatedText)) {
+            if (!this.hasRequiredAmplifiedScaffold(accumulatedText, modelMetadata)) {
+              console.warn('[structural-debug] amplified schema retry', {
+                stepId,
+                toolName,
+                thinking: thinking.rationale || thinking.goal || '',
+                plannedNextStep: modelMetadata.plannedNextStep || '',
+                plannedAlternative: modelMetadata.plannedAlternative || '',
+                plannedRationale: modelMetadata.plannedRationale || '',
+              });
               messages.push(
                 { role: 'assistant', content: accumulatedText },
                 {
@@ -1769,15 +1789,6 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
               continue;
             }
           }
-          const thinking = buildThinkingSummary({
-            goal: prompt,
-            toolName,
-            toolInput,
-            accumulatedText,
-            modelThinkingSummary: modelMetadata.thinkingSummary,
-          });
-
-          emitAgentThinking(stepId, toolName, thinking);
 
           const baseRiskAssessment = inferRiskAssessment(toolName, toolInput);
           const resolvedImpact = modelMetadata.impact ?? baseRiskAssessment.impact;

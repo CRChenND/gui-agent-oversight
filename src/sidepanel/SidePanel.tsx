@@ -1036,9 +1036,24 @@ export function SidePanel() {
           )
         );
       }
+      if (isStructuralAmplificationArchetype && event.kind === 'agent_thinking') {
+        console.log('[structural-debug] agent_thinking', {
+          stepId: event.stepId,
+          toolName: event.toolName,
+          thinking: event.thinking.rationale || event.thinking.goal || '',
+        });
+      }
       handleOversightEvent(event);
     },
     onRuntimeStateUpdate: (status) => {
+      console.log('[structural-debug] runtimeStateUpdate', {
+        selectedArchetypeId,
+        phase: status.executionPhase,
+        state: status.executionState,
+        regime: status.regime,
+        amplification: status.amplification?.state,
+        softPauseActive: status.softPause?.active,
+      });
       setRuntimeStatus(status);
       if (
         status.executionState === 'paused_by_user' ||
@@ -1052,6 +1067,11 @@ export function SidePanel() {
       }
     },
     onPlanReviewRequired: isActionConfirmationArchetype ? undefined : (payload) => {
+      console.log('[structural-debug] planReviewRequired', {
+        selectedArchetypeId,
+        stepCount: payload.plan?.length ?? 0,
+        toolName: payload.toolName,
+      });
       setPlanReviewRequest(payload);
       setEditedPlanSteps((payload.plan || []).filter((step) => step.trim().length > 0));
       setEditingPlanStepIndex(null);
@@ -1227,6 +1247,14 @@ export function SidePanel() {
   const handlePlanReviewApprove = () => {
     const steps = editedPlanSteps.map((step) => step.trim()).filter(Boolean);
     const originalSteps = (planReviewRequest?.plan || []).map((step) => step.trim()).filter(Boolean);
+    console.log('[structural-debug] approving plan review', {
+      selectedArchetypeId,
+      stepCount: steps.length,
+      reorderedOrEdited:
+        steps.length !== originalSteps.length || steps.some((step, index) => step !== originalSteps[index]),
+      tabId,
+      windowId,
+    });
     if (steps.length > 0) {
       setApprovedPlan({
         summary: planReviewRequest?.planSummary || 'Approved plan.',

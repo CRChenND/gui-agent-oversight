@@ -573,6 +573,12 @@ class OversightRuntimeManager {
     editedPlan?: string;
   }): Promise<boolean> {
     const key = this.runtimeKey(args.windowId);
+    console.log('[structural-debug] submitPlanReviewDecision', {
+      windowId: args.windowId,
+      runtimeKey: key,
+      decision: args.decision,
+      editedPlanLength: args.editedPlan?.length ?? 0,
+    });
     const resolved = this.phaseManager.resolvePlanReview(key, args.decision, args.editedPlan);
     if (!resolved) return false;
 
@@ -671,6 +677,13 @@ class OversightRuntimeManager {
     }
     const startedAt = Date.now();
     const endsAt = startedAt + timeoutMs;
+    console.log('[structural-debug] softPauseStarting', {
+      windowId: args.windowId,
+      runtimeKey: key,
+      stepId: args.stepId,
+      toolName: args.toolName,
+      timeoutMs,
+    });
 
     await this.setExecutionState(args.windowId, 'paused_by_system_soft', 'amplification_soft_pause', 'system');
     await this.logTelemetry('state_transition', {
