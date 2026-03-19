@@ -406,39 +406,37 @@ export const TaskExecutionGraph: React.FC<TaskExecutionGraphProps> = ({
                   {!isLast ? <span className="absolute top-4 h-5 w-px bg-base-300" /> : null}
                 </div>
                 <div className="relative min-w-0 flex-1 overflow-visible">
-                  <div className="flex max-w-full flex-wrap items-start gap-2 overflow-visible">
-                      <div className="min-w-0 flex-1 text-sm font-medium text-base-content">
-                        {summarizeStepTitle(node)}
-                      </div>
-                      {showRiskBadge ? (
-                        <div
-                          className="inline-flex max-w-full shrink-0"
-                          onMouseEnter={(e) => {
-                            if (!showRiskDetails) return;
-                            openTooltip(node.stepId, 'risk', e.currentTarget);
-                          }}
-                          onMouseLeave={() => {
-                            if (!showRiskDetails) return;
-                            setActiveTooltip((current) =>
-                              current?.stepId === node.stepId && current.kind === 'risk' ? null : current
-                            );
-                            onRiskLabelHover?.(0);
-                          }}
-                          onClick={(e) => {
-                            if (!showRiskDetails) return;
-                            e.stopPropagation();
-                            toggleTooltip(node.stepId, 'risk', e.currentTarget);
-                          }}
-                        >
-                          <span
-                            className={`${badgeClassName()} ${riskBadgeMap[intervention!.impact]} ${showRiskDetails ? 'cursor-help' : ''}`}
-                            style={riskBadgeStyleMap[intervention!.impact]}
-                          >
-                            risk: {intervention!.impact}
-                          </span>
-                        </div>
-                      ) : null}
+                  <div className="min-w-0 text-sm font-medium text-base-content">
+                    {summarizeStepTitle(node)}
                   </div>
+                  {showRiskBadge ? (
+                    <div
+                      className="mt-1 inline-flex max-w-full shrink-0"
+                      onMouseEnter={(e) => {
+                        if (!showRiskDetails) return;
+                        openTooltip(node.stepId, 'risk', e.currentTarget);
+                      }}
+                      onMouseLeave={() => {
+                        if (!showRiskDetails) return;
+                        setActiveTooltip((current) =>
+                          current?.stepId === node.stepId && current.kind === 'risk' ? null : current
+                        );
+                        onRiskLabelHover?.(0);
+                      }}
+                      onClick={(e) => {
+                        if (!showRiskDetails) return;
+                        e.stopPropagation();
+                        toggleTooltip(node.stepId, 'risk', e.currentTarget);
+                      }}
+                    >
+                      <span
+                        className={`${badgeClassName()} ${riskBadgeMap[intervention!.impact]} ${showRiskDetails ? 'cursor-help' : ''}`}
+                        style={riskBadgeStyleMap[intervention!.impact]}
+                      >
+                        risk: {intervention!.impact}
+                      </span>
+                    </div>
+                  ) : null}
                   {node.thinking ? (
                     <div className="mt-1 flex items-start gap-1.5 text-xs leading-5 text-base-content/70">
                       <FontAwesomeIcon icon={faRobot} className="mt-0.5 text-[11px] text-base-content/45" />
