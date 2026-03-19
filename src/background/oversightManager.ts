@@ -70,6 +70,14 @@ function normalizeSentence(text: string): string {
   return /[.!?]$/.test(normalized) ? normalized : `${normalized}.`;
 }
 
+export function resolveToolStartThinking(stepDescription?: string, thinking?: string): string | undefined {
+  const normalizedStepDescription = stepDescription?.trim();
+  if (normalizedStepDescription) return normalizedStepDescription;
+
+  const normalizedThinking = thinking?.trim();
+  return normalizedThinking || undefined;
+}
+
 export function buildApprovalDecisionCopy(args: {
   actionTitle: string;
   toolName: string;
@@ -165,7 +173,8 @@ export async function handleToolStarted(args: {
     selectedArchetypeId,
   } = args;
   const attentionTarget = inferAttentionTarget(toolName, toolInput);
-  thinkingByStepId[stepId] = thinking || '';
+  const resolvedThinking = resolveToolStartThinking(stepDescription, thinking) || '';
+  thinkingByStepId[stepId] = resolvedThinking;
   const stepContext = resolveStepContext(stepId, toolName, toolInput);
   const stepContextTimestamp = Date.now();
 
@@ -194,7 +203,7 @@ export async function handleToolStarted(args: {
       toolName,
       toolInput,
       planStepIndex,
-      stepDescription,
+      stepDescription: resolvedThinking || undefined,
       focusType: attentionTarget.type,
       focusLabel: attentionTarget.label,
     },

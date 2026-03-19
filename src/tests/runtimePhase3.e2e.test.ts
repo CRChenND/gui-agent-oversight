@@ -1,6 +1,6 @@
 import { getOversightRuntimeManager } from '../oversight/runtime/runtimeManager';
 import { OversightTelemetryLogger } from '../oversight/telemetry/logger';
-import { buildApprovalDecisionCopy, buildPlanStepApprovalCopy } from '../background/oversightManager';
+import { buildApprovalDecisionCopy, buildPlanStepApprovalCopy, resolveToolStartThinking } from '../background/oversightManager';
 import { handleMessage } from '../background/messageHandler';
 import { assert, assertEqual } from './testUtils';
 
@@ -275,6 +275,19 @@ function testApprovalCopyIsShortAndContextual(): void {
   );
 }
 
+function testToolStartThinkingFallsBackToCachedThinking(): void {
+  assertEqual(
+    resolveToolStartThinking('', 'Review the page and continue with the repeated action.'),
+    'Review the page and continue with the repeated action.',
+    'Tool-start thinking should fall back to cached thinking when the step description is empty'
+  );
+  assertEqual(
+    resolveToolStartThinking('Click the next matching button.', 'Older thinking'),
+    'Click the next matching button.',
+    'Tool-start thinking should prefer the explicit step description when present'
+  );
+}
+
 async function testRhythmMetricsExport(): Promise<void> {
   installChromeMock();
   const logger = new OversightTelemetryLogger();
@@ -511,6 +524,7 @@ export async function runRuntimePhase3E2ETests(): Promise<void> {
   await testRejectedActionPausesForTakeover();
   await testStaleApprovalRejectDoesNotPauseRuntime();
   testApprovalCopyIsShortAndContextual();
+  testToolStartThinkingFallsBackToCachedThinking();
   await testRhythmMetricsExport();
   await testAdaptiveEscalationAuthorityTransition();
   await testBehavioralRegimeEscalationAndResolution();
