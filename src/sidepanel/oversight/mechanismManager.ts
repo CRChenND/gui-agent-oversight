@@ -121,6 +121,18 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : [];
 }
 
+function resolveDisplayedThinking(
+  event: Extract<OversightEvent, { kind: 'tool_started' }>,
+  state: OversightUiState,
+  ctx: OversightContext
+): string {
+  if (typeof event.stepDescription === 'string' && event.stepDescription.trim().length > 0) {
+    return event.stepDescription;
+  }
+
+  return state.thinkingByStepId[event.stepId]?.rationale || state.thinkingByStepId[event.stepId]?.goal || ctx.getLatestThinking();
+}
+
 type AmplifiedRiskTag = NonNullable<NonNullable<TaskNode['intervention']>['amplifiedRisk']>;
 
 function asAmplifiedRiskTag(value: unknown): AmplifiedRiskTag | null {
@@ -223,12 +235,7 @@ const taskGraphMechanism: OversightMechanism = {
         focusLabel: event.focusLabel || 'Focus updated',
         planStepIndex: typeof event.planStepIndex === 'number' ? event.planStepIndex : undefined,
         stepDescription: typeof event.stepDescription === 'string' ? event.stepDescription : undefined,
-        thinking:
-          typeof event.stepDescription === 'string' && event.stepDescription.trim().length > 0
-            ? event.stepDescription
-            : state.thinkingByStepId[event.stepId]?.rationale ||
-              state.thinkingByStepId[event.stepId]?.goal ||
-              ctx.getLatestThinking(),
+        thinking: resolveDisplayedThinking(event, state, ctx),
         intervention: pendingIntervention,
         status: 'active',
         timestamp: event.timestamp,
@@ -361,10 +368,7 @@ const agentFocusMechanism: OversightMechanism = {
           stepId: event.stepId,
           toolName: showToolName ? event.toolName : null,
           focusLabel: event.focusLabel,
-          thinking:
-            state.thinkingByStepId[event.stepId]?.rationale ||
-            state.thinkingByStepId[event.stepId]?.goal ||
-            ctx.getLatestThinking(),
+          thinking: resolveDisplayedThinking(event, state, ctx),
           updatedAt: event.timestamp,
         },
       };
