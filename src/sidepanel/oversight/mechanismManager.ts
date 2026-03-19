@@ -133,6 +133,10 @@ function resolveDisplayedThinking(
   return state.thinkingByStepId[event.stepId]?.rationale || state.thinkingByStepId[event.stepId]?.goal || ctx.getLatestThinking();
 }
 
+function resolveAgentThinkingText(thinking: AgentThinkingSummary): string {
+  return thinking.rationale || thinking.goal || '';
+}
+
 type AmplifiedRiskTag = NonNullable<NonNullable<TaskNode['intervention']>['amplifiedRisk']>;
 
 function asAmplifiedRiskTag(value: unknown): AmplifiedRiskTag | null {
@@ -228,7 +232,8 @@ const taskGraphMechanism: OversightMechanism = {
       const pendingIntervention = state.pendingInterventionsByStepId[event.stepId];
 
       const nextNodes = markActiveNodes(state.taskGraph.nodes, 'completed');
-      nextNodes.push({
+      const existingNodeIndex = nextNodes.findIndex((node) => node.stepId === event.stepId);
+      const nextNode = {
         id: event.stepId,
         stepId: event.stepId,
         toolName: event.toolName,
@@ -237,9 +242,18 @@ const taskGraphMechanism: OversightMechanism = {
         stepDescription: typeof event.stepDescription === 'string' ? event.stepDescription : undefined,
         thinking: resolveDisplayedThinking(event, state, ctx),
         intervention: pendingIntervention,
-        status: 'active',
+        status: 'active' as const,
         timestamp: event.timestamp,
-      });
+      };
+
+      if (existingNodeIndex >= 0) {
+        nextNodes[existingNodeIndex] = {
+          ...nextNodes[existingNodeIndex],
+          ...nextNode,
+        };
+      } else {
+        nextNodes.push(nextNode);
+      }
 
       const cappedNodes = nextNodes.length > maxNodes ? nextNodes.slice(nextNodes.length - maxNodes) : nextNodes;
 
@@ -258,13 +272,29 @@ const taskGraphMechanism: OversightMechanism = {
     }
 
     if (event.kind === 'agent_thinking') {
-      const nextNodes = state.taskGraph.nodes.map((node) => {
-        if (node.stepId !== event.stepId) return node;
-        return {
-          ...node,
-          thinking: event.thinking.rationale || event.thinking.goal,
-        };
-      });
+      const thinkingText = resolveAgentThinkingText(event.thinking);
+      const maxNodes = Math.max(1, Number(ctx.getParameter(TASK_GRAPH_MECHANISM_ID, 'maxNodes') ?? 20));
+      const existingNode = state.taskGraph.nodes.find((node) => node.stepId === event.stepId);
+      const nextNodes = existingNode
+        ? state.taskGraph.nodes.map((node) => {
+            if (node.stepId !== event.stepId) return node;
+            return {
+              ...node,
+              thinking: thinkingText,
+            };
+          })
+        : [
+            ...markActiveNodes(state.taskGraph.nodes, 'completed'),
+            {
+              id: event.stepId,
+              stepId: event.stepId,
+              toolName: event.toolName || 'pending_tool',
+              focusLabel: 'Preparing next action',
+              thinking: thinkingText,
+              status: 'active' as const,
+              timestamp: event.timestamp,
+            },
+          ].slice(-maxNodes);
       return {
         ...state,
         taskGraph: {
@@ -275,7 +305,7 @@ const taskGraphMechanism: OversightMechanism = {
           state.agentFocus.stepId === event.stepId
             ? {
                 ...state.agentFocus,
-                thinking: event.thinking.rationale || event.thinking.goal,
+                thinking: thinkingText,
                 updatedAt: event.timestamp,
               }
             : state.agentFocus,
@@ -383,6 +413,24 @@ const agentFocusMechanism: OversightMechanism = {
           toolName: null,
           focusLabel: event.focusLabel,
           thinking: '',
+          updatedAt: event.timestamp,
+        },
+      };
+    }
+
+    if (event.kind === 'agent_thinking') {
+      const thinkingText = resolveAgentThinkingText(event.thinking);
+      return {
+        ...state,
+        agentFocus: {
+          state: 'active',
+          stepId: event.stepId,
+          toolName: event.toolName || state.agentFocus.toolName,
+          focusLabel:
+            state.agentFocus.stepId === event.stepId && state.agentFocus.focusLabel
+              ? state.agentFocus.focusLabel
+              : 'Preparing next action',
+          thinking: thinkingText,
           updatedAt: event.timestamp,
         },
       };
