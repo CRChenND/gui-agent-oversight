@@ -943,6 +943,10 @@ export async function executePrompt(
       });
     }
     
+    // Use the resolved window for the full run so UI routing stays consistent
+    // even if later tab->window lookups drift on a specific Chrome build.
+    const executionWindowId = updatedTabState.windowId;
+
     // Create callbacks for the agent
     let currentToolCall: { stepId: string; toolName: string; toolInput: string } | null = null;
     const latestThinkingByStepId = new Map<string, string>();
@@ -956,11 +960,8 @@ export async function executePrompt(
     const callbacks: ExecutionCallbacks = {
       onLlmChunk: (chunk) => {
         if (useStreaming) {
-          // Get the window ID for this tab
-          const windowId = getWindowForTab(targetTabId);
-          
           // Add chunk to buffer
-          addToStreamingBuffer(chunk, targetTabId, windowId);
+          addToStreamingBuffer(chunk, targetTabId, executionWindowId);
         }
       },
       onLlmOutput: async (content) => {
@@ -998,10 +999,9 @@ export async function executePrompt(
             }
             
             // Get the window ID for this tab
-            const windowId = getWindowForTab(targetTabId);
-            if (windowId) {
+            if (executionWindowId) {
               // Update the message history
-              windowMessageHistories.set(windowId, history);
+              windowMessageHistories.set(executionWindowId, history);
             }
             
             logWithTimestamp(`Trimmed conversation history to ${history.conversationHistory.length} messages (${contextTokenCount(history.conversationHistory)} tokens)`);
@@ -1018,7 +1018,6 @@ export async function executePrompt(
         }, targetTabId);
       },
       onToolEnd: (stepId, result) => {
-        const windowId = getWindowForTab(targetTabId);
         const toolName = currentToolCall?.toolName ?? 'unknown_tool';
         const toolInput = currentToolCall?.toolInput ?? '';
         const resolvedStepId = currentToolCall?.stepId ?? stepId;
@@ -1026,13 +1025,13 @@ export async function executePrompt(
 
         void handleToolCompleted({
           tabId: targetTabId,
-          windowId,
+          windowId: executionWindowId,
           stepId: resolvedStepId,
           toolName,
           toolInput,
           result,
         });
-        void runtimeManager.registerStepCommitted(windowId);
+        void runtimeManager.registerStepCommitted(executionWindowId);
 
         // Check if this is a screenshot result by trying to parse it as JSON
         try {
@@ -1068,11 +1067,10 @@ export async function executePrompt(
         }
       },
       onToolError: (stepId, toolName, toolInput, error) => {
-        const windowId = getWindowForTab(targetTabId);
         currentToolCall = null;
         void handleToolFailed({
           tabId: targetTabId,
-          windowId,
+          windowId: executionWindowId,
           stepId,
           toolName,
           toolInput,
@@ -1080,16 +1078,15 @@ export async function executePrompt(
         });
       },
       onRiskSignal: (stepId, toolName, signal) => {
-        const windowId = getWindowForTab(targetTabId);
         void runtimeManager.handleAdaptiveRiskSignal({
-          windowId,
+          windowId: executionWindowId,
           gatePolicy: typeof signal.gatePolicy === 'string' ? signal.gatePolicy : undefined,
           promptedByGate: Boolean(signal.promptedByGate),
           impact: typeof signal.impact === 'string' ? signal.impact : undefined,
         });
         void handleRiskSignal({
           tabId: targetTabId,
-          windowId,
+          windowId: executionWindowId,
           stepId,
           toolName,
           signal,
@@ -1129,11 +1126,8 @@ export async function executePrompt(
       },
       onSegmentComplete: (segment) => {
         if (useStreaming) {
-          // Get the window ID for this tab
-          const windowId = getWindowForTab(targetTabId);
-          
           // Finalize the current streaming segment
-          finalizeStreamingSegment(getCurrentSegmentId(), segment, targetTabId, windowId);
+          finalizeStreamingSegment(getCurrentSegmentId(), segment, targetTabId, executionWindowId);
           
           // Increment segment ID for the next segment
           incrementSegmentId();
@@ -1143,7 +1137,7 @@ export async function executePrompt(
         currentToolCall = { stepId, toolName, toolInput };
         const overlayPromise = handleToolStarted({
           tabId: targetTabId,
-          windowId: updatedTabState.windowId,
+          windowId: executionWindowId,
           page: updatedTabState.page,
           stepId,
           toolName,
@@ -1163,11 +1157,8 @@ export async function executePrompt(
         });
 
         if (useStreaming) {
-          // Get the window ID for this tab
-          const windowId = getWindowForTab(targetTabId);
-          
           // Start a new segment for after the tool execution
-          startNewSegment(getCurrentSegmentId(), targetTabId, windowId);
+          startNewSegment(getCurrentSegmentId(), targetTabId, executionWindowId);
         }
       },
       onAfterToolStart: async ({ stepId, thinking }) => {
@@ -1187,29 +1178,27 @@ export async function executePrompt(
         await wait(totalDelayMs);
       },
       onComplete: (result) => {
-        // Get the window ID for this tab
-        const windowId = getWindowForTab(targetTabId);
         if (result?.status === 'completed' || !result) {
-          void runtimeManager.markRunCompleted(windowId);
+          void runtimeManager.markRunCompleted(executionWindowId);
           void handleRunCompleted({
             tabId: targetTabId,
-            windowId,
+            windowId: executionWindowId,
             page: updatedTabState.page,
             focusLabel: 'Task completed'
           });
         } else if (result.status === 'cancelled') {
-          void runtimeManager.markRunCancelled(windowId);
+          void runtimeManager.markRunCancelled(executionWindowId);
           void handleRunCancelled({
             tabId: targetTabId,
-            windowId,
+            windowId: executionWindowId,
             page: updatedTabState.page,
             focusLabel: result.reason || 'Execution cancelled'
           });
         } else {
-          void runtimeManager.markRunFailed(windowId);
+          void runtimeManager.markRunFailed(executionWindowId);
           void handleRunFailed({
             tabId: targetTabId,
-            windowId,
+            windowId: executionWindowId,
             page: updatedTabState.page,
             focusLabel: result.status === 'max_steps' ? 'Execution stopped' : 'Execution stopped',
             error: result.reason || 'Execution stopped before task completion.',
@@ -1224,24 +1213,24 @@ export async function executePrompt(
           
           // If it doesn't have a tool call, it's likely the final output
           if (!hasToolCall) {
-            finalizeStreamingSegment(getCurrentSegmentId(), getStreamingBuffer(), targetTabId, windowId);
+            finalizeStreamingSegment(getCurrentSegmentId(), getStreamingBuffer(), targetTabId, executionWindowId);
           }
         }
         
         // THEN clear any remaining buffer
-        clearStreamingBuffer(targetTabId, windowId);
+        clearStreamingBuffer(targetTabId, executionWindowId);
         
         // Signal that streaming is complete
         if (useStreaming) {
-          signalStreamingComplete(targetTabId, windowId);
+          signalStreamingComplete(targetTabId, executionWindowId);
         }
         
         // Set agent status to IDLE
-        if (windowId) {
-          setAgentStatus(windowId, AgentStatus.IDLE);
+        if (executionWindowId) {
+          setAgentStatus(executionWindowId, AgentStatus.IDLE);
         }
         
-        sendUIMessage('processingComplete', null, targetTabId, windowId);
+        sendUIMessage('processingComplete', null, targetTabId, executionWindowId);
       },
       onPlanReviewRequired: planReviewEnabled
         ? async (payload) => {
