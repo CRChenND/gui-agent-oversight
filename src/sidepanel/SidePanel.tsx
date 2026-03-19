@@ -2,7 +2,13 @@ import { faPlus, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ConfigManager } from '../background/configManager';
-import type { AuthorityState, ExecutionPhase, ExecutionState, OversightRegime } from '../oversight/runtime/types';
+import {
+  BUILTIN_OVERSIGHT_ARCHETYPES,
+  cloneArchetypeState,
+  getDefaultOversightArchetype,
+  getOversightArchetypeById,
+  OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY,
+} from '../options/oversightArchetypes';
 import {
   AGENT_FOCUS_MECHANISM_ID,
   INTERVENTION_GATE_MECHANISM_ID,
@@ -17,24 +23,19 @@ import {
   mapStorageToOversightParameterSettings,
   mapStorageToOversightSettings,
 } from '../oversight/registry';
-import {
-  BUILTIN_OVERSIGHT_ARCHETYPES,
-  cloneArchetypeState,
-  getDefaultOversightArchetype,
-  getOversightArchetypeById,
-  OVERSIGHT_SELECTED_ARCHETYPE_STORAGE_KEY,
-} from '../options/oversightArchetypes';
+import type { AuthorityState, ExecutionPhase, ExecutionState, OversightRegime } from '../oversight/runtime/types';
 import { ApprovalRequest } from './components/ApprovalRequest';
 import { MessageDisplay } from './components/MessageDisplay';
 import { OutputHeader } from './components/OutputHeader';
 import { PromptForm } from './components/PromptForm';
-import { badgeClassName } from './components/badgeStyles';
 import { SupervisoryPlanBlocks } from './components/SupervisoryPlanBlocks';
 import { TaskExecutionGraph } from './components/TaskExecutionGraph';
+import { badgeClassName } from './components/badgeStyles';
 import { useChromeMessaging } from './hooks/useChromeMessaging';
 import { useMessageManagement } from './hooks/useMessageManagement';
 import { useOversightMechanisms } from './hooks/useOversightMechanisms';
 import { useTabManagement } from './hooks/useTabManagement';
+import { stripToolMarkup } from './utils/toolMarkup';
 
 export function SidePanel() {
   const [activePanel, setActivePanel] = useState<'conversation' | 'oversight'>('conversation');
@@ -220,10 +221,7 @@ export function SidePanel() {
 
   const stripToolCallMarkup = (text: string): string => {
     if (!text) return '';
-    const stripped = text
-      .replace(/(```(?:xml|bash)\s*)?<tool>[\s\S]*?<\/requires_approval>(\s*```)?/g, '')
-      .trim();
-    return stripped;
+    return stripToolMarkup(text).trim();
   };
 
   const getLatestThinking = (): string => {

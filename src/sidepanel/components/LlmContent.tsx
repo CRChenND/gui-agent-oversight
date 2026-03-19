@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { stripToolMarkup } from '../utils/toolMarkup';
 import { badgeClassName } from './badgeStyles';
 
 interface LlmContentProps {
@@ -32,6 +33,7 @@ export const LlmContent: React.FC<LlmContentProps> = ({
     .replace(/Alternative:\s*[\s\S]*?(?=\n\s*<tool>|<tool>|$)/gi, '')
     .replace(/Why I choose A over B:\s*[\s\S]*?(?=\n\s*<tool>|<tool>|$)/gi, '')
     .trim();
+  const sanitizedConversationContent = stripToolMarkup(contentWithoutMetadata).trim();
 
   const actionChips = Array.from(
     new Set(
@@ -55,7 +57,7 @@ export const LlmContent: React.FC<LlmContentProps> = ({
   let lastIndex = 0;
   
   // Create a copy of the content to work with
-  const contentCopy = contentWithoutMetadata.toString();
+  const contentCopy = sanitizedConversationContent.toString();
   
   // Reset regex lastIndex
   combinedToolCallRegex.lastIndex = 0;
@@ -90,10 +92,10 @@ export const LlmContent: React.FC<LlmContentProps> = ({
 
   // If no tool calls were found, keep only cleaned content (no raw metadata tags).
   if (parts.length === 0) {
-    if (contentWithoutMetadata) {
+    if (sanitizedConversationContent) {
       parts.push({
         type: 'text',
-        content: contentWithoutMetadata,
+        content: sanitizedConversationContent,
       });
     }
   }

@@ -1,5 +1,6 @@
 import React from 'react';
 import { Message } from '../types';
+import { stripToolMarkup } from '../utils/toolMarkup';
 import { LlmContent } from './LlmContent';
 import { ScreenshotMessage } from './ScreenshotMessage';
 
@@ -32,10 +33,12 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({
     const stripped = content
       .replace(/<thinking(?:_summary|\s+summary)>[\s\S]*?<\/thinking(?:_summary|\s+summary)>/gi, '')
       .replace(/<impact>[\s\S]*?<\/impact>/gi, '')
-      .replace(/(```(?:xml|bash)\s*)?<tool>[\s\S]*?<\/requires_approval>(\s*```)?/gi, '')
-      .replace(/(```(?:xml|bash)\s*)?<tool>[\s\S]*?<\/input>(\s*```)?/gi, '')
+      .replace(/Next Step I Plan To Do:\s*[\s\S]*?(?=\n\s*<tool>|<tool>|$)/gi, '')
+      .replace(/Alternative:\s*[\s\S]*?(?=\n\s*<tool>|<tool>|$)/gi, '')
+      .replace(/Why I choose A over B:\s*[\s\S]*?(?=\n\s*<tool>|<tool>|$)/gi, '');
+    const visibleContent = stripToolMarkup(stripped)
       .trim();
-    return Boolean(stripped || (thinkingBlocks && thinkingBlocks.length > 0));
+    return Boolean(visibleContent || (thinkingBlocks && thinkingBlocks.length > 0));
   };
 
   // Always show all messages
