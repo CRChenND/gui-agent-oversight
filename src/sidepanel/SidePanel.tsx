@@ -1592,11 +1592,7 @@ export function SidePanel() {
       messages.filter((message) => {
         if (message.type === 'user') return true;
         if (message.type === 'screenshot') return true;
-        if (
-          message.type === 'llm' &&
-          typeof message.content === 'string' &&
-          !/<thinking(?:_summary|\s+summary)>|<tool>|<requires_approval>/i.test(message.content)
-        ) {
+        if (message.type === 'llm' && typeof message.content === 'string') {
           return message.content.trim().length > 0;
         }
         return false;
@@ -1622,7 +1618,10 @@ export function SidePanel() {
       ),
     [streamingSegments]
   );
-  const riskGatedStreamingSegments = useMemo(() => ({} as Record<number, string>), []);
+  const riskGatedStreamingSegments = useMemo(
+    () => streamingSegments,
+    [streamingSegments]
+  );
 
   useEffect(() => {
     if (!isStructuralAmplificationArchetype || activePanel !== 'oversight' || !shouldShowOverlay) {
